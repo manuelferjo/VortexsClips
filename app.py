@@ -56,6 +56,11 @@ class App(tk.Tk):
         self.title(f"{APP_NAME} {VERSION}")
         self.geometry("1180x820")
         self.minsize(1000, 700)
+        if os.name == "nt":
+            try:
+                self.state("zoomed")   # abrir maximizada
+            except tk.TclError:
+                pass
         self.configure(bg=BG)
         ico = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
         if os.path.isfile(ico):
@@ -240,7 +245,6 @@ class App(tk.Tk):
 
         # --- 3. partidas
         mid = ttk.Frame(self, padding=(16, 8))
-        mid.pack(fill="both", expand=True)
         mid.columnconfigure(0, weight=3)
         mid.columnconfigure(1, weight=2)
         mid.rowconfigure(0, weight=1)
@@ -250,7 +254,7 @@ class App(tk.Tk):
         p3.rowconfigure(1, weight=1)
         p3.columnconfigure(0, weight=1)
         cols = ("use", "date", "map", "agent", "score", "hl", "invod", "sync")
-        self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse")
+        self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse", height=5)
         for c, t, w in zip(cols, ("", "Fecha", "Mapa", "Agente", "Resultado", "Rondas", "¿En el VOD?", "Sincro"),
                            (34, 130, 80, 80, 70, 60, 90, 120)):
             self.tv_m.heading(c, text=t)
@@ -274,7 +278,7 @@ class App(tk.Tk):
         p4.rowconfigure(1, weight=1)
         p4.columnconfigure(0, weight=1)
         cols = ("round", "from", "to", "dur")
-        self.tv_c = ttk.Treeview(p4, columns=cols, show="headings", selectmode="extended")
+        self.tv_c = ttk.Treeview(p4, columns=cols, show="headings", selectmode="extended", height=5)
         for c, t, w in zip(cols, ("Ronda", "Desde (VOD)", "Hasta", "Dur."), (190, 90, 80, 50)):
             self.tv_c.heading(c, text=t)
             self.tv_c.column(c, width=w, anchor="w" if c == "round" else "center", stretch=c == "round")
@@ -291,7 +295,10 @@ class App(tk.Tk):
 
         # --- pie
         foot = ttk.Frame(self, style="Panel.TFrame", padding=(16, 10, 16, 12))
-        foot.pack(fill="x", padx=16, pady=(0, 14))
+        # el panel de progreso se coloca primero abajo para que nunca quede cortado;
+        # si falta sitio, encogen las listas del medio
+        foot.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
+        mid.pack(fill="both", expand=True)
         chips = ttk.Frame(foot, style="Panel.TFrame")
         chips.pack(fill="x")
         self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sacar rondas", "4 · Generar vídeo"]
@@ -860,7 +867,10 @@ class App(tk.Tk):
             if not silent:
                 messagebox.showinfo(APP_NAME, f"Ya tienes la última versión ({VERSION}).")
             return
-        if self.busy:
+        if self.busy or str(self.btn_cancel.cget("state")) == "normal":
+            if not silent:
+                messagebox.showinfo(APP_NAME, "Hay una versión nueva. Actualiza cuando termine "
+                                              "lo que está haciendo el programa.")
             return
         notes = info["notes"].strip()
         notes = ("\n\nNovedades:\n" + notes[:600]) if notes else ""
