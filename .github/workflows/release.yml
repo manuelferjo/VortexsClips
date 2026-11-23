@@ -1,0 +1,30 @@
+name: Publicar versión
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprobar que version.py coincide con la etiqueta
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          grep -q "VERSION = \"$TAG\"" version.py || { echo "version.py no dice $TAG"; exit 1; }
+
+      - name: Empaquetar
+        run: |
+          mkdir -p dist/VortexsClips
+          cp app.py core.py updater.py version.py Instalar.bat Iniciar.bat README.md dist/VortexsClips/
+          cd dist && zip -r VortexsClips.zip VortexsClips
+
+      - name: Crear Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/VortexsClips.zip --title "Vortexs Clips $GITHUB_REF_NAME" --generate-notes
