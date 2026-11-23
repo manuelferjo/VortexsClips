@@ -434,68 +434,130 @@ def _esc_text(t: str) -> str:
              .replace("%", r"\%").replace(",", r"\,"))
 
 
+def _has_audio(vod_path: str) -> bool:
+    ffprobe = find_tool("ffprobe")
+    if not ffprobe:
+        return True
+    r = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a", "-show_entries",
+                        "stream=index", "-of", "csv=p=0", vod_path],
+                       capture_output=True, text=True, **_no_window())
+    return bool(r.stdout.strip())
+
+
+def _venc(encoder: str) -> list[str]:
+    if encoder == "nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
+    if encoder == "qsv":
+        return ["-c:v", "h264_qsv", "-global_quality", "20"]
+    if encoder == "amf":
+        return ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "19", "-qp_p", "19"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+
+
+BATCH = 20   # rondas por pasada de ffmpeg
+
+
+def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, total_s,
+                  progress, should_stop):
+    """
+    Una sola pasada de ffmpeg: cada ronda es una entrada con búsqueda precisa (-ss/-t)
+    y el filtro concat las une. concat alinea audio y vídeo de cada ronda (rellena
+    con silencio si al audio le falta algún milisegundo), así que no hay desfase
+    acumulado por muchas rondas que se junten.
+    """
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-nostats", "-progress", "pipe:1"]
+    for c in clips:
+        cmd += ["-ss", f"{c.vod_start:.3f}", "-t", f"{c.vod_end - c.vod_start:.3f}", "-i", vod_path]
+    chains, labels = [], []
+    for i, c in enumerate(clips):
+        v = f"[{i}:v:0]setpts=PTS-STARTPTS"
+        if font:
+            v += (f",drawtext=fontfile='{_esc_filter_path(font)}':text='{_esc_text(c.label)}'"
+                  ":fontcolor=0xFFD21F:fontsize=h/22:borderw=3:bordercolor=0x1a1a1a"
+                  ":x=w/40:y=h/18:enable='lt(t,4)'")
+        v += f",format=yuv420p[v{i}]"
+        chains.append(v)
+        labels.append(f"[v{i}]")
+        if audio:
+            dur = c.vod_end - c.vod_start
+            chains.append(f"[{i}:a:0]asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,"
+                          f"apad,atrim=0:{dur:.3f}[a{i}]")
+            labels.append(f"[a{i}]")
+    n = len(clips)
+    chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[v]" + ("[a]" if audio else ""))
+    cmd += ["-filter_complex", ";".join(chains), "-map", "[v]"]
+    if audio:
+        cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+    cmd += [*venc, "-movflags", "+faststart", out]
+
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **_no_window())
+    err_lines = []
+
+    def read_err():
+        for line in p.stderr:
+            err_lines.append(line)
+    import threading
+    t = threading.Thread(target=read_err, daemon=True)
+    t.start()
+    for line in p.stdout:
+        if should_stop and should_stop():
+            p.kill()
+            raise RuntimeError("Cancelado.")
+        if line.startswith("out_time_us=") and progress and total_s:
+            try:
+                sec = int(line.split("=")[1]) / 1e6
+            except ValueError:
+                continue
+            progress(min(1.0, (done_before + sec) / total_s))
+    p.wait()
+    t.join(timeout=2)
+    if p.returncode != 0:
+        raise RuntimeError("ffmpeg falló:\n" + "".join(err_lines)[-800:])
+
+
 def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x264",
            show_label: bool = True, progress=None, should_stop=None) -> str:
-    """Recorta cada ronda y las une en un único vídeo."""
+    """Recorta cada ronda y las une en un único vídeo con audio y vídeo sincronizados."""
     ffmpeg = find_tool("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("No encuentro ffmpeg. Instala ffmpeg (ver README).")
     if not clips:
         raise RuntimeError("No hay rondas que cortar.")
-
-    if encoder == "nvenc":
-        venc = ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
-    elif encoder == "qsv":
-        venc = ["-c:v", "h264_qsv", "-global_quality", "20"]
-    elif encoder == "amf":
-        venc = ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "19", "-qp_p", "19"]
-    else:
-        venc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
-
+    venc = _venc(encoder)
     font = _font_for_drawtext() if show_label else None
-    tmp = tempfile.mkdtemp(prefix="vortexsclips_")
-    parts = []
-    total = len(clips)
-    try:
-        for i, c in enumerate(clips):
-            if should_stop and should_stop():
-                raise RuntimeError("Cancelado.")
-            if progress:
-                progress(i, total, f"Cortando {i + 1}/{total}: {c.label}")
-            part = os.path.join(tmp, f"part_{i:03d}.mp4")
-            vf = ["format=yuv420p"]
-            if font:
-                vf.insert(0,
-                    f"drawtext=fontfile='{_esc_filter_path(font)}':text='{_esc_text(c.label)}'"
-                    ":fontcolor=0xFFD21F:fontsize=h/22:borderw=3:bordercolor=0x1a1a1a"
-                    ":x=w/40:y=h/18:enable='lt(t,4)'")
-            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                   "-ss", f"{c.vod_start:.3f}", "-i", vod_path,
-                   "-t", f"{c.vod_end - c.vod_start:.3f}",
-                   "-map", "0:v:0", "-map", "0:a:0?",
-                   "-vf", ",".join(vf), *venc,
-                   "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                   "-video_track_timescale", "90000", "-avoid_negative_ts", "make_zero",
-                   part]
-            r = subprocess.run(cmd, capture_output=True, text=True, **_no_window())
-            if r.returncode != 0:
-                raise RuntimeError(f"ffmpeg falló en {c.label}:\n{r.stderr[-800:]}")
-            parts.append(part)
+    audio = _has_audio(vod_path)
+    total_s = sum(c.vod_end - c.vod_start for c in clips)
+    batches = [clips[i:i + BATCH] for i in range(0, len(clips), BATCH)]
 
+    def prog(frac):
         if progress:
-            progress(total, total, "Uniendo todo en un solo vídeo…")
-        lst = os.path.join(tmp, "list.txt")
-        with open(lst, "w", encoding="utf-8") as f:
-            for p in parts:
-                f.write("file '" + p.replace("\\", "/").replace("'", r"'\''") + "'\n")
-        r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                            "-f", "concat", "-safe", "0", "-i", lst,
-                            "-c", "copy", "-movflags", "+faststart", out_path],
-                           capture_output=True, text=True, **_no_window())
-        if r.returncode != 0:
-            raise RuntimeError("ffmpeg falló al unir:\n" + r.stderr[-800:])
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+            progress(frac, f"Generando vídeo… {frac * 100:.0f}%  ({len(clips)} rondas)")
+
+    if len(batches) == 1:
+        _render_batch(ffmpeg, vod_path, clips, out_path, venc, font, audio, 0, total_s, prog, should_stop)
+    else:
+        tmp = tempfile.mkdtemp(prefix="vortexsclips_")
+        try:
+            parts, done = [], 0.0
+            for bi, b in enumerate(batches):
+                part = os.path.join(tmp, f"part_{bi:03d}.mp4")
+                _render_batch(ffmpeg, vod_path, b, part, venc, font, audio, done, total_s, prog, should_stop)
+                done += sum(c.vod_end - c.vod_start for c in b)
+                parts.append(part)
+            if progress:
+                progress(1.0, "Uniendo todo en un solo vídeo…")
+            lst = os.path.join(tmp, "list.txt")
+            with open(lst, "w", encoding="utf-8") as f:
+                for p in parts:
+                    f.write("file '" + p.replace("\\", "/").replace("'", r"'\''") + "'\n")
+            r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                                "-f", "concat", "-safe", "0", "-i", lst,
+                                "-c", "copy", "-movflags", "+faststart", out_path],
+                               capture_output=True, text=True, **_no_window())
+            if r.returncode != 0:
+                raise RuntimeError("ffmpeg falló al unir:\n" + r.stderr[-800:])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     write_markers(clips, os.path.splitext(out_path)[0] + "_marcas.txt")
     return out_path

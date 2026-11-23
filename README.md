@@ -16,35 +16,90 @@ tracker.gg no tiene una API pública para VALORANT, así que el programa usa **H
 2. Crea una clave **Basic** (es gratis y te la dan al momento).
 3. Pégala en «Clave API». Se guarda para la próxima vez.
 
-## Cómo se usa
+## La forma rápida: con el enlace de Twitch
 
-1. **Cargar partidas**: descarga tus últimas 10 de competitivo (Vortexs#vrtxs, región `eu`). «Cargar 10 más» trae las anteriores. También puedes pegar el enlace de una partida de tracker.gg (`tracker.gg/valorant/match/…`).
-2. **Elegir VOD**: elige el vídeo descargado. Revisa la **hora de inicio del directo**: el programa la intenta adivinar, pero lo exacto es copiarla del panel de Twitch.
-3. **Delay / desfase**: si el directo tenía delay en Vortexs Live, pon aquí los segundos (por ejemplo, `30`).
-4. Pulsa **«Marcar las que están en el VOD»** y después **«Calcular rondas»**.
-5. Haz doble clic en una ronda para comprobarla. Si una partida sale desplazada, usa **«Sincronizar partida…»** (lo explico abajo).
-6. Pulsa **GENERAR VÍDEO**. Junto al vídeo se guarda `…_marcas.txt`, con el minuto de cada ronda en el VOD y en el vídeo final, para tu editor.
+1. La primera vez, pon tu **Clave API**.
+2. Pega el enlace del VOD (por ejemplo, `https://www.twitch.tv/videos/1234567890`) en el recuadro de abajo a la derecha.
+3. Pulsa **Descargar VOD**.
+
+A partir de ahí el programa lo hace todo solo:
+
+1. Descarga el VOD en la **máxima calidad** que tenga en Twitch (normalmente 1080p60).
+2. Copia de Twitch la **hora exacta** en que empezó el directo.
+3. Busca las partidas de competitivo que jugaste durante ese directo.
+4. Saca las rondas en las que hiciste 3 kills o más.
+5. Genera el vídeo junto al VOD, con el nombre `… - rondas 3K+.mp4`.
+
+La primera vez también descarga, él solo, el programa que usa para bajar VODs (yt-dlp), y lo mantiene actualizado.
+
+## Qué hace cada botón
+
+### Arriba
+
+| Botón | Qué hace |
+|---|---|
+| **Buscar actualizaciones** | Mira si hay una versión nueva en GitHub. Si la hay, la instala y reinicia el programa. Esto también lo hace solo cada vez que abres el programa. |
+
+### 1 · Cuenta y partidas
+
+| Botón o casilla | Qué hace |
+|---|---|
+| **Riot ID** | Tu cuenta, por ejemplo `Vortexs#vrtxs`. |
+| **Región** | `eu` para Europa. |
+| **Clave API** | La clave gratuita de HenrikDev, que sirve para leer tus partidas. Se guarda. |
+| **Cargar partidas** | Trae tus últimas 10 partidas de competitivo. |
+| **Cargar 10 más** | Trae las 10 anteriores a las que ya tienes en la lista. |
+| **Añadir** | Añade una partida concreta pegando su enlace de tracker.gg. |
+
+### 2 · VOD y ajustes
+
+| Botón o casilla | Qué hace |
+|---|---|
+| **Elegir VOD…** | Abre un vídeo que ya tengas en el PC. |
+| **Inicio del directo** | Fecha y hora en que empezó el directo. Si descargas con el enlace, se rellena sola con la hora exacta. |
+| **Delay / desfase (s)** | Segundos de delay que tenía el directo en Vortexs Live. Sirve para que los cortes no caigan antes de tiempo. |
+| **Kills mínimas** | 3 saca los 3K, 4K y ACE. 4 saca solo los 4K y ACE. 5, solo los ACE. |
+| **Saltar fase de compra** | Si está marcada, cada ronda empieza justo antes de que bajen las barreras. Si no, sale la ronda entera con la compra. |
+| **Margen antes / después** | Segundos de más al principio y al final de cada ronda. |
+| **Codificar con** | Con qué se genera el vídeo. NVIDIA, Intel o AMD son mucho más rápidos si tienes esa gráfica; la CPU funciona siempre. |
+| **Rótulo 3K/4K/ACE** | Muestra «4K · Ascent · Ronda 7» en amarillo durante los primeros 4 segundos de cada ronda. |
+| **Descargar VOD** | Descarga el VOD del enlace pegado y, si está marcada la casilla de abajo, lo procesa entero. |
+| **Carpeta…** | Dónde se guardan los VODs descargados y los vídeos. |
+| **Al terminar la descarga, sacar las rondas y generar el vídeo** | Si está marcada, después de la descarga lo hace todo solo. Si no, solo descarga y lo carga en el programa. |
+
+### 3 · Partidas
+
+| Botón o casilla | Qué hace |
+|---|---|
+| **☐ / ☑** | Haz clic para incluir o quitar una partida. |
+| **¿En el VOD?** | En amarillo («Sí»), las partidas que se jugaron durante ese directo. |
+| **Marcar las que están en el VOD** | Marca automáticamente las partidas que caen dentro del VOD. |
+| **Sincronizar partida…** | Para dejar una partida cuadrada al segundo: le dices en qué minuto del VOD aparece tu primera kill y el programa cuadra todas las rondas de esa partida. «Ver ese momento» te enseña ese trozo para comprobarlo. |
+| **Quitar sincro** | Vuelve a calcular esa partida con la hora del directo. |
+
+### 4 · Rondas
+
+| Botón | Qué hace |
+|---|---|
+| **Calcular rondas** | Saca la lista de rondas que se van a cortar, con su minuto en el VOD. |
+| **Ver ronda** | Reproduce esa ronda del VOD para comprobar que está bien cortada. También puedes hacer doble clic en la ronda. |
+| **Quitar** | Quita de la lista las rondas seleccionadas para que no salgan en el vídeo. |
+
+### Abajo
+
+| Botón | Qué hace |
+|---|---|
+| **GENERAR VÍDEO** | Corta todas las rondas de la lista y las une en un MP4, con imagen y sonido sincronizados. Junto al vídeo guarda `…_marcas.txt` con el minuto de cada ronda en el VOD y en el vídeo final, para tu editor. |
+| **Cancelar** | Para la descarga o la generación del vídeo. |
 
 ## Sincronizar una partida (para que quede al segundo)
 
-Con la hora del directo, los cortes pueden caer unos segundos antes o después (por la carga de la partida o por el delay dinámico). Para dejarla exacta:
+La hora exacta de Twitch ya deja los cortes muy bien. Aun así, si una partida sale unos segundos desplazada (por ejemplo, si cambió el delay dinámico), usa **Sincronizar partida…**: pon el minuto del VOD en el que sale tu primera kill y todas las rondas de esa partida quedan cuadradas. La sincronización queda guardada.
 
-- Selecciona la partida y pulsa **«Sincronizar partida…»**.
-- El programa te dice cuál fue tu **primera kill**: la ronda y el arma.
-- Busca ese momento en el VOD y escribe cuándo aparece en el killfeed (por ejemplo, `1:23:45`). Con «Ver ese momento» puedes comprobarlo.
-- A partir de ahí, todas las rondas de esa partida se cortan cuadradas. La sincronización queda guardada.
+## Notas
 
-Si el delay dinámico cambió **durante** una partida, puede haber una ronda descuadrada. Quítala con «Quitar» o ajústala a mano.
-
-## Ajustes
-
-| Ajuste | Qué hace |
-|---|---|
-| Kills mínimas | 3 de serie. Pon 4 para quedarte solo con 4K y ACE. |
-| Saltar fase de compra | Empieza el clip 3 s antes de que bajen las barreras. Si lo desmarcas, sale la ronda entera con la compra. |
-| Margen antes / después | Segundos de colchón al principio y al final de cada ronda. |
-| Codificar con | NVIDIA, Intel o AMD van mucho más rápido que la CPU si tienes esa gráfica. |
-| Rótulo | Muestra «4K · Ascent · Ronda 7» en amarillo durante los primeros 4 segundos de cada ronda. |
+- Los VODs que son solo para suscriptores no se pueden descargar con el enlace. Ponlo público un momento o descárgalo a mano y usa **Elegir VOD…**.
+- Imagen y sonido: cada ronda se corta y se une en una sola pasada, así que el audio no se desfasa aunque juntes muchas rondas.
 
 ## Actualizaciones
 

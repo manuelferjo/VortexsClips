@@ -39,7 +39,7 @@ jobs:
         if: steps.exists.outputs.skip == 'false'
         run: |
           mkdir -p dist/VortexsClips
-          cp app.py core.py updater.py version.py Instalar.bat Iniciar.bat README.md dist/VortexsClips/
+          cp app.py core.py twitch.py updater.py version.py Instalar.bat Iniciar.bat README.md dist/VortexsClips/
           cd dist && zip -r VortexsClips.zip VortexsClips
 
       - name: Crear Release

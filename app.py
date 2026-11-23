@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
 
 import core
+import twitch
 import updater
 from version import VERSION
 
@@ -214,6 +215,26 @@ class App(tk.Tk):
         ttk.Checkbutton(p2, text="Rótulo 3K/4K/ACE al inicio", variable=self.v_label).grid(
             row=5, column=3, columnspan=3, sticky="w")
 
+        ttk.Separator(p2).grid(row=6, column=0, columnspan=6, sticky="we", pady=8)
+        ttk.Label(p2, text="o pega el enlace del VOD de Twitch y lo hago todo solo:").grid(
+            row=7, column=0, columnspan=6, sticky="w")
+        self.v_twitch = tk.StringVar()
+        self.v_outdir = tk.StringVar(value=self.cfg.get("out_dir") or os.path.join(
+            os.path.expanduser("~"), "Videos", "Vortexs Clips"))
+        self.v_auto = tk.BooleanVar(value=self.cfg.get("auto_process", True))
+        tf = ttk.Frame(p2, style="Panel.TFrame")
+        tf.grid(row=8, column=0, columnspan=6, sticky="we", pady=(4, 0))
+        ttk.Entry(tf, textvariable=self.v_twitch, width=46).pack(side="left", fill="x", expand=True)
+        self.btn_dl = ttk.Button(tf, text="Descargar VOD", style="Accent.TButton", command=self.download_vod)
+        self.btn_dl.pack(side="left", padx=6)
+        of = ttk.Frame(p2, style="Panel.TFrame")
+        of.grid(row=9, column=0, columnspan=6, sticky="we", pady=(6, 0))
+        ttk.Button(of, text="Carpeta…", command=self.pick_outdir).pack(side="left")
+        self.lbl_outdir = ttk.Label(of, text=self.v_outdir.get(), style="Muted.TLabel")
+        self.lbl_outdir.pack(side="left", padx=8)
+        ttk.Checkbutton(p2, text="Al terminar la descarga, sacar las rondas y generar el vídeo",
+                        variable=self.v_auto).grid(row=10, column=0, columnspan=6, sticky="w", pady=(6, 0))
+
         # --- 3. partidas
         mid = ttk.Frame(self, padding=(16, 8))
         mid.pack(fill="both", expand=True)
@@ -309,7 +330,8 @@ class App(tk.Tk):
                          "min_kills": int(self.v_min.get() or 3), "skip_buy": self.v_skipbuy.get(),
                          "pre": self.v_pre.get(), "post": self.v_post.get(),
                          "label": self.v_label.get(), "encoder": ENCODERS[self.v_enc.get()],
-                         "calib": self.calib})
+                         "calib": self.calib, "out_dir": self.v_outdir.get(),
+                         "auto_process": self.v_auto.get()})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -506,19 +528,130 @@ class App(tk.Tk):
                                        filetypes=[("Vídeo", "*.mp4 *.mkv *.mov *.ts *.flv"), ("Todo", "*.*")])
         if not p:
             return
-        self.v_vod.set(p)
+        self.v_start.set("")
         self.status("Leyendo el vídeo…")
+        self.run_bg(lambda: core.probe_vod(p), lambda info: self.set_vod(p, info),
+                    "No se pudo leer el vídeo")
 
-        def done(info):
-            self.vod_info = info
-            d = info["duration"]
-            self.lbl_vod.configure(text=f"{os.path.basename(p)}  ·  {core.fmt_ts(d).split('.')[0]}  ·  "
-                                        f"{info.get('width')}x{info.get('height')}")
-            if not self.v_start.get().strip():
-                self.v_start.set(info["start_guess"].astimezone().strftime("%d/%m/%Y %H:%M:%S"))
-            self.status("Revisa la hora de inicio del directo y pulsa «Marcar las que están en el VOD».")
+    def set_vod(self, p, info, start_utc=None):
+        self.v_vod.set(p)
+        self.vod_info = info
+        self.clips = []
+        self.fill_clips()
+        d = info["duration"]
+        self.lbl_vod.configure(text=f"{os.path.basename(p)}  ·  {core.fmt_ts(d).split('.')[0]}  ·  "
+                                    f"{info.get('width')}x{info.get('height')}")
+        if start_utc is not None:
+            self.v_start.set(start_utc.astimezone().strftime("%d/%m/%Y %H:%M:%S"))
+        elif not self.v_start.get().strip():
+            self.v_start.set(info["start_guess"].astimezone().strftime("%d/%m/%Y %H:%M:%S"))
+        self.status("Revisa la hora de inicio del directo y pulsa «Marcar las que están en el VOD».")
+        self.auto_check()
+
+    def pick_outdir(self):
+        d = filedialog.askdirectory(title="Carpeta para los VODs y los vídeos",
+                                    initialdir=self.v_outdir.get())
+        if d:
+            self.v_outdir.set(d)
+            self.lbl_outdir.configure(text=d)
+            self.persist()
+
+    # ------------------------------------------------------------ Twitch
+    def set_running(self, running):
+        self.btn_render.configure(state="disabled" if running else "normal")
+        self.btn_dl.configure(state="disabled" if running else "normal")
+        self.btn_cancel.configure(state="normal" if running else "disabled")
+
+    def download_vod(self):
+        url = self.v_twitch.get().strip()
+        if not twitch.is_twitch_vod(url):
+            messagebox.showinfo(APP_NAME, "Pega un enlace de VOD de Twitch, por ejemplo:\n"
+                                          "https://www.twitch.tv/videos/1234567890")
+            return
+        if not core.find_tool("ffmpeg"):
+            messagebox.showerror(APP_NAME, "Falta ffmpeg. Ejecuta Instalar.bat.")
+            return
+        auto = self.v_auto.get()
+        if auto and not self.v_key.get().strip():
+            if not messagebox.askyesno(APP_NAME, "No has puesto la clave de la API, así que solo "
+                                                 "descargaré el VOD (sin sacar las rondas).\n\n¿Seguir?"):
+                return
+            auto = False
+        self.persist()
+        out_dir = self.v_outdir.get()
+        self.stop_flag = False
+        self.set_running(True)
+        self.pb.configure(maximum=1, value=0)
+        self.status("Leyendo el VOD de Twitch…")
+
+        def prog(frac, txt):
+            self.after(0, lambda: (self.pb.configure(maximum=1, value=frac), self.status(txt)))
+
+        def work():
+            try:
+                info = twitch.vod_info(url)
+                prog(0, f"Descargando «{info['title'][:60]}» en {info['quality']}…")
+                path = twitch.download(url, out_dir, prog, lambda: self.stop_flag)
+                return info, path, core.probe_vod(path)
+            finally:
+                self.after(0, lambda: self.set_running(False))
+
+        def done(res):
+            info, path, probe = res
+            self.set_vod(path, probe, info["start"])
+            self.v_twitch.set("")
+            if auto:
+                self.auto_process()
+            else:
+                self.status(f"VOD descargado: {path}")
+        self.run_bg(work, done, "No se pudo descargar el VOD")
+
+    def auto_process(self):
+        """Tras descargar: trae las partidas del VOD, saca las rondas y genera el vídeo."""
+        try:
+            vs = self.vod_start_utc()
+        except ValueError:
+            return
+        riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
+        self.status("Buscando las partidas que jugaste durante el directo…")
+
+        def work():
+            found = []
+            for page in range(6):                     # hasta 60 partidas hacia atrás
+                raws = core.fetch_recent_matches(riot, key, reg, size=10, start=page * 10)
+                if not raws:
+                    break
+                ms = []
+                for r in raws:
+                    try:
+                        ms.append(core.parse_match(r, riot))
+                    except Exception:
+                        pass
+                found += ms
+                if ms and min(m.started_at for m in ms) < vs:
+                    break
+            return found
+
+        def done(ms):
+            for m in ms:
+                self.matches[m.match_id] = m
+            self.next_start = max(self.next_start, len(ms))
             self.auto_check()
-        self.run_bg(lambda: core.probe_vod(p), done, "No se pudo leer el vídeo")
+            if not self.checked:
+                self.status("No hay partidas de competitivo dentro de este VOD.")
+                messagebox.showinfo(APP_NAME, "He descargado el VOD, pero no encuentro partidas de "
+                                              "competitivo jugadas durante ese directo.")
+                return
+            self.compute()
+            if not self.clips:
+                messagebox.showinfo(APP_NAME, f"En las partidas de este VOD no hay rondas de "
+                                              f"{self.settings().min_kills} kills o más.")
+                return
+            vod = self.v_vod.get()
+            base = os.path.splitext(os.path.basename(vod))[0]
+            out = os.path.join(os.path.dirname(vod), f"{base} - rondas {self.settings().min_kills}K+.mp4")
+            self.render(out)
+        self.run_bg(work, done, "No se pudieron cargar las partidas")
 
     def play(self, start, dur):
         ffplay = core.find_tool("ffplay")
@@ -571,14 +704,14 @@ class App(tk.Tk):
         self.fill_clips()
 
     # ------------------------------------------------------------ render
-    def render(self):
+    def render(self, out=None):
         if not self.clips:
             self.compute()
             if not self.clips:
                 return
         vod = self.v_vod.get()
         base = os.path.splitext(os.path.basename(vod))[0]
-        out = filedialog.asksaveasfilename(title="Guardar vídeo", defaultextension=".mp4",
+        out = out or filedialog.asksaveasfilename(title="Guardar vídeo", defaultextension=".mp4",
                                            initialdir=os.path.dirname(vod),
                                            initialfile=f"{base}_rondas_{self.settings().min_kills}K+.mp4",
                                            filetypes=[("MP4", "*.mp4")])
@@ -586,39 +719,33 @@ class App(tk.Tk):
             return
         self.persist()
         self.stop_flag = False
-        self.btn_render.configure(state="disabled")
-        self.btn_cancel.configure(state="normal")
+        self.set_running(True)
+        self.pb.configure(maximum=1, value=0)
         clips = list(self.clips)
         enc = ENCODERS[self.v_enc.get()]
         label = self.v_label.get()
 
-        def prog(i, n, txt):
-            self.after(0, lambda: (self.pb.configure(maximum=n + 1, value=i), self.status(txt)))
+        def prog(frac, txt):
+            self.after(0, lambda: (self.pb.configure(maximum=1, value=frac), self.status(txt)))
 
         def work():
-            return core.render(vod, clips, out, encoder=enc, show_label=label,
-                               progress=prog, should_stop=lambda: self.stop_flag)
+            try:
+                return core.render(vod, clips, out, encoder=enc, show_label=label,
+                                   progress=prog, should_stop=lambda: self.stop_flag)
+            finally:
+                self.after(0, lambda: self.set_running(False))
 
         def finish(path):
-            self.btn_render.configure(state="normal")
-            self.btn_cancel.configure(state="disabled")
-            self.pb.configure(value=self.pb["maximum"])
+            self.pb.configure(value=1)
             self.status(f"Hecho: {path}")
-            if messagebox.askyesno(APP_NAME, "¡Vídeo listo!\n\n¿Abrir la carpeta?"):
+            if messagebox.askyesno(APP_NAME, f"¡Vídeo listo! {len(clips)} rondas.\n\n{path}\n\n¿Abrir la carpeta?"):
                 if os.name == "nt":
                     subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-
-        def work_safe():
-            try:
-                return work()
-            finally:
-                self.after(0, lambda: (self.btn_render.configure(state="normal"),
-                                       self.btn_cancel.configure(state="disabled")))
-        self.run_bg(work_safe, finish, "No se pudo generar el vídeo")
+        self.run_bg(work, finish, "No se pudo generar el vídeo")
 
     def cancel(self):
         self.stop_flag = True
-        self.status("Cancelando al acabar la ronda actual…")
+        self.status("Cancelando…")
 
     # ------------------------------------------------------------ actualizaciones
     def check_update(self, silent=True):

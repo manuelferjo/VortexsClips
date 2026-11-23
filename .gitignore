@@ -3,3 +3,5 @@ __pycache__/
 ffmpeg/
 *.mp4
 *_marcas.txt
+yt-dlp.exe
+.ytdlp_updated
