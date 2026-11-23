@@ -5,3 +5,6 @@ ffmpeg/
 *_marcas.txt
 yt-dlp.exe
 .ytdlp_updated
+build/
+dist/
+*.spec

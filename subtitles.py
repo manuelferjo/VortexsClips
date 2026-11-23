@@ -1,0 +1,215 @@
+"""
+Subtítulos automáticos estilo TikTok de Vortexs.
+
+- Transcribe con whisper.cpp en tu PC (sin internet después de la primera vez):
+  el programa y el modelo se descargan solos la primera vez (~200 MB).
+- Palabras en grande, blancas con borde negro, en minúsculas, de 1 a 3 palabras
+  a la vez, centradas justo en el borde inferior de la cámara (como en tus TikToks).
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import urllib.request
+import zipfile
+
+import core
+
+WHISPER_REPO = "ggml-org/whisper.cpp"
+MODEL_NAME = "ggml-small-q5_1.bin"
+MODEL_URL = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{MODEL_NAME}"
+HALLUCINATIONS = ("subtítulos", "subtitulos", "amara.org", "suscríbete", "gracias por ver")
+
+
+def whisper_dir() -> str:
+    d = os.path.join(core.data_dir(), "whisper")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _find_cli() -> str | None:
+    for root, _d, files in os.walk(whisper_dir()):
+        for name in ("whisper-cli.exe", "main.exe", "whisper-cli", "main"):
+            if name in files:
+                return os.path.join(root, name)
+    return shutil.which("whisper-cli")
+
+
+def _download(url: str, dst: str, progress=None, label=""):
+    req = urllib.request.Request(url, headers={"User-Agent": "VortexsClips"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(dst + ".part", "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            b = r.read(1 << 16)
+            if not b:
+                break
+            f.write(b)
+            done += len(b)
+            if progress and total:
+                progress(done / total, f"{label} {done / 2**20:.0f} de {total / 2**20:.0f} MB")
+    os.replace(dst + ".part", dst)
+
+
+def ensure_whisper(progress=None) -> tuple[str, str]:
+    """Devuelve (programa, modelo); los descarga la primera vez."""
+    cli = _find_cli()
+    if cli is None:
+        if os.name != "nt":
+            raise RuntimeError("Falta whisper-cli.")
+        api = f"https://api.github.com/repos/{WHISPER_REPO}/releases/latest"
+        req = urllib.request.Request(api, headers={"User-Agent": "VortexsClips",
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            rel = json.loads(r.read().decode("utf-8"))
+        asset = next((a for a in rel.get("assets", [])
+                      if re.search(r"whisper-bin-x64\.zip$", a.get("name", ""))), None)
+        if not asset:
+            raise RuntimeError("No encuentro whisper-bin-x64.zip en la última versión de whisper.cpp.")
+        z = os.path.join(whisper_dir(), "whisper.zip")
+        _download(asset["browser_download_url"], z, progress, "Descargando transcriptor (solo la primera vez):")
+        with zipfile.ZipFile(z) as zf:
+            zf.extractall(whisper_dir())
+        os.remove(z)
+        cli = _find_cli()
+        if not cli:
+            raise RuntimeError("No se pudo preparar el transcriptor.")
+    model = os.path.join(whisper_dir(), MODEL_NAME)
+    if not os.path.isfile(model):
+        _download(MODEL_URL, model, progress, "Descargando modelo de voz (solo la primera vez):")
+    return cli, model
+
+
+def transcribe(video: str, progress=None, should_stop=None) -> list[dict]:
+    """Lista de palabras [{'start','end','text'}] en segundos, en español."""
+    cli, model = ensure_whisper(progress)
+    tmp = tempfile.mkdtemp(prefix="vortexsclips_sub_")
+    try:
+        wav = os.path.join(tmp, "audio.wav")
+        ffmpeg = core.find_tool("ffmpeg")
+        r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", video, "-vn",
+                            "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
+                           capture_output=True, text=True, **core._no_window())
+        if r.returncode != 0:
+            raise RuntimeError("No se pudo sacar el audio: " + r.stderr[-300:])
+        if progress:
+            progress(None, "Transcribiendo lo que dices (subtítulos)…")
+        threads = str(max(2, (os.cpu_count() or 4) - 1))
+        base = os.path.join(tmp, "out")
+        p = subprocess.Popen([cli, "-m", model, "-f", wav, "-l", "es", "-t", threads,
+                              "-ml", "1", "-sow", "-oj", "-of", base, "-np"],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             encoding="utf-8", errors="replace", **core._no_window())
+        out_tail = []
+        for line in p.stdout:
+            out_tail = (out_tail + [line])[-10:]
+            if should_stop and should_stop():
+                p.kill()
+                raise RuntimeError("Cancelado.")
+        p.wait()
+        jpath = base + ".json"
+        if p.returncode != 0 or not os.path.isfile(jpath):
+            raise RuntimeError("El transcriptor falló:\n" + "".join(out_tail)[-400:])
+        with open(jpath, encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+        return parse_whisper_json(data)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def parse_whisper_json(data: dict) -> list[dict]:
+    words = []
+    for seg in data.get("transcription", []):
+        text = (seg.get("text") or "").strip()
+        off = seg.get("offsets") or {}
+        if not text or text.startswith("[") or text.startswith("("):
+            continue
+        if any(h in text.lower() for h in HALLUCINATIONS):
+            continue
+        a, b = off.get("from"), off.get("to")
+        if a is None or b is None:
+            continue
+        words.append({"start": a / 1000.0, "end": max(b, a + 120) / 1000.0, "text": text})
+    return words
+
+
+# ------------------------------------------------------------------ ASS
+def chunk_words(words: list[dict], max_words: int = 3, max_chars: int = 16, max_gap: float = 0.6):
+    """Agrupa palabras en frases cortas de 1 a 3 palabras (ritmo TikTok)."""
+    chunks, cur = [], []
+    for w in words:
+        t = re.sub(r"\s+", " ", w["text"]).strip()
+        if not t:
+            continue
+        if cur:
+            joined = " ".join(x["text"] for x in cur) + " " + t
+            gap = w["start"] - cur[-1]["end"]
+            if len(cur) >= max_words or len(joined) > max_chars or gap > max_gap:
+                chunks.append(cur)
+                cur = []
+        cur.append({**w, "text": t})
+        if re.search(r"[.!?…]$", t):
+            chunks.append(cur)
+            cur = []
+    if cur:
+        chunks.append(cur)
+    out = []
+    for c in chunks:
+        a, b = c[0]["start"], max(c[-1]["end"], c[0]["start"] + 0.35)
+        txt = " ".join(x["text"] for x in c).lower()
+        txt = re.sub(r"[.,;:¡!¿?…\"]", "", txt).strip()
+        if txt:
+            out.append((a, b, txt))
+    # que no se pisen
+    fixed = []
+    for i, (a, b, t) in enumerate(out):
+        if i + 1 < len(out):
+            b = min(b, out[i + 1][0])
+        if b - a > 0.05:
+            fixed.append((a, b, t))
+    return fixed
+
+
+def _ts(sec: float) -> str:
+    sec = max(0.0, sec)
+    h = int(sec // 3600)
+    m = int(sec % 3600 // 60)
+    s = sec % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def build_ass(words: list[dict], y_center: int, path: str, offset: float = 0.0, duration: float | None = None):
+    """Escribe el .ass para un vídeo vertical 1080x1920. offset/duration para recortar a un clip."""
+    sel = []
+    for w in words:
+        a, b = w["start"] - offset, w["end"] - offset
+        if b <= 0 or (duration is not None and a >= duration):
+            continue
+        sel.append({**w, "start": max(0.0, a), "end": b if duration is None else min(duration, b)})
+    lines = chunk_words(sel)
+    head = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: TikTok,Arial Black,86,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,7,2,5,40,40,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(head)
+        for a, b, t in lines:
+            t = t.replace("{", "(").replace("}", ")")
+            # pequeño "pop" al aparecer, como en los TikToks
+            f.write(f"Dialogue: 0,{_ts(a)},{_ts(b)},TikTok,,0,0,0,,"
+                    f"{{\\pos(540,{y_center})\\fscx85\\fscy85\\t(0,90,\\fscx100\\fscy100)}}{t}\n")
+    return len(lines)

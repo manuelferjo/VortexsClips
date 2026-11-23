@@ -13,6 +13,10 @@ from tkinter import filedialog, messagebox, ttk
 
 import core
 import twitch
+import player
+import subtitles
+import sys
+import time
 import sync
 import tempfile
 import updater
@@ -32,7 +36,8 @@ YELLOW = "#ffd21f"
 PURPLE = "#c7a6ff"
 
 REGIONS = ["eu", "na", "ap", "kr", "latam", "br"]
-ENCODERS = {"CPU (x264, compatible siempre)": "x264",
+ENCODERS = {"Automático (tu gráfica si se puede)": "auto",
+            "CPU (x264, compatible siempre)": "x264",
             "NVIDIA (NVENC, rápido)": "nvenc",
             "Intel (QuickSync)": "qsv",
             "AMD (AMF)": "amf"}
@@ -80,11 +85,25 @@ class App(tk.Tk):
         self.next_start = 0
         self.stop_flag = False
         self.busy = False
+        self.queue = []            # [(url, origen)]
+        self.flow_active = False
+        self.flow_source = "manual"
+        self.current_url = None
+        self.batch_size = 0
+        self.errors_log = []
+        self.delay_fn = None
 
         self._style()
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(1500, lambda: self.check_update(silent=True))
+        self.load_delay()
+        self.after(800, self.detect_encoder)
+        if self.v_watch.get():
+            self.after(30_000, self.watch_tick)
+            self.lbl_watch.configure(text="Vigilando… (primera comprobación en 30 s)")
+        if "--minimized" in sys.argv:
+            self.after(300, self.iconify)
 
         if not core.find_tool("ffmpeg"):
             self.after(400, lambda: messagebox.showwarning(
@@ -117,6 +136,12 @@ class App(tk.Tk):
         s.configure("Accent.TButton", background=YELLOW, foreground="#111",
                     font=("Segoe UI Semibold", 10))
         s.map("Accent.TButton", background=[("active", "#ffe066"), ("disabled", "#5c5320")])
+        s.configure("TNotebook", background=PANEL, borderwidth=0)
+        s.configure("TNotebook.Tab", background=FIELD, foreground=MUTED, padding=(10, 5),
+                    font=("Segoe UI Semibold", 9))
+        s.map("TNotebook.Tab", background=[("selected", YELLOW)], foreground=[("selected", "#111")])
+        s.configure("TRadiobutton", background=PANEL, foreground=TEXT)
+        s.map("TRadiobutton", background=[("active", PANEL)], indicatorcolor=[("selected", YELLOW)])
         s.configure("Purple.TButton", background=PURPLE, foreground="#111")
         s.map("Purple.TButton", background=[("active", "#dcc7ff")])
         s.configure("Treeview", background=FIELD, fieldbackground=FIELD, foreground=TEXT,
@@ -184,83 +209,136 @@ class App(tk.Tk):
         ttk.Entry(lf, textvariable=self.v_link, width=44).pack(side="left", fill="x", expand=True)
         ttk.Button(lf, text="Añadir", command=self.add_by_link).pack(side="left", padx=6)
 
-        # --- 2. VOD
+        # --- 2. VOD y ajustes (pestañas)
         p2 = self._panel(top, "2 · VOD y ajustes")
         p2.grid(row=0, column=1, sticky="nsew")
+        nb = ttk.Notebook(p2)
+        nb.grid(row=1, column=0, columnspan=6, sticky="nsew")
+        t_vod = ttk.Frame(nb, style="Panel.TFrame", padding=10)
+        t_cut = ttk.Frame(nb, style="Panel.TFrame", padding=10)
+        t_out = ttk.Frame(nb, style="Panel.TFrame", padding=10)
+        t_auto = ttk.Frame(nb, style="Panel.TFrame", padding=10)
+        nb.add(t_vod, text="  VOD  ")
+        nb.add(t_cut, text="  Cortes  ")
+        nb.add(t_out, text="  Salida  ")
+        nb.add(t_auto, text="  Automático  ")
+
+        cfg = self.cfg
         self.v_vod = tk.StringVar()
         self.v_start = tk.StringVar()
-        self.v_delay = tk.StringVar(value=str(self.cfg.get("delay", 0)))
-        self.v_min = tk.IntVar(value=self.cfg.get("min_kills", 3))
-        self.v_skipbuy = tk.BooleanVar(value=self.cfg.get("skip_buy", True))
-        self.v_pre = tk.StringVar(value=str(self.cfg.get("pre", 3)))
-        self.v_post = tk.StringVar(value=str(self.cfg.get("post", 4)))
-        enc_default = next((k for k, v in ENCODERS.items() if v == self.cfg.get("encoder")),
-                           list(ENCODERS)[0])
+        self.v_delay = tk.StringVar(value=str(cfg.get("delay", 0)))
+        self.v_min = tk.IntVar(value=cfg.get("min_kills", 3))
+        self.v_skipbuy = tk.BooleanVar(value=cfg.get("skip_buy", True))
+        self.v_pre = tk.StringVar(value=str(cfg.get("pre", 3)))
+        self.v_post = tk.StringVar(value=str(cfg.get("post", 4)))
+        self.v_mode = tk.StringVar(value=cfg.get("mode", "round"))
+        self.v_kpre = tk.StringVar(value=str(cfg.get("kill_pre", 2.5)))
+        self.v_kpost = tk.StringVar(value=str(cfg.get("kill_post", 1.5)))
+        enc_default = next((k for k, v in ENCODERS.items() if v == cfg.get("encoder", "auto")), list(ENCODERS)[0])
         self.v_enc = tk.StringVar(value=enc_default)
-
-        vf = ttk.Frame(p2, style="Panel.TFrame")
-        vf.grid(row=1, column=0, columnspan=6, sticky="we")
-        ttk.Button(vf, text="Elegir VOD…", style="Purple.TButton", command=self.pick_vod).pack(side="left")
-        self.lbl_vod = ttk.Label(vf, text="Ningún vídeo elegido", style="Muted.TLabel")
-        self.lbl_vod.pack(side="left", padx=8)
-
-        ttk.Label(p2, text="Inicio del directo").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(p2, textvariable=self.v_start, width=19).grid(row=2, column=1, sticky="w", padx=6, pady=(8, 0))
-        ttk.Label(p2, text="dd/mm/aaaa hh:mm:ss (hora de tu PC)", style="Muted.TLabel").grid(
-            row=2, column=2, columnspan=4, sticky="w", pady=(8, 0))
-        ttk.Label(p2, text="Delay / desfase (s)").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Entry(p2, textvariable=self.v_delay, width=8).grid(row=3, column=1, sticky="w", padx=6)
-        ttk.Label(p2, text="Kills mínimas").grid(row=3, column=2, sticky="w")
-        ttk.Spinbox(p2, from_=2, to=6, textvariable=self.v_min, width=4).grid(row=3, column=3, sticky="w", padx=6)
-
-        ttk.Checkbutton(p2, text="Saltar fase de compra", variable=self.v_skipbuy).grid(
-            row=4, column=0, columnspan=2, sticky="w")
-        ttk.Label(p2, text="Margen antes / después (s)").grid(row=4, column=2, sticky="w")
-        mf = ttk.Frame(p2, style="Panel.TFrame")
-        mf.grid(row=4, column=3, columnspan=3, sticky="w", padx=6)
-        ttk.Entry(mf, textvariable=self.v_pre, width=4).pack(side="left")
-        ttk.Entry(mf, textvariable=self.v_post, width=4).pack(side="left", padx=4)
-
-        ttk.Label(p2, text="Codificar con").grid(row=5, column=0, sticky="w", pady=4)
-        ttk.Combobox(p2, textvariable=self.v_enc, values=list(ENCODERS), state="readonly",
-                     width=30).grid(row=5, column=1, columnspan=2, sticky="w", padx=6)
-
-        ttk.Separator(p2).grid(row=6, column=0, columnspan=6, sticky="we", pady=8)
-        ttk.Label(p2, text="o pega el enlace del VOD de Twitch y lo hago todo solo:").grid(
-            row=7, column=0, columnspan=6, sticky="w")
         self.v_twitch = tk.StringVar()
-        self.v_outdir = tk.StringVar(value=self.cfg.get("out_dir") or os.path.join(
+        self.v_outdir = tk.StringVar(value=cfg.get("out_dir") or os.path.join(
             os.path.expanduser("~"), "Videos", "Vortexs Clips"))
-        self.v_auto = tk.BooleanVar(value=self.cfg.get("auto_process", True))
-        tf = ttk.Frame(p2, style="Panel.TFrame")
-        tf.grid(row=8, column=0, columnspan=6, sticky="we", pady=(4, 0))
-        ttk.Entry(tf, textvariable=self.v_twitch, width=46).pack(side="left", fill="x", expand=True)
+        self.v_auto = tk.BooleanVar(value=cfg.get("auto_process", True))
+        self.v_autosync = tk.BooleanVar(value=cfg.get("auto_sync", True))
+        self.v_vertical = tk.BooleanVar(value=cfg.get("vertical", True))
+        self.v_subs = tk.BooleanVar(value=cfg.get("subtitles", True))
+        self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
+        self.cam = cfg.get("cam")
+        self.v_channel = tk.StringVar(value=cfg.get("watch_channel", ""))
+        self.v_watch = tk.BooleanVar(value=cfg.get("watch", False))
+        self.v_startup = tk.BooleanVar(value=cfg.get("startup", False))
+
+        # ---- pestaña VOD
+        ttk.Label(t_vod, text="Pega uno o varios enlaces de VOD de Twitch (se procesan en cola):").grid(
+            row=0, column=0, columnspan=4, sticky="w")
+        tf = ttk.Frame(t_vod, style="Panel.TFrame")
+        tf.grid(row=1, column=0, columnspan=4, sticky="we", pady=(4, 0))
+        ttk.Entry(tf, textvariable=self.v_twitch, width=50).pack(side="left", fill="x", expand=True)
         self.btn_dl = ttk.Button(tf, text="Descargar VOD", style="Accent.TButton", command=self.download_vod)
         self.btn_dl.pack(side="left", padx=6)
-        of = ttk.Frame(p2, style="Panel.TFrame")
-        of.grid(row=9, column=0, columnspan=6, sticky="we", pady=(6, 0))
+        self.lbl_queue = ttk.Label(t_vod, text="", style="Muted.TLabel")
+        self.lbl_queue.grid(row=2, column=0, columnspan=4, sticky="w")
+        ttk.Checkbutton(t_vod, text="Al terminar la descarga, sacar las rondas y generar los vídeos",
+                        variable=self.v_auto).grid(row=3, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        of = ttk.Frame(t_vod, style="Panel.TFrame")
+        of.grid(row=4, column=0, columnspan=4, sticky="we", pady=(6, 0))
         ttk.Button(of, text="Carpeta…", command=self.pick_outdir).pack(side="left")
         self.lbl_outdir = ttk.Label(of, text=self.v_outdir.get(), style="Muted.TLabel")
         self.lbl_outdir.pack(side="left", padx=8)
-        ttk.Checkbutton(p2, text="Al terminar la descarga, sacar las rondas y generar el vídeo",
-                        variable=self.v_auto).grid(row=10, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        ttk.Separator(t_vod).grid(row=5, column=0, columnspan=4, sticky="we", pady=8)
+        vf = ttk.Frame(t_vod, style="Panel.TFrame")
+        vf.grid(row=6, column=0, columnspan=4, sticky="we")
+        ttk.Button(vf, text="o elegir un VOD del PC…", command=self.pick_vod).pack(side="left")
+        self.lbl_vod = ttk.Label(vf, text="Ningún vídeo elegido", style="Muted.TLabel")
+        self.lbl_vod.pack(side="left", padx=8)
+        ttk.Label(t_vod, text="Inicio del directo").grid(row=7, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(t_vod, textvariable=self.v_start, width=19).grid(row=7, column=1, sticky="w", padx=6, pady=(8, 0))
+        ttk.Label(t_vod, text="dd/mm/aaaa hh:mm:ss (con enlace de Twitch se pone sola)", style="Muted.TLabel").grid(
+            row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
 
-        ttk.Separator(p2).grid(row=11, column=0, columnspan=6, sticky="we", pady=8)
-        self.v_autosync = tk.BooleanVar(value=self.cfg.get("auto_sync", True))
-        self.v_vertical = tk.BooleanVar(value=self.cfg.get("vertical", True))
-        self.v_singles = tk.BooleanVar(value=self.cfg.get("singles", True))
-        self.cam = self.cfg.get("cam")
-        ttk.Checkbutton(p2, text="Sincronizar solo cada partida (busca el killfeed en el VOD)",
-                        variable=self.v_autosync).grid(row=12, column=0, columnspan=6, sticky="w")
-        vf2 = ttk.Frame(p2, style="Panel.TFrame")
-        vf2.grid(row=13, column=0, columnspan=6, sticky="we", pady=(4, 0))
+        # ---- pestaña Cortes
+        ttk.Label(t_cut, text="Kills mínimas por ronda").grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(t_cut, from_=2, to=6, textvariable=self.v_min, width=4).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(t_cut, text="Qué cortar").grid(row=1, column=0, sticky="w", pady=(8, 2))
+        ttk.Radiobutton(t_cut, text="Solo las kills (de la primera a la última, con cortes entre ellas)",
+                        value="kills", variable=self.v_mode).grid(row=1, column=1, columnspan=4, sticky="w", pady=(8, 2))
+        kf = ttk.Frame(t_cut, style="Panel.TFrame")
+        kf.grid(row=2, column=1, columnspan=4, sticky="w", padx=(22, 0))
+        ttk.Label(kf, text="Segundos antes de cada kill").pack(side="left")
+        ttk.Entry(kf, textvariable=self.v_kpre, width=4).pack(side="left", padx=4)
+        ttk.Label(kf, text="  y después").pack(side="left")
+        ttk.Entry(kf, textvariable=self.v_kpost, width=4).pack(side="left", padx=4)
+        ttk.Radiobutton(t_cut, text="La ronda completa", value="round", variable=self.v_mode).grid(
+            row=3, column=1, columnspan=4, sticky="w", pady=(6, 2))
+        rf = ttk.Frame(t_cut, style="Panel.TFrame")
+        rf.grid(row=4, column=1, columnspan=4, sticky="w", padx=(22, 0))
+        ttk.Checkbutton(rf, text="Saltar fase de compra", variable=self.v_skipbuy).pack(side="left")
+        ttk.Label(rf, text="   Margen antes / después (s)").pack(side="left")
+        ttk.Entry(rf, textvariable=self.v_pre, width=4).pack(side="left", padx=4)
+        ttk.Entry(rf, textvariable=self.v_post, width=4).pack(side="left")
+        ttk.Separator(t_cut).grid(row=5, column=0, columnspan=5, sticky="we", pady=8)
+        ttk.Checkbutton(t_cut, text="Sincronizar solo cada partida (busca el killfeed en el VOD)",
+                        variable=self.v_autosync).grid(row=6, column=0, columnspan=5, sticky="w")
+        ttk.Label(t_cut, text="Delay / desfase (s)").grid(row=7, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(t_cut, textvariable=self.v_delay, width=8).grid(row=7, column=1, sticky="w", padx=6, pady=(6, 0))
+        self.lbl_delaylog = ttk.Label(t_cut, text="", style="Muted.TLabel")
+        self.lbl_delaylog.grid(row=8, column=0, columnspan=5, sticky="w", pady=(2, 0))
+
+        # ---- pestaña Salida
+        ttk.Label(t_out, text="Codificar con").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(t_out, textvariable=self.v_enc, values=list(ENCODERS), state="readonly",
+                     width=34).grid(row=0, column=1, columnspan=3, sticky="w", padx=6)
+        self.lbl_enc = ttk.Label(t_out, text="", style="Muted.TLabel")
+        self.lbl_enc.grid(row=1, column=1, columnspan=3, sticky="w", padx=6)
+        ttk.Label(t_out, text="Calidad: misma resolución y fps que el directo, sin pasar del bitrate original.",
+                  style="Muted.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 6))
+        vf2 = ttk.Frame(t_out, style="Panel.TFrame")
+        vf2.grid(row=3, column=0, columnspan=4, sticky="we")
         ttk.Checkbutton(vf2, text="Versión vertical 9:16 (como tus TikToks)",
                         variable=self.v_vertical).pack(side="left")
         ttk.Button(vf2, text="Elegir cámara…", command=self.pick_cam).pack(side="left", padx=8)
         self.lbl_cam = ttk.Label(vf2, text=self._cam_text(), style="Muted.TLabel")
         self.lbl_cam.pack(side="left")
-        ttk.Checkbutton(p2, text="Además, un clip suelto por cada ronda (carpeta aparte)",
-                        variable=self.v_singles).grid(row=14, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(t_out, text="Subtítulos automáticos en la vertical (lo que dices, en grande bajo la cámara)",
+                        variable=self.v_subs).grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(t_out, text="Además, un clip suelto por cada ronda (carpeta aparte)",
+                        variable=self.v_singles).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
+
+        # ---- pestaña Automático
+        ttk.Label(t_auto, text="Tu canal de Twitch").grid(row=0, column=0, sticky="w")
+        ttk.Entry(t_auto, textvariable=self.v_channel, width=24).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Checkbutton(t_auto, text="Vigilar el canal: cuando acabe un directo, procesar el VOD solo",
+                        variable=self.v_watch, command=self.on_watch_toggle).grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(t_auto, text="Abrir Vortexs Clips al encender el PC (minimizado)",
+                        variable=self.v_startup, command=self.on_startup_toggle).grid(
+            row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        self.lbl_watch = ttk.Label(t_auto, text="", style="Muted.TLabel")
+        self.lbl_watch.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ttk.Label(t_auto, text="Mira cada 10 minutos. Espera a que termine el directo, descarga el VOD y "
+                               "genera todos los vídeos.\nEl programa tiene que estar abierto (aunque sea minimizado).",
+                  style="Muted.TLabel").grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         # --- 3. partidas
         mid = ttk.Frame(self, padding=(16, 8))
@@ -293,8 +371,18 @@ class App(tk.Tk):
         ttk.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
 
         # --- 4. rondas
-        p4 = self._panel(mid, "4 · Rondas que se van a cortar")
-        p4.grid(row=0, column=1, sticky="nsew")
+        p4o = self._panel(mid, "4 · Rondas y vista previa")
+        p4o.grid(row=0, column=1, sticky="nsew")
+        p4o.rowconfigure(1, weight=1)
+        p4o.columnconfigure(0, weight=1)
+        self.nb4 = ttk.Notebook(p4o)
+        self.nb4.grid(row=1, column=0, sticky="nsew")
+        p4 = ttk.Frame(self.nb4, style="Panel.TFrame", padding=6)
+        self.tab_prev = ttk.Frame(self.nb4, style="Panel.TFrame", padding=6)
+        self.nb4.add(p4, text="  Rondas que se van a cortar  ")
+        self.nb4.add(self.tab_prev, text="  Vista previa  ")
+        self.player = player.Player(self.tab_prev, lambda: self.v_vod.get())
+        self.player.pack(anchor="n")
         p4.rowconfigure(1, weight=1)
         p4.columnconfigure(0, weight=1)
         cols = ("round", "from", "to", "dur")
@@ -413,7 +501,26 @@ class App(tk.Tk):
         return core.CutSettings(min_kills=int(self.v_min.get() or 3),
                                 skip_buy_phase=self.v_skipbuy.get(),
                                 pre_roll_s=f(self.v_pre, 3), post_roll_s=f(self.v_post, 4),
-                                global_adjust_s=f(self.v_delay, 0))
+                                global_adjust_s=f(self.v_delay, 0),
+                                mode=self.v_mode.get(), kill_pre_s=f(self.v_kpre, 2.5),
+                                kill_post_s=f(self.v_kpost, 1.5),
+                                residual_s=float(self.cfg.get("residual_s", 0.0)))
+
+    # ------------------------------------------------------------ delay de Vortexs Live
+    def load_delay(self):
+        try:
+            rows = core.load_delay_log()
+        except Exception:
+            rows = []
+        self.delay_fn = core.make_delay_fn(rows)
+        if rows:
+            self.lbl_delaylog.configure(text=f"✔ Registro de delay de Vortexs Live encontrado ({len(rows)} cambios). "
+                                             "Se usa en vez del número de arriba.")
+        else:
+            self.lbl_delaylog.configure(text="Sin registro de delay de Vortexs Live: se usa el número de arriba.")
+
+    def delay_fn_for_vod(self):
+        return getattr(self, "delay_fn", None)
 
     def vod_start_utc(self):
         txt = self.v_start.get().strip()
@@ -433,7 +540,10 @@ class App(tk.Tk):
                          "calib": self.calib, "out_dir": self.v_outdir.get(),
                          "auto_process": self.v_auto.get(), "auto_sync": self.v_autosync.get(),
                          "vertical": self.v_vertical.get(), "singles": self.v_singles.get(),
-                         "cam": self.cam})
+                         "cam": self.cam, "subtitles": self.v_subs.get(), "mode": self.v_mode.get(),
+                         "kill_pre": self.v_kpre.get(), "kill_post": self.v_kpost.get(),
+                         "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
+                         "startup": self.v_startup.get()})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -450,9 +560,16 @@ class App(tk.Tk):
                 self.after(0, lambda: (setattr(self, "busy", False), done(res)))
             except Exception as e:
                 msg = str(e)
-                self.after(0, lambda: (setattr(self, "busy", False), self.set_progress(0, "Error."),
-                                       self.set_step(None, "Se ha parado por un error"),
-                                       messagebox.showerror(err_title, msg)))
+
+                def fail():
+                    self.busy = False
+                    self.set_progress(0, "Error: " + msg.splitlines()[0][:150] if msg else "Error.")
+                    self.set_step(None, "Se ha parado por un error")
+                    if self.flow_active:
+                        self.flow_failed(f"{err_title}: {msg}")
+                    else:
+                        messagebox.showerror(err_title, msg)
+                self.after(0, fail)
         threading.Thread(target=target, daemon=True).start()
 
     # ------------------------------------------------------------ partidas
@@ -514,7 +631,7 @@ class App(tk.Tk):
             local = m.started_at.astimezone()
             n = len(m.highlight_rounds(st.min_kills))
             if vs and self.vod_info:
-                inv = core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib)
+                inv = core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib, self.delay_fn_for_vod())
                 invt = "Sí" if inv else "No"
             else:
                 inv, invt = None, "—"
@@ -549,7 +666,8 @@ class App(tk.Tk):
             return
         st = self.settings()
         self.checked = {m.match_id for m in self.matches.values()
-                        if core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib)}
+                        if core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib,
+                                            self.delay_fn_for_vod())}
         self.refresh_matches()
 
     def selected_match(self):
@@ -571,7 +689,9 @@ class App(tk.Tk):
         guess = ""
         if self.vod_info:
             try:
-                off = core.match_offset_s(m, self.vod_start_utc(), {}) + self.settings().global_adjust_s
+                off = core.match_offset_s(m, self.vod_start_utc(), self.calib)
+                if not core.is_synced(self.calib, m.match_id):
+                    off += core.delay_offset(m, self.settings(), self.delay_fn_for_vod())
                 guess = core.fmt_ts(off + first / 1000)
             except ValueError:
                 pass
@@ -586,9 +706,9 @@ class App(tk.Tk):
                   style="H.TLabel").pack(anchor="w")
         ttk.Label(fr, text=(f"Busca en el VOD tu PRIMERA kill de esta partida:\n"
                             f"ronda {k.round + 1}, con {k.weapon or 'arma desconocida'}.\n\n"
-                            f"1. Pulsa «Buscar en el VOD»: se abre el vídeo un poco antes, con el minuto\n"
-                            f"    del VOD en grande arriba (flechas ←/→ 10 s, ↑/↓ 1 min, espacio pausa).\n"
-                            f"2. Cuando salga tu kill en el killfeed, pausa y escribe aquí ese minuto.\n"
+                            f"1. Abajo se reproduce el VOD un minuto antes de donde debería estar.\n"
+                            f"    Muévete con los botones (o flechas ←/→ 10 s, ↑/↓ 1 min, espacio pausa).\n"
+                            f"2. Cuando salga tu kill en el killfeed, pausa y pulsa «✔ Usar este momento».\n"
                             f"3. Pulsa «Guardar».")
                   ).pack(anchor="w", pady=8)
         v = tk.StringVar(value=guess)
@@ -600,12 +720,19 @@ class App(tk.Tk):
         bf = ttk.Frame(fr, style="Panel.TFrame")
         bf.pack(anchor="w", pady=(10, 0))
 
+        pl = player.Player(fr, lambda: self.v_vod.get(),
+                           on_pick=lambda t: v.set(core.fmt_ts(t)[:11] if t >= 3600 else core.fmt_ts(t)))
+        pl.pack(anchor="w", pady=(10, 0))
+        dlg.bind("<Destroy>", lambda e: pl.stop() if e.widget is dlg else None)
+
         def look():
             try:
                 t = core.parse_ts(v.get() or guess)
             except ValueError:
                 t = 0
-            self.play(max(0, t - 60), clock=True)
+            pl.open(max(0, t - 60), t + 240)
+        if guess:
+            self.after(300, look)
 
         def ok():
             try:
@@ -656,6 +783,7 @@ class App(tk.Tk):
                     "No se pudo leer el vídeo")
 
     def set_vod(self, p, info, start_utc=None):
+        self.load_delay()
         self.v_vod.set(p)
         self.vod_info = info
         self.clips = []
@@ -669,6 +797,94 @@ class App(tk.Tk):
             self.v_start.set(info["start_guess"].astimezone().strftime("%d/%m/%Y %H:%M:%S"))
         self.set_progress(1, "VOD cargado. Revisa la hora de inicio y pulsa «Marcar las que están en el VOD».")
         self.auto_check()
+
+    # ------------------------------------------------------------ gráfica
+    def detect_encoder(self):
+        def work():
+            e = core.best_encoder()
+            self.after(0, lambda: self.lbl_enc.configure(text=f"Detectado: {core.ENC_NAMES.get(e, e)}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ vigilar el canal
+    def on_watch_toggle(self):
+        ch = twitch.channel_name(self.v_channel.get())
+        if self.v_watch.get() and not ch:
+            messagebox.showinfo(APP_NAME, "Escribe primero el nombre de tu canal de Twitch.")
+            self.v_watch.set(False)
+            return
+        self.v_channel.set(ch)
+        self.persist()
+        if not self.v_watch.get():
+            self.lbl_watch.configure(text="Vigilancia apagada.")
+            return
+        self.lbl_watch.configure(text="Preparando la vigilancia…")
+
+        def base():
+            try:
+                vods = twitch.latest_vods(ch, 5)
+                ids = [v["id"] for v in vods]
+                self.after(0, lambda: (self.cfg.__setitem__("processed_vods", ids), self.persist(),
+                                       self.lbl_watch.configure(
+                                           text=f"Vigilando twitch.tv/{ch}. Procesaré los directos NUEVOS a partir de ahora.")))
+                self.after(10 * 60_000, self.watch_tick)
+            except Exception as e:
+                msg = str(e)
+                self.after(0, lambda: self.lbl_watch.configure(text="⚠ No pude leer el canal: " + msg[:120]))
+        threading.Thread(target=base, daemon=True).start()
+
+    def watch_tick(self):
+        if not self.v_watch.get():
+            return
+        self.after(10 * 60_000, self.watch_tick)          # siguiente comprobación
+        ch = twitch.channel_name(self.v_channel.get())
+        if not ch:
+            return
+
+        def work():
+            stamp = time.strftime("%H:%M")
+            try:
+                if twitch.is_live(ch):
+                    self.after(0, lambda: self.lbl_watch.configure(
+                        text=f"{stamp} · Estás en directo: espero a que termine para procesar el VOD."))
+                    return
+                vods = twitch.latest_vods(ch, 5)
+            except Exception as e:
+                msg = str(e)
+                self.after(0, lambda: self.lbl_watch.configure(text=f"{stamp} · ⚠ {msg[:120]}"))
+                return
+
+            def apply():
+                done_ids = set(self.cfg.get("processed_vods", []))
+                new = [v for v in vods if v["id"] not in done_ids]
+                if new:
+                    self.cfg["processed_vods"] = (list(done_ids) + [v["id"] for v in new])[-50:]
+                    self.persist()
+                    self.enqueue([v["url"] for v in reversed(new)], "watch")
+                    self.lbl_watch.configure(text=f"{stamp} · Directo nuevo encontrado: «{new[0]['title'][:50]}». Procesando…")
+                else:
+                    self.lbl_watch.configure(text=f"{stamp} · Sin directos nuevos. Vuelvo a mirar en 10 min.")
+            self.after(0, apply)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_startup_toggle(self):
+        folder = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu",
+                              "Programs", "Startup")
+        path = os.path.join(folder, "Vortexs Clips.cmd")
+        try:
+            if self.v_startup.get():
+                os.makedirs(folder, exist_ok=True)
+                if getattr(sys, "frozen", False):
+                    line = f'@start "" "{sys.executable}" --minimized\r\n'
+                else:
+                    here = os.path.dirname(os.path.abspath(__file__))
+                    line = f'@cd /d "{here}"\r\n@start "" pyw app.py --minimized\r\n'
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(line)
+            elif os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"No se pudo cambiar el inicio con Windows:\n{e}")
+        self.persist()
 
     def pick_outdir(self):
         d = filedialog.askdirectory(title="Carpeta para los VODs y los vídeos",
@@ -684,21 +900,67 @@ class App(tk.Tk):
         self.btn_dl.configure(state="disabled" if running else "normal")
         self.btn_cancel.configure(state="normal" if running else "disabled")
 
+    # ------------------------------------------------------------ cola de VODs
     def download_vod(self):
-        url = self.v_twitch.get().strip()
-        if not twitch.is_twitch_vod(url):
-            messagebox.showinfo(APP_NAME, "Pega un enlace de VOD de Twitch, por ejemplo:\n"
+        urls = twitch.find_vod_urls(self.v_twitch.get())
+        if not urls:
+            messagebox.showinfo(APP_NAME, "Pega uno o varios enlaces de VOD de Twitch, por ejemplo:\n"
                                           "https://www.twitch.tv/videos/1234567890")
             return
         if not core.find_tool("ffmpeg"):
-            messagebox.showerror(APP_NAME, "Falta ffmpeg. Ejecuta Instalar.bat.")
+            messagebox.showerror(APP_NAME, "Falta ffmpeg. Reinstala Vortexs Clips.")
             return
-        auto = self.v_auto.get()
-        if auto and not self.v_key.get().strip():
+        if self.v_auto.get() and not self.v_key.get().strip():
             if not messagebox.askyesno(APP_NAME, "No has puesto la clave de la API, así que solo "
-                                                 "descargaré el VOD (sin sacar las rondas).\n\n¿Seguir?"):
+                                                 "descargaré los VODs (sin sacar las rondas).\n\n¿Seguir?"):
                 return
-            auto = False
+        self.v_twitch.set("")
+        self.enqueue(urls, "manual")
+
+    def enqueue(self, urls, source):
+        known = {u for u, _ in self.queue}
+        for u in urls:
+            if u not in known and u != self.current_url:
+                self.queue.append((u, source))
+        self.batch_size = max(self.batch_size, len(self.queue) + (1 if self.flow_active else 0))
+        self.update_queue_label()
+        self.after(100, self.next_in_queue)
+
+    def update_queue_label(self):
+        n = len(self.queue)
+        cur = "Procesando 1 VOD" if self.flow_active else ""
+        txt = (f"{cur}{' · ' if cur and n else ''}{n} en cola" if n else cur)
+        self.lbl_queue.configure(text=txt)
+
+    def unattended(self):
+        return self.flow_active and (self.flow_source == "watch" or self.batch_size > 1)
+
+    def next_in_queue(self):
+        if self.flow_active or self.busy:
+            return
+        if not self.queue:
+            self.batch_size = 0
+            self.update_queue_label()
+            return
+        url, source = self.queue.pop(0)
+        self.flow_active, self.flow_source, self.current_url = True, source, url
+        self.update_queue_label()
+        self._download_one(url, self.v_auto.get() and bool(self.v_key.get().strip()))
+
+    def flow_done(self, msg=""):
+        self.flow_active, self.current_url = False, None
+        if msg:
+            self.status(msg)
+        self.update_queue_label()
+        self.after(1500, self.next_in_queue)
+
+    def flow_failed(self, msg):
+        if not self.unattended():
+            messagebox.showerror(APP_NAME, msg)
+        self.errors_log.append(msg)
+        self.flow_done("⚠ " + msg.splitlines()[0][:160])
+
+    def _download_one(self, url, auto):
         self.persist()
         out_dir = self.v_outdir.get()
         self.stop_flag = False
@@ -726,12 +988,11 @@ class App(tk.Tk):
         def done(res):
             info, path, probe = res
             self.set_vod(path, probe, info["start"])
-            self.v_twitch.set("")
             if auto:
                 self.auto_process()
             else:
                 self.finish_steps("VOD descargado")
-                self.status(path)
+                self.flow_done(path)
         self.run_bg(work, done, "No se pudo descargar el VOD")
 
     def auto_process(self):
@@ -739,6 +1000,7 @@ class App(tk.Tk):
         try:
             vs = self.vod_start_utc()
         except ValueError:
+            self.flow_done("No sé a qué hora empezó el directo.")
             return
         riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
         self.set_step(1)
@@ -771,8 +1033,10 @@ class App(tk.Tk):
             if not self.checked:
                 self.set_step(None, "No hay partidas en este VOD")
                 self.set_progress(0, "No hay partidas de competitivo dentro de este VOD.")
-                messagebox.showinfo(APP_NAME, "He descargado el VOD, pero no encuentro partidas de "
-                                              "competitivo jugadas durante ese directo.")
+                if not self.unattended():
+                    messagebox.showinfo(APP_NAME, "He descargado el VOD, pero no encuentro partidas de "
+                                                  "competitivo jugadas durante ese directo.")
+                self.flow_done("Sin partidas de competitivo en este VOD.")
                 return
             if self.v_autosync.get():
                 self.run_sync(sorted(self.checked), then=self._finish_auto)
@@ -786,8 +1050,10 @@ class App(tk.Tk):
         self.compute()
         if not self.clips:
             self.set_step(None, "Sin rondas de 3K o más")
-            messagebox.showinfo(APP_NAME, f"En las partidas de este VOD no hay rondas de "
-                                          f"{self.settings().min_kills} kills o más.")
+            if not self.unattended():
+                messagebox.showinfo(APP_NAME, f"En las partidas de este VOD no hay rondas de "
+                                              f"{self.settings().min_kills} kills o más.")
+            self.flow_done("Sin rondas para cortar en este VOD.")
             return
         vod = self.v_vod.get()
         base = os.path.splitext(os.path.basename(vod))[0]
@@ -809,6 +1075,7 @@ class App(tk.Tk):
             messagebox.showinfo(APP_NAME, "Marca al menos una partida (☐ → ☑).")
             return
         st = self.settings()
+        dfn = self.delay_fn_for_vod()
         vod, dur = self.v_vod.get(), self.vod_info["duration"]
         self.stop_flag = False
         self.set_running(True)
@@ -827,7 +1094,7 @@ class App(tk.Tk):
                     tmp_cal = {m.match_id: c} if c else {}
                     exp = core.match_offset_s(m, vs, tmp_cal)
                     if not c:
-                        exp += st.global_adjust_s
+                        exp += core.delay_offset(m, st, dfn)
                     res[m.match_id] = sync.sync_match(vod, m, exp, dur, None, lambda: self.stop_flag)
                 return res
             finally:
@@ -836,7 +1103,13 @@ class App(tk.Tk):
         def done(res):
             good = bad = 0
             shifts = []
+            learned = []
             for mid, r in res.items():
+                if r.ok and dfn is not None and mid in self.matches:
+                    m_ = self.matches[mid]
+                    d_ = dfn(m_.started_at)
+                    if d_ is not None:
+                        learned.append(r.offset_s - core.match_offset_s(m_, vs, {}) - d_)
                 if r.ok:
                     self.calib[mid] = {"offset_s": r.offset_s, "auto": True,
                                        "conf": round(r.confidence, 2)}
@@ -844,6 +1117,9 @@ class App(tk.Tk):
                     shifts.append(r.shift_s)
                 else:
                     bad += 1
+            if learned:
+                learned.sort()
+                self.cfg["residual_s"] = round(learned[len(learned) // 2], 2)
             self.persist()
             self.auto_check()
             self.set_progress(1, f"Sincronizadas solas: {good}" + (f" · sin patrón claro: {bad} "
@@ -971,7 +1247,8 @@ class App(tk.Tk):
             messagebox.showinfo(APP_NAME, "Marca al menos una partida (☐ → ☑).")
             return
         self.persist()
-        self.clips = core.build_clips(ms, vs, self.vod_info["duration"], self.settings(), self.calib)
+        self.clips = core.build_clips(ms, vs, self.vod_info["duration"], self.settings(), self.calib,
+                                      self.delay_fn_for_vod())
         self.fill_clips()
         total = sum(c.vod_end - c.vod_start for c in self.clips)
         self.status(f"{len(self.clips)} rondas · {core.fmt_ts(total).split('.')[0]} de vídeo. "
@@ -989,7 +1266,8 @@ class App(tk.Tk):
         if not sel:
             return
         c = self.clips[int(sel[0])]
-        self.play(c.vod_start, c.vod_end - c.vod_start, clock=True)
+        self.nb4.select(self.tab_prev)
+        self.player.open(c.vod_start, c.vod_end)
 
     def remove_clips(self):
         idx = sorted((int(i) for i in self.tv_c.selection()), reverse=True)
@@ -1011,7 +1289,7 @@ class App(tk.Tk):
                                            filetypes=[("MP4", "*.mp4")])
         if not out:
             return
-        if self.v_vertical.get() and not self.cam and not self.cfg.get("cam_asked"):
+        if self.v_vertical.get() and not self.cam and not self.cfg.get("cam_asked") and not self.unattended():
             self.cfg["cam_asked"] = True
             if messagebox.askyesno(APP_NAME, "Para la versión vertical como tus TikToks tengo que saber dónde está "
                                              "tu cámara en el directo.\n\n¿La marcas ahora? (solo una vez)"):
@@ -1042,6 +1320,8 @@ class App(tk.Tk):
                 cb(frac, "  ·  ".join(bits))
 
         vertical, singles, cam = self.v_vertical.get(), self.v_singles.get(), self.cam
+        subs = vertical and self.v_subs.get()
+        warnings = []
 
         def sub(title):
             self.after(0, lambda: self.lbl_step.configure(text=title))
@@ -1052,16 +1332,26 @@ class App(tk.Tk):
                 core.render(vod, clips, out, encoder=enc, show_label=False, progress=prog, should_stop=stop)
                 made = [out]
                 base = os.path.splitext(out)[0]
+                words = None
+                if subs:
+                    sub("Transcribiendo lo que dices para los subtítulos…")
+                    try:
+                        words = subtitles.transcribe(out, cb, stop)
+                    except Exception as e:
+                        if "Cancelado" in str(e):
+                            raise
+                        warnings.append(f"Subtítulos: {e}")
                 if vertical:
                     sub("Generando la versión vertical (TikTok)…")
                     v = base + " (vertical).mp4"
-                    core.make_vertical(out, v, cam, enc, lambda f, t: cb(f, "Versión vertical 9:16…"), stop)
+                    core.make_vertical(out, v, cam, enc, lambda f, t: cb(f, "Versión vertical 9:16…"), stop,
+                                       words=words)
                     made.append(v)
                 if singles:
                     sub("Sacando un clip por ronda…")
                     folder = base + " - clips sueltos"
                     core.export_singles(out, clips, folder, vertical_cam=cam, vertical=vertical,
-                                        encoder=enc, progress=cb, should_stop=stop)
+                                        encoder=enc, progress=cb, should_stop=stop, words=words)
                     made.append(folder)
                 return made
             finally:
@@ -1071,11 +1361,18 @@ class App(tk.Tk):
             path = made[0]
             self.finish_steps("¡Vídeos listos!")
             self.status(path)
+            if warnings:
+                self.status(path + "   ⚠ " + " · ".join(warnings)[:200])
+            if self.unattended():
+                self.flow_done(f"Listo: {os.path.basename(path)}")
+                return
             extra = ""
             if vertical:
                 extra += "\n• Versión vertical 9:16"
             if singles:
                 extra += "\n• Carpeta con un clip por ronda"
+            if self.flow_active:
+                self.after(2000, lambda: self.flow_done(f"Listo: {os.path.basename(path)}"))
             if messagebox.askyesno(APP_NAME, f"¡Listo! {len(clips)} rondas.\n\n• Vídeo horizontal{extra}\n\n"
                                              f"Todo está en:\n{os.path.dirname(path)}\n\n¿Abrir la carpeta?"):
                 if os.name == "nt":
@@ -1090,7 +1387,7 @@ class App(tk.Tk):
     def check_update(self, silent=True):
         def target():
             try:
-                info = updater.check()
+                info = updater.latest()
             except Exception as e:
                 if not silent:
                     msg = str(e)
@@ -1101,11 +1398,28 @@ class App(tk.Tk):
         threading.Thread(target=target, daemon=True).start()
 
     def offer_update(self, info, silent):
-        if not info:
+        newer = info and info["version"] and updater._ver(info["version"]) > updater._ver(VERSION)
+        working = self.busy or self.flow_active or str(self.btn_cancel.cget("state")) == "normal"
+        # versión antigua (Iniciar.bat) -> ofrecer pasarse a la instalable una vez
+        if not updater.FROZEN and info and info.get("setup") and (newer or not self.cfg.get("migrate_asked")):
+            if working:
+                return
+            self.cfg["migrate_asked"] = True
+            self.persist()
+            if messagebox.askyesno(APP_NAME, "Ya hay una versión INSTALABLE de Vortexs Clips (.exe):\n\n"
+                                             "• Se abre con doble clic, con su icono, sin ventanas negras\n"
+                                             "• Trae ffmpeg incluido\n"
+                                             "• Se actualiza sola en silencio\n\n"
+                                             "Tu clave, ajustes y cámara se mantienen.\n\n¿La instalo ahora?"):
+                self._run_update(lambda prog: updater.run_installer(info["setup"], prog, silent=False))
+                return
+            if not newer:
+                return
+        if not newer:
             if not silent:
                 messagebox.showinfo(APP_NAME, f"Ya tienes la última versión ({VERSION}).")
             return
-        if self.busy or str(self.btn_cancel.cget("state")) == "normal":
+        if working:
             if not silent:
                 messagebox.showinfo(APP_NAME, "Hay una versión nueva. Actualiza cuando termine "
                                               "lo que está haciendo el programa.")
@@ -1115,18 +1429,25 @@ class App(tk.Tk):
         if not messagebox.askyesno(APP_NAME, f"Hay una versión nueva: {info['version']} "
                                              f"(tienes la {VERSION}).{notes}\n\n¿Actualizar ahora?"):
             return
+        if updater.FROZEN and info.get("setup"):
+            self._run_update(lambda prog: updater.run_installer(info["setup"], prog, silent=True))
+        else:
+            def zip_update(prog):
+                updater.apply(info["url"], prog)
+                return "restart"
+            self._run_update(zip_update)
+
+    def _run_update(self, fn):
         self.persist()
         self.set_step(None, "Actualizando el programa…")
         self.set_progress(0, "Descargando actualización…")
         cb = self.progress_cb()
 
-        def prog(p):
-            cb(p, "Descargando actualización…")
-
-        def done(_):
-            messagebox.showinfo(APP_NAME, "Actualizado. El programa se va a reiniciar.")
-            updater.restart()
-        self.run_bg(lambda: updater.apply(info["url"], prog), done, "No se pudo actualizar")
+        def done(res):
+            if res == "restart":
+                messagebox.showinfo(APP_NAME, "Actualizado. El programa se va a reiniciar.")
+                updater.restart()
+        self.run_bg(lambda: fn(lambda p: cb(p, "Descargando actualización…")), done, "No se pudo actualizar")
 
     def on_close(self):
         self.persist()

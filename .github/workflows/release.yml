@@ -1,7 +1,8 @@
 name: Publicar versión
 
-# Cada vez que llega a main un version.py con un número nuevo,
-# se crea la Release vX.Y.Z con VortexsClips.zip y los programas se actualizan solos.
+# Cada vez que llega a main un version.py con un número nuevo:
+#  1) se crea la Release vX.Y.Z con VortexsClips.zip (código, para instalaciones antiguas)
+#  2) se construye en Windows VortexsClips-Setup.exe (programa + ffmpeg) y se añade a la Release
 on:
   push:
     branches: [main]
@@ -14,6 +15,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      ver: ${{ steps.v.outputs.ver }}
+      skip: ${{ steps.exists.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +27,7 @@ jobs:
         run: |
           VER=$(python3 -c "import version; print(version.VERSION)")
           echo "tag=v$VER" >> "$GITHUB_OUTPUT"
-          echo "Versión: $VER"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
 
       - name: ¿Ya existe?
         id: exists
@@ -30,16 +35,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "${{ steps.v.outputs.tag }}" >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "Ya publicada, nada que hacer."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "Ya publicada."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Empaquetar
+      - name: Empaquetar código
         if: steps.exists.outputs.skip == 'false'
         run: |
           mkdir -p dist/VortexsClips
-          cp app.py core.py twitch.py sync.py updater.py version.py Instalar.bat Iniciar.bat README.md dist/VortexsClips/
+          cp *.py icon.ico Instalar.bat Iniciar.bat README.md dist/VortexsClips/
           cd dist && zip -r VortexsClips.zip VortexsClips
 
       - name: Crear Release
@@ -49,3 +54,48 @@ jobs:
         run: |
           gh release create "${{ steps.v.outputs.tag }}" dist/VortexsClips.zip \
             --target "$GITHUB_SHA" --title "Vortexs Clips ${{ steps.v.outputs.tag }}" --generate-notes
+
+  windows:
+    needs: release
+    if: needs.release.outputs.skip == 'false'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Construir el programa (.exe)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          pyinstaller --noconfirm --clean --windowed --onedir --name VortexsClips `
+            --icon icon.ico --add-data "icon.ico;." app.py
+          if (!(Test-Path dist\VortexsClips\VortexsClips.exe)) { throw "No se generó el .exe" }
+
+      - name: Descargar ffmpeg
+        shell: pwsh
+        run: |
+          $u = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
+          Invoke-WebRequest $u -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffx
+          $bin = Get-ChildItem ffx -Recurse -Directory -Filter bin | Select-Object -First 1
+          New-Item -ItemType Directory -Force ffmpeg\bin | Out-Null
+          Copy-Item "$($bin.FullName)\*" ffmpeg\bin -Recurse
+          if (!(Test-Path ffmpeg\bin\ffplay.exe)) { throw "Falta ffplay" }
+          ffmpeg\bin\ffmpeg.exe -hide_banner -filters | Select-String " ass "
+
+      - name: Crear instalador
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=${{ needs.release.outputs.ver }}" installer.iss
+          if (!(Test-Path dist\VortexsClips-Setup.exe)) { throw "No se generó el instalador" }
+
+      - name: Subir instalador a la Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.release.outputs.tag }}" dist\VortexsClips-Setup.exe --clobber

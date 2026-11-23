@@ -15,7 +15,8 @@ import zipfile
 
 from version import REPO, VERSION
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+FROZEN = getattr(sys, "frozen", False)          # True en la versión instalada (.exe)
+APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
 KEEP = {"ffmpeg"}   # carpetas locales que nunca se borran ni se pisan
 
@@ -29,18 +30,51 @@ def _ver(v: str) -> tuple:
     return tuple(out + [0] * (3 - len(out)))
 
 
-def check() -> dict | None:
-    """Devuelve {'version', 'url', 'notes'} si hay una versión más nueva; si no, None."""
+def latest() -> dict:
+    """Última versión publicada: {'version','url' (zip),'setup' (instalador .exe o None),'notes'}."""
     req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json",
                                                "User-Agent": "VortexsClips-Updater"})
     with urllib.request.urlopen(req, timeout=15) as r:
         rel = json.loads(r.read().decode("utf-8"))
-    tag = rel.get("tag_name", "")
-    if not tag or _ver(tag) <= _ver(VERSION):
+    assets = rel.get("assets", [])
+    z = next((a for a in assets if a.get("name", "").lower().endswith(".zip")), None)
+    st = next((a for a in assets if a.get("name", "").lower().endswith("setup.exe")), None)
+    return {"version": rel.get("tag_name", "").lstrip("vV"),
+            "url": z["browser_download_url"] if z else rel.get("zipball_url"),
+            "setup": st["browser_download_url"] if st else None,
+            "notes": rel.get("body") or ""}
+
+
+def check() -> dict | None:
+    """La última versión si es más nueva que la instalada; si no, None."""
+    info = latest()
+    if not info["version"] or _ver(info["version"]) <= _ver(VERSION):
         return None
-    asset = next((a for a in rel.get("assets", []) if a.get("name", "").lower().endswith(".zip")), None)
-    url = asset["browser_download_url"] if asset else rel.get("zipball_url")
-    return {"version": tag.lstrip("vV"), "url": url, "notes": rel.get("body") or ""}
+    return info
+
+
+def run_installer(url: str, progress=None, silent: bool = True) -> None:
+    """Descarga el instalador y lo lanza. En silencio: actualiza y vuelve a abrir el programa solo."""
+    dst = os.path.join(tempfile.gettempdir(), "VortexsClips-Setup.exe")
+    req = urllib.request.Request(url, headers={"User-Agent": "VortexsClips-Updater"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(dst + ".part", "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            b = r.read(1 << 16)
+            if not b:
+                break
+            f.write(b)
+            done += len(b)
+            if progress and total:
+                progress(done / total)
+    os.replace(dst + ".part", dst)
+    args = [dst]
+    if silent:
+        args += ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"]
+    flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    subprocess.Popen(args, creationflags=flags, close_fds=True)
+    os._exit(0)
 
 
 def apply(url: str, progress=None) -> None:
@@ -86,6 +120,9 @@ def apply(url: str, progress=None) -> None:
 
 
 def restart() -> None:
+    if FROZEN:
+        subprocess.Popen([sys.executable], cwd=APP_DIR)
+        os._exit(0)
     exe = sys.executable
     if os.name == "nt" and exe.lower().endswith("python.exe"):
         pyw = exe[:-10] + "pythonw.exe"

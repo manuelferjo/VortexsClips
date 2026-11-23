@@ -75,6 +75,12 @@ class Clip:
     round: Round
     vod_start: float   # segundos en el VOD
     vod_end: float
+    part: int = 0      # en modo "solo kills", trozo dentro de la ronda
+    parts: int = 1
+
+    @property
+    def group(self) -> tuple:
+        return (self.match.match_id, self.round.index)
 
     @property
     def label(self) -> str:
@@ -288,6 +294,19 @@ class CutSettings:
     pre_roll_s: float = 3.0     # segundos antes de que bajen las barreras
     post_roll_s: float = 4.0    # segundos tras el último suceso de la ronda
     global_adjust_s: float = 0.0  # delay del directo u otro desfase
+    mode: str = "round"           # "round" = ronda completa · "kills" = solo las kills
+    kill_pre_s: float = 2.5       # modo kills: segundos antes de cada kill
+    kill_post_s: float = 1.5      # modo kills: segundos después de cada kill
+    residual_s: float = 0.0       # con registro de delay de Vortexs Live: corrección fija aprendida
+
+
+def delay_offset(m: "Match", settings: CutSettings, delay_fn=None) -> float:
+    """Lo que hay que sumar a la hora para un partido sin sincronizar."""
+    if delay_fn is not None:
+        d = delay_fn(m.started_at)
+        if d is not None:
+            return d + settings.residual_s
+    return settings.global_adjust_s
 
 
 def match_offset_s(match: Match, vod_start_utc: datetime, calib: dict) -> float:
@@ -311,8 +330,30 @@ def is_synced(calib: dict, match_id: str) -> bool:
     return c.get("offset_s") is not None or c.get("first_kill_vod_s") is not None
 
 
+def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
+                   vod_duration_s: float) -> list[tuple[float, float]]:
+    """Modo solo kills: un trozo alrededor de cada kill tuya; las kills seguidas se juntan."""
+    ts = sorted(base + k.t_match / 1000 for k in m.kills
+                if k.round == r.index and k.killer == m.my_puuid)
+    segs: list[list[float]] = []
+    for t in ts:
+        a, b = t - settings.kill_pre_s, t + settings.kill_post_s
+        if segs and a <= segs[-1][1] + 0.05:
+            segs[-1][1] = max(segs[-1][1], b)
+        else:
+            segs.append([a, b])
+    out = []
+    for a, b in segs:
+        a = max(0.0, a)
+        if vod_duration_s:
+            b = min(vod_duration_s, b)
+        if b - a >= 0.5:
+            out.append((a, b))
+    return out
+
+
 def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: float,
-                settings: CutSettings, calib: dict | None = None) -> list[Clip]:
+                settings: CutSettings, calib: dict | None = None, delay_fn=None) -> list[Clip]:
     calib = calib or {}
     clips: list[Clip] = []
     for m in matches:
@@ -320,10 +361,16 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
         uses_calib = is_synced(calib, m.match_id)
         base = match_offset_s(m, vod_start_utc, calib)
         if not uses_calib:
-            base += settings.global_adjust_s
+            base += delay_offset(m, settings, delay_fn)
         base += float(c.get("extra_s", 0.0))
         for r in m.highlight_rounds(settings.min_kills):
             if r.start_match_ms is None:
+                continue
+            if settings.mode == "kills":
+                segs = _kill_segments(m, r, base, settings, vod_duration_s)
+                if segs and (segs[0][0] < (vod_duration_s or 1e12)) and segs[-1][1] > 0:
+                    for i, (a, b) in enumerate(segs):
+                        clips.append(Clip(m, r, a, b, i, len(segs)))
                 continue
             start_round_ms = r.start_match_ms
             # El reloj de ronda de Riot empieza cuando bajan las barreras (tras la compra).
@@ -350,19 +397,37 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
 
 
 def match_in_vod(m: Match, vod_start_utc: datetime, vod_duration_s: float,
-                 settings: CutSettings, calib: dict | None = None) -> bool:
+                 settings: CutSettings, calib: dict | None = None, delay_fn=None) -> bool:
     calib = calib or {}
     base = match_offset_s(m, vod_start_utc, calib)
     if not is_synced(calib, m.match_id):
-        base += settings.global_adjust_s
+        base += delay_offset(m, settings, delay_fn)
     end = base + (m.length_ms / 1000 if m.length_ms else 3000)
     return end > 0 and base < vod_duration_s
 
 
+# ---------------------------------------------------------------- rutas
+def app_dir() -> str:
+    """Carpeta del programa (junto al .exe si está instalado, o junto a los .py)."""
+    import sys
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def data_dir() -> str:
+    """Carpeta con permisos de escritura para descargas (yt-dlp, transcriptor…)."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "VortexsClips")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 # ---------------------------------------------------------------- vídeo
 def find_tool(name: str) -> str | None:
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = app_dir()
     for cand in (os.path.join(here, "ffmpeg", "bin", name + ".exe"),
+                 os.path.join(data_dir(), name + ".exe"),
                  os.path.join(here, "ffmpeg", name + ".exe"),
                  os.path.join(here, name + ".exe")):
         if os.path.isfile(cand):
@@ -452,14 +517,82 @@ def _has_audio(vod_path: str) -> bool:
     return bool(r.stdout.strip())
 
 
+_ENC_CACHE: dict = {}
+ENC_ORDER = ["nvenc", "amf", "qsv", "x264"]
+ENC_NAMES = {"nvenc": "NVIDIA (NVENC)", "amf": "AMD (AMF)", "qsv": "Intel (QuickSync)", "x264": "CPU (x264)"}
+# calidad objetivo; se limita al bitrate del original (x1,25) para no inflar el archivo
+QUALITY = {"bitrate_kbps": None}
+
+
+def encoder_works(enc: str) -> bool:
+    if enc == "x264":
+        return True
+    if enc in _ENC_CACHE:
+        return _ENC_CACHE[enc]
+    ffmpeg = find_tool("ffmpeg")
+    codec = {"nvenc": "h264_nvenc", "amf": "h264_amf", "qsv": "h264_qsv"}[enc]
+    ok = False
+    if ffmpeg:
+        r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "color=black:s=1280x720:d=0.5", "-c:v", codec, "-f", "null", "-"],
+                           capture_output=True, text=True, timeout=60, **_no_window())
+        ok = r.returncode == 0
+    _ENC_CACHE[enc] = ok
+    return ok
+
+
+def best_encoder() -> str:
+    """La gráfica primero (NVIDIA, AMD, Intel); si ninguna funciona, la CPU."""
+    for e in ENC_ORDER:
+        if encoder_works(e):
+            return e
+    return "x264"
+
+
+def resolve_encoder(enc: str) -> str:
+    if enc in (None, "", "auto"):
+        return best_encoder()
+    return enc if encoder_works(enc) else "x264"
+
+
+def source_video_kbps(path: str) -> int | None:
+    """Bitrate de vídeo del original (para no generar más grande ni peor que el directo)."""
+    ffprobe = find_tool("ffprobe")
+    if not ffprobe:
+        return None
+    r = subprocess.run([ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
+                       capture_output=True, text=True, **_no_window())
+    try:
+        info = json.loads(r.stdout)
+    except Exception:
+        return None
+    v = next((x for x in info.get("streams", []) if x.get("codec_type") == "video"), {})
+    a = next((x for x in info.get("streams", []) if x.get("codec_type") == "audio"), {})
+    br = v.get("bit_rate")
+    if br and str(br).isdigit():
+        return int(br) // 1000
+    total = (info.get("format") or {}).get("bit_rate")
+    if total and str(total).isdigit():
+        ab = int(a.get("bit_rate") or 160000) if str(a.get("bit_rate") or "").isdigit() else 160000
+        return max(1000, (int(total) - ab) // 1000)
+    return None
+
+
 def _venc(encoder: str) -> list[str]:
+    encoder = resolve_encoder(encoder)
+    src = QUALITY.get("bitrate_kbps")
+    cap = []
+    if src:
+        mx = max(6000, int(src * 1.25))
+        cap = ["-maxrate", f"{mx}k", "-bufsize", f"{mx * 2}k"]
     if encoder == "nvenc":
-        return ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
+        return ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19",
+                "-b:v", "0", *cap, "-profile:v", "high"]
     if encoder == "qsv":
-        return ["-c:v", "h264_qsv", "-global_quality", "20"]
+        return ["-c:v", "h264_qsv", "-preset", "slower", "-global_quality", "19", *cap]
     if encoder == "amf":
-        return ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "19", "-qp_p", "19"]
-    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+        return ["-c:v", "h264_amf", "-quality", "quality", "-rc", "qvbr", "-qvbr_quality_level", "20", *cap]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", *cap, "-profile:v", "high"]
 
 
 BATCH = 20   # rondas por pasada de ffmpeg
@@ -531,6 +664,7 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
         raise RuntimeError("No encuentro ffmpeg. Instala ffmpeg (ver README).")
     if not clips:
         raise RuntimeError("No hay rondas que cortar.")
+    QUALITY["bitrate_kbps"] = source_video_kbps(vod_path)
     venc = _venc(encoder)
     font = _font_for_drawtext() if show_label else None
     audio = _has_audio(vod_path)
@@ -577,31 +711,42 @@ def write_markers(clips: list[Clip], path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write("VIDEO FINAL | VOD ORIGINAL | RONDA\n")
         for c in clips:
+            part = f" [trozo {c.part + 1}/{c.parts}]" if c.parts > 1 else ""
             f.write(f"{fmt_ts(t)} | {fmt_ts(c.vod_start)} - {fmt_ts(c.vod_end)} | "
-                    f"{c.label} ({c.match.agent}, {c.match.score})\n")
+                    f"{c.label}{part} ({c.match.agent}, {c.match.score})\n")
             t += c.vod_end - c.vod_start
 
 
 # ---------------------------------------------------------------- vertical y clips sueltos
-def vertical_filter(cam: dict | None) -> str:
+def cam_bottom_y(cam: dict | None, src_w: int = 1920, src_h: int = 1080) -> int:
+    """Dónde acaba la cámara en el vídeo vertical (para poner ahí los subtítulos)."""
+    if not cam:
+        return 1180
+    pw, ph = cam["w"] * src_w, cam["h"] * src_h
+    out_h = int(round(520 * ph / max(pw, 1) / 2)) * 2 + 8
+    return 140 + out_h
+
+
+def vertical_filter(cam: dict | None, ass: str | None = None) -> str:
     """
     Estilo TikTok de Vortexs: juego recortado al centro a toda la altura (1080x1920)
     y la cámara encima, centrada arriba, con un borde oscuro fino.
     cam = {'x','y','w','h'} en fracciones (0..1) de la imagen original.
     """
     bg = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920:flags=lanczos,setsar=1"
+    sub = f",ass={ass}" if ass else ""
     if not cam:
-        return f"[0:v]{bg},format=yuv420p[v]"
+        return f"[0:v]{bg}{sub},format=yuv420p[v]"
     cx, cy, cw, ch = (float(cam[k]) for k in ("x", "y", "w", "h"))
     return (f"[0:v]split[a][b];[a]{bg}[bg];"
             f"[b]crop=iw*{cw:.4f}:ih*{ch:.4f}:iw*{cx:.4f}:ih*{cy:.4f},"
             f"scale=520:-2:flags=lanczos,pad=iw+8:ih+8:4:4:color=0x111111,setsar=1[cam];"
-            f"[bg][cam]overlay=(W-w)/2:140,format=yuv420p[v]")
+            f"[bg][cam]overlay=(W-w)/2:140{sub},format=yuv420p[v]")
 
 
-def _run_ffmpeg(cmd: list[str], total_s: float, progress=None, should_stop=None, label=""):
+def _run_ffmpeg(cmd: list[str], total_s: float, progress=None, should_stop=None, label="", cwd=None):
     p = subprocess.Popen(cmd + ["-nostats", "-progress", "pipe:1"], stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True, **_no_window())
+                         stderr=subprocess.PIPE, text=True, cwd=cwd, **_no_window())
     err = []
     import threading
     th = threading.Thread(target=lambda: err.extend(p.stderr), daemon=True)
@@ -623,17 +768,31 @@ def _run_ffmpeg(cmd: list[str], total_s: float, progress=None, should_stop=None,
 
 def make_vertical(src: str, out: str, cam: dict | None, encoder: str = "x264",
                   progress=None, should_stop=None, start: float | None = None,
-                  dur: float | None = None) -> str:
+                  dur: float | None = None, words: list | None = None) -> str:
+    """words: palabras de la transcripción (tiempos del vídeo src) para los subtítulos."""
     ffmpeg = find_tool("ffmpeg")
-    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
-    if start is not None:
-        cmd += ["-ss", f"{start:.3f}"]
-    if dur is not None:
-        cmd += ["-t", f"{dur:.3f}"]
-    cmd += ["-i", src, "-filter_complex", vertical_filter(cam), "-map", "[v]", "-map", "0:a?",
-            *_venc(encoder), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out]
-    total = dur or float(probe_vod(src)["duration"])
-    _run_ffmpeg(cmd, total, progress, should_stop, "Versión vertical…")
+    info = probe_vod(src)
+    total = dur or float(info["duration"])
+    tmp = tempfile.mkdtemp(prefix="vortexsclips_v_")
+    try:
+        ass = None
+        if words:
+            import subtitles
+            y = cam_bottom_y(cam, info.get("width") or 1920, info.get("height") or 1080)
+            if subtitles.build_ass(words, y, os.path.join(tmp, "subs.ass"),
+                                   offset=start or 0.0, duration=total):
+                ass = "subs.ass"
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+        if start is not None:
+            cmd += ["-ss", f"{start:.3f}"]
+        if dur is not None:
+            cmd += ["-t", f"{dur:.3f}"]
+        cmd += ["-i", os.path.abspath(src), "-filter_complex", vertical_filter(cam, ass), "-map", "[v]",
+                "-map", "0:a?", *_venc(encoder), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                os.path.abspath(out)]
+        _run_ffmpeg(cmd, total, progress, should_stop, "Versión vertical…", cwd=tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return out
 
 
@@ -642,14 +801,21 @@ def _safe(name: str) -> str:
 
 
 def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=None, vertical=False,
-                   encoder: str = "x264", progress=None, should_stop=None) -> list[str]:
+                   encoder: str = "x264", progress=None, should_stop=None, words=None) -> list[str]:
     """Un archivo por ronda, sacado del vídeo ya montado (rápido y con el mismo audio/vídeo)."""
     ffmpeg = find_tool("ffmpeg")
     os.makedirs(folder, exist_ok=True)
-    outs, t = [], 0.0
-    n = len(clips)
-    for i, c in enumerate(clips):
+    # agrupar los trozos de una misma ronda (modo solo kills) en un único clip
+    groups: list[tuple[Clip, float]] = []
+    for c in clips:
         d = c.vod_end - c.vod_start
+        if groups and groups[-1][0].group == c.group:
+            groups[-1] = (groups[-1][0], groups[-1][1] + d)
+        else:
+            groups.append((c, d))
+    outs, t = [], 0.0
+    n = len(groups)
+    for i, (c, d) in enumerate(groups):
         name = _safe(f"{i + 1:02d} - {c.label.replace(' · ', ' ')}")
         h = os.path.join(folder, name + ".mp4")
         if progress:
@@ -661,7 +827,7 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
         outs.append(h)
         if vertical:
             v = os.path.join(folder, name + " (vertical).mp4")
-            make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d)
+            make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d, words=words)
             outs.append(v)
         t += d
     if progress:
@@ -677,3 +843,56 @@ def grab_frame(vod: str, at: float, out_png: str, width: int = 960) -> str:
     if r.returncode != 0 or not os.path.isfile(out_png):
         raise RuntimeError("No se pudo sacar un fotograma del VOD:\n" + r.stderr[-300:])
     return out_png
+
+
+# ---------------------------------------------------------------- delay de Vortexs Live
+def delay_log_candidates() -> list[str]:
+    out = []
+    for env in ("APPDATA", "LOCALAPPDATA"):
+        base = os.environ.get(env)
+        if base:
+            out.append(os.path.join(base, "VortexsLive", "delay_log.csv"))
+    return out
+
+
+def load_delay_log(path: str | None = None) -> list[tuple[float, float]]:
+    """
+    Registro que escribe Vortexs Live: una línea por cada cambio de delay
+    'epoch_ms;delay_segundos' (también al empezar el directo). Devuelve [(epoch_s, delay_s)].
+    """
+    paths = [path] if path else delay_log_candidates()
+    for p in paths:
+        if p and os.path.isfile(p):
+            rows = []
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    sep = ";" if ";" in line else ("\t" if "\t" in line else ",")
+                    parts = line.split(sep)
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        t = float(parts[0])
+                        d = float(parts[1].replace(",", "."))
+                    except ValueError:
+                        continue
+                    rows.append((t / 1000 if t > 1e11 else t, d))
+            rows.sort()
+            return rows
+    return []
+
+
+def make_delay_fn(rows: list[tuple[float, float]]):
+    """Función fecha -> delay (s) que había en ese momento, o None si no hay registro cerca."""
+    if not rows:
+        return None
+    import bisect
+    times = [r[0] for r in rows]
+
+    def fn(dt: datetime):
+        t = dt.timestamp()
+        i = bisect.bisect_right(times, t) - 1
+        if i < 0 or t - times[i] > 14 * 3600:   # sin registro de ese directo
+            return None
+        return rows[i][1]
+    return fn

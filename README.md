@@ -1,147 +1,120 @@
 # Vortexs Clips
 
-Saca las rondas de competitivo en las que haces **3 kills o más** (3K, 4K y ACE) y las recorta de tu VOD de Twitch en **un solo vídeo**.
+Saca de tus directos de Twitch las rondas de VALORANT en las que haces **3 kills o más** (3K, 4K y ACE) y genera:
 
-## Instalación (solo la primera vez)
+- un vídeo **horizontal** con todas las jugadas,
+- un vídeo **vertical 9:16 como tus TikToks** (juego a toda la altura, tu cámara arriba y subtítulos automáticos),
+- y, si quieres, **un clip suelto por ronda**.
 
-1. Descomprime la carpeta donde quieras.
-2. Haz doble clic en **Instalar.bat**. Instala Python y ffmpeg con winget.
-3. Abre el programa con **Iniciar.bat**.
+## Instalación
+
+1. Descarga **VortexsClips-Setup.exe**: https://github.com/manuelferjo/VortexsClips/releases/latest/download/VortexsClips-Setup.exe
+2. Ábrelo y sigue los pasos. No pide permisos de administrador y ya trae ffmpeg dentro.
+3. Abre **Vortexs Clips** desde el escritorio o desde el menú Inicio.
+
+Se actualiza solo: al abrirlo mira si hay una versión nueva y, si le dices que sí, se instala en silencio y se vuelve a abrir.
+
+> ¿Tenías la versión antigua (la de `Iniciar.bat`)? Al abrirla te ofrecerá pasarte a la instalable. Tu clave, tus ajustes y tu cámara se mantienen.
 
 ## Clave de la API (gratis)
 
-tracker.gg no tiene una API pública para VALORANT, así que el programa usa **HenrikDev API**, que da los mismos datos de Riot: kills de cada ronda con su segundo exacto.
+Los datos de cada kill vienen de **HenrikDev API**, que da los mismos datos de Riot que usa tracker.gg.
 
-1. Entra en https://api.henrikdev.xyz/dashboard e inicia sesión con Discord.
-2. Crea una clave **Basic** (es gratis y te la dan al momento).
-3. Pégala en «Clave API». Se guarda para la próxima vez.
+1. Entra en https://api.henrikdev.xyz/dashboard/ e inicia sesión.
+2. Abre **API Keys** y crea una clave **Basic** para VALORANT (es gratis).
+3. Pégala en **Clave API** (panel 1). Se guarda.
 
-## La forma rápida: con el enlace de Twitch
+## Uso rápido
 
-1. La primera vez, pon tu **Clave API**.
-2. Pega el enlace del VOD (por ejemplo, `https://www.twitch.tv/videos/1234567890`) en el recuadro de abajo a la derecha.
-3. Pulsa **Descargar VOD**.
+1. Pon tu **Riot ID** y la **Clave API**.
+2. En **2 · VOD y ajustes › VOD**, pega el enlace del VOD de Twitch (o **varios**, separados por espacios) y pulsa **Descargar VOD**.
+3. A partir de ahí el programa lo hace todo solo:
+   **1 · Descargar VOD › 2 · Buscar partidas › 3 · Sincronizar › 4 · Sacar rondas › 5 · Generar vídeos**
 
-A partir de ahí el programa lo hace todo solo:
+Si ese VOD ya estaba descargado, no lo vuelve a bajar. Si pegaste varios, los procesa uno detrás de otro.
 
-1. Descarga el VOD en la **máxima calidad** que tenga en Twitch (normalmente 1080p60).
-2. Copia de Twitch la **hora exacta** en que empezó el directo.
-3. Busca las partidas de competitivo que jugaste durante ese directo.
-4. Saca las rondas en las que hiciste 3 kills o más.
-5. **Sincroniza sola cada partida** mirando el killfeed del VOD, así que ya no hace falta buscar kills a mano.
-6. Genera el vídeo junto al VOD (`… - rondas 3K+.mp4`). Si tienes las opciones activadas, también genera la **versión vertical** y una **carpeta con un clip por ronda**.
+## Panel 2 · VOD y ajustes
 
-La primera vez también descarga, él solo, el programa que usa para bajar VODs (yt-dlp), y lo mantiene actualizado.
+### Pestaña VOD
 
-## Panel de progreso (abajo)
+| Opción | Qué hace |
+|---|---|
+| **Enlaces + Descargar VOD** | Descarga en la máxima calidad (normalmente 1080p60) y coge de Twitch la hora exacta del directo. Si pegas varios enlaces, se procesan en cola. |
+| **Al terminar la descarga…** | Si está marcada, después de la descarga lo procesa todo solo. |
+| **Carpeta…** | Dónde se guardan los VODs y los vídeos. |
+| **o elegir un VOD del PC…** | Para un vídeo que ya tengas. En ese caso, revisa la hora de **Inicio del directo**. |
 
-Siempre ves qué está haciendo el programa:
+### Pestaña Cortes
 
-- **Pasos**: `1 · Descargar VOD › 2 · Buscar partidas › 3 · Sincronizar › 4 · Sacar rondas › 5 · Generar vídeos`. El paso actual sale en amarillo y los terminados en morado.
-- **Barra y porcentaje**: lo que lleva hecho del paso actual.
-- **Detalles**: en la descarga, los GB descargados de los totales, la velocidad y el tiempo que queda. Al generar el vídeo, los minutos procesados, el tiempo que queda y la velocidad.
-- **Tiempo en este paso**: arriba a la derecha.
-- Si la barra se mueve de lado a lado, el programa está trabajando en algo que no se puede medir (por ejemplo, preparar el MP4). Solo hay que esperar.
+| Opción | Qué hace |
+|---|---|
+| **Kills mínimas por ronda** | 3 saca 3K, 4K y ACE; 4, solo 4K y ACE; 5, solo ACE. |
+| **Solo las kills** | Desde unos segundos antes de tu primera kill hasta la última, cortando los tiempos muertos entre ellas. Eliges los **segundos antes** y **después** de cada kill; si dos kills están más cerca, se juntan en un solo trozo. |
+| **La ronda completa** | Toda la ronda, desde que bajan las barreras (o desde la compra, si desmarcas «Saltar fase de compra»), más el margen que elijas. |
+| **Sincronizar solo cada partida** | Busca en el killfeed del VOD el patrón exacto de las kills de cada partida y la deja cuadrada al segundo. |
+| **Delay / desfase** | Segundos que se suman a la hora si no hay sincronización. Si existe el registro de delay de Vortexs Live, se usa ese automáticamente. |
 
-## Qué hace cada botón
+### Pestaña Salida
 
-### Arriba
+| Opción | Qué hace |
+|---|---|
+| **Codificar con** | «Automático» usa tu gráfica (NVIDIA, AMD o Intel) si puede, que es mucho más rápido; si no, la CPU. Debajo verás cuál ha detectado. |
+| **Calidad** | Misma resolución y fps que el directo, y como mucho el bitrate original, para que no se note pérdida. |
+| **Versión vertical 9:16** | Como tus TikToks: el juego recortado al centro a toda la altura y tu cámara encima, centrada arriba. |
+| **Elegir cámara…** | Sale un fotograma del VOD: arrastra un recuadro sobre tu cámara y queda guardado. |
+| **Subtítulos automáticos** | Transcribe lo que dices y lo pone en la vertical, en grande, blanco con borde negro, justo en el borde de abajo de la cámara. La primera vez se descarga el transcriptor (unos 200 MB). Funciona en tu PC, sin internet. |
+| **Un clip suelto por cada ronda** | Además del vídeo unido, una carpeta con un archivo por ronda (y su vertical). |
+
+### Pestaña Automático
+
+| Opción | Qué hace |
+|---|---|
+| **Tu canal de Twitch** | Por ejemplo, `vortexs`. |
+| **Vigilar el canal** | Cada 10 minutos mira tu canal. Cuando termina un directo, descarga el VOD nuevo y genera todos los vídeos sin que hagas nada. Solo procesa los directos que salgan **después** de activarlo. |
+| **Abrir al encender el PC** | Vortexs Clips se abre minimizado al encender Windows, para que la vigilancia funcione siempre. |
+
+## Panel 3 · Partidas
 
 | Botón | Qué hace |
 |---|---|
-| **Buscar actualizaciones** | Mira si hay una versión nueva en GitHub. Si la hay, la instala y reinicia el programa. Esto también lo hace solo cada vez que abres el programa. |
+| **☐ / ☑** | Incluir o quitar una partida. |
+| **Marcar las que están en el VOD** | Marca las partidas jugadas durante ese directo. |
+| **Sincronizar solo** | Sincroniza las partidas marcadas mirando el killfeed. En «Sincro» verás «Auto ✔» y lo seguro que está. |
+| **Sincronizar a mano…** | El VOD se reproduce dentro de la ventana, cerca de tu primera kill. Cuando la veas, pulsa **✔ Usar este momento** y luego **Guardar**. |
+| **Quitar sincro** | Vuelve a la hora + delay. |
 
-### 1 · Cuenta y partidas
-
-| Botón o casilla | Qué hace |
-|---|---|
-| **Riot ID** | Tu cuenta, por ejemplo `Vortexs#vrtxs`. |
-| **Región** | `eu` para Europa. |
-| **Clave API** | La clave gratuita de HenrikDev, que sirve para leer tus partidas. Se guarda. |
-| **Cargar partidas** | Trae tus últimas 10 partidas de competitivo. |
-| **Cargar 10 más** | Trae las 10 anteriores a las que ya tienes en la lista. |
-| **Añadir** | Añade una partida concreta pegando su enlace de tracker.gg. |
-
-### 2 · VOD y ajustes
-
-| Botón o casilla | Qué hace |
-|---|---|
-| **Elegir VOD…** | Abre un vídeo que ya tengas en el PC. |
-| **Inicio del directo** | Fecha y hora en que empezó el directo. Si descargas con el enlace, se rellena sola con la hora exacta. |
-| **Delay / desfase (s)** | Segundos de delay que tenía el directo en Vortexs Live. Sirve para que los cortes no caigan antes de tiempo. |
-| **Kills mínimas** | 3 saca los 3K, 4K y ACE. 4 saca solo los 4K y ACE. 5, solo los ACE. |
-| **Saltar fase de compra** | Si está marcada, cada ronda empieza justo antes de que bajen las barreras. Si no, sale la ronda entera con la compra. |
-| **Margen antes / después** | Segundos de más al principio y al final de cada ronda. |
-| **Codificar con** | Con qué se genera el vídeo. NVIDIA, Intel o AMD son mucho más rápidos si tienes esa gráfica; la CPU funciona siempre. |
-| **Descargar VOD** | Descarga el VOD del enlace pegado y, si está marcada la casilla de abajo, lo procesa entero. |
-| **Carpeta…** | Dónde se guardan los VODs descargados y los vídeos. |
-| **Al terminar la descarga, sacar las rondas y generar el vídeo** | Si está marcada, después de la descarga lo hace todo solo. Si no, solo descarga y lo carga en el programa. |
-| **Sincronizar solo cada partida** | Antes de cortar, busca en el killfeed del VOD el patrón exacto de las kills de cada partida y la deja cuadrada al segundo. Si en alguna no lo ve claro, te avisa y esa partida se queda con la hora + el delay. |
-| **Versión vertical 9:16** | Además del vídeo normal, genera uno vertical como tus TikToks: el juego recortado al centro a toda la altura y tu cámara encima, centrada arriba. |
-| **Elegir cámara…** | Te enseña un fotograma del VOD; arrastras un recuadro sobre tu cámara y queda guardado. Con «Sin cámara» sale solo el juego. |
-| **Un clip suelto por cada ronda** | Además del vídeo unido, crea una carpeta con un archivo por ronda (y su versión vertical, si está activada). |
-
-### 3 · Partidas
-
-| Botón o casilla | Qué hace |
-|---|---|
-| **☐ / ☑** | Haz clic para incluir o quitar una partida. |
-| **¿En el VOD?** | En amarillo («Sí»), las partidas que se jugaron durante ese directo. |
-| **Marcar las que están en el VOD** | Marca automáticamente las partidas que caen dentro del VOD. |
-| **Sincronizar solo** | Sincroniza automáticamente las partidas marcadas, mirando el killfeed del VOD. En la columna «Sincro» verás «Auto ✔» y lo seguro que está. |
-| **Sincronizar a mano…** | Por si alguna no sale sola: le dices en qué minuto del VOD aparece tu primera kill («Buscar en el VOD» te abre el vídeo con el minuto en grande) y queda cuadrada. |
-| **Quitar sincro** | Vuelve a calcular esa partida con la hora del directo. |
-
-### 4 · Rondas
+## Panel 4 · Rondas y vista previa
 
 | Botón | Qué hace |
 |---|---|
-| **Calcular rondas** | Saca la lista de rondas que se van a cortar, con su minuto en el VOD. |
-| **Ver ronda** | Reproduce esa ronda del VOD para comprobar que está bien cortada. También puedes hacer doble clic en la ronda. |
-| **Quitar** | Quita de la lista las rondas seleccionadas para que no salgan en el vídeo. |
+| **Calcular rondas** | Lista de trozos que se van a cortar, con su minuto en el VOD. |
+| **Ver ronda** (o doble clic) | Abre la pestaña **Vista previa** y reproduce ese trozo dentro del programa, con el minuto del VOD arriba. Botones ±10 s y ±1 min; también con las flechas y espacio. |
+| **Quitar** | Saca del vídeo los trozos seleccionados. |
 
-### Abajo
+## Abajo
 
 | Botón | Qué hace |
 |---|---|
-| **GENERAR VÍDEO** | Corta todas las rondas de la lista y las une en un MP4, con imagen y sonido sincronizados. Junto al vídeo guarda `…_marcas.txt` con el minuto de cada ronda en el VOD y en el vídeo final, para tu editor. |
-| **Cancelar** | Para la descarga o la generación del vídeo. |
+| **GENERAR VÍDEO** | Genera todos los vídeos, con imagen y sonido sincronizados. |
+| **Cancelar** | Para la descarga, la sincronización o la generación. |
+| **Pasos y barra** | En qué paso está, el porcentaje, los GB, la velocidad y el tiempo que queda. |
 
-## Qué sale al final
+## Qué sale al final (en la carpeta del VOD)
 
-En la carpeta del VOD:
+- `… - rondas 3K+.mp4`: horizontal.
+- `… - rondas 3K+ (vertical).mp4`: TikTok, con subtítulos.
+- `… - rondas 3K+ - clips sueltos\`: un archivo por ronda, horizontal y vertical.
+- `… - rondas 3K+_marcas.txt`: minuto de cada trozo en el VOD y en el vídeo, para tu editor.
 
-- `… - rondas 3K+.mp4`: todas las rondas en horizontal.
-- `… - rondas 3K+ (vertical).mp4`: lo mismo en 9:16, estilo TikTok.
-- `… - rondas 3K+ - clips sueltos\`: un archivo por ronda (`01 - 4K Ascent Ronda 7.mp4` y su versión vertical).
-- `… - rondas 3K+_marcas.txt`: minuto de cada ronda, para tu editor.
+## Delay de Vortexs Live
 
-## Si el vídeo sale sin kills (cortes desplazados)
-
-Normalmente lo arregla solo la opción **Sincronizar solo**. Si alguna partida sigue desplazada, hazlo a mano:
-
-El VOD de Twitch se graba **con el delay** de Vortexs Live, y la hora de inicio que da Riot puede incluir la selección de agente. Por eso los cortes pueden caer antes de las kills. Se arregla sincronizando **una sola partida**:
-
-1. Selecciona una partida que esté en el VOD y pulsa **Sincronizar a mano…**.
-2. Pulsa **Buscar en el VOD**. Se abre el vídeo un minuto antes de donde debería estar tu primera kill, con el **minuto del VOD en grande** arriba. Muévete con las flechas: ←/→ 10 s, ↑/↓ 1 min, espacio para pausar.
-3. Cuando salga tu kill en el killfeed, pausa, escribe ese minuto y pulsa **Guardar**.
-4. El programa te dice cuántos segundos estaba desplazada y te pregunta si aplica ese ajuste a **todas** las partidas del VOD. Dile que sí.
-5. Pulsa **GENERAR VÍDEO** otra vez.
-
-El ajuste se queda guardado en «Delay / desfase», así que en los siguientes directos (con el mismo delay) ya saldrá bien a la primera.
+Si Vortexs Live guarda su registro de delay (`%APPDATA%\VortexsLive\delay_log.csv`, una línea `milisegundos_epoch;delay_en_segundos` por cada cambio), Vortexs Clips lo lee solo. En la pestaña Cortes verás «✔ Registro de delay encontrado». Con eso, cada partida usa el delay que había en ese momento exacto, aunque lo cambiaras a mitad de directo.
 
 ## Notas
 
-- Los VODs que son solo para suscriptores no se pueden descargar con el enlace. Ponlo público un momento o descárgalo a mano y usa **Elegir VOD…**.
-- Si en una red (por ejemplo, la del trabajo) falla la descarga por un «certificado», el programa ya usa los certificados de Windows. Si aun así falla, esa red bloquea Twitch: descárgalo desde casa.
-- Imagen y sonido: cada ronda se corta y se une en una sola pasada, así que el audio no se desfasa aunque juntes muchas rondas.
+- Los VODs solo para suscriptores no se pueden descargar con el enlace.
+- En redes con inspección de conexiones (trabajo), el programa usa los certificados de Windows. Si aun así falla, esa red bloquea Twitch.
 
-## Actualizaciones
+## Para el desarrollador
 
-El programa comprueba si hay versión nueva cada vez que lo abres, y también puedes buscarla con el botón «Buscar actualizaciones». Si hay una nueva, te pregunta, la descarga y se reinicia solo. Tu clave y tus sincronizaciones no se tocan, porque se guardan en `%APPDATA%\VortexsClips`.
-
-### Publicar una versión nueva (para el desarrollador)
-
-1. Cambia `VERSION` en `version.py` (por ejemplo, `1.0.1`).
-2. Sube el cambio a `main`.
-3. GitHub Actions crea la Release `v1.0.1` con `VortexsClips.zip`, y los programas instalados se actualizan al abrirse.
+Para publicar una versión, sube `VERSION` en `version.py` y súbelo a `main`. GitHub Actions crea la Release con el zip del código y construye en Windows `VortexsClips-Setup.exe` (PyInstaller + ffmpeg + Inno Setup).

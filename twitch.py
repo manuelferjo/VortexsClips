@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import core
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR = core.data_dir()   # carpeta con permisos de escritura
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 STAMP = os.path.join(APP_DIR, ".ytdlp_updated")
 VOD_RE = re.compile(r"twitch\.tv/(?:videos/|[^/]+/v(?:ideo)?/)(\d+)", re.I)
@@ -103,7 +103,7 @@ def ensure_ytdlp(progress=None) -> str:
         old = time.time() - os.path.getmtime(STAMP) > 86400
     except OSError:
         old = True
-    if old and exe.startswith(APP_DIR):
+    if old and (exe.startswith(APP_DIR) or exe.startswith(core.app_dir())):
         if progress:
             progress(None, "Actualizando el descargador…")
         subprocess.run([exe, "-U"], capture_output=True, text=True, timeout=120, **core._no_window())
@@ -236,3 +236,52 @@ def download(url: str, out_dir: str, progress=None, should_stop=None, info: dict
         return found
     detail = "\n".join(tail) or f"(sin mensaje; código {p.returncode}; último progreso: {last_prog or 'ninguno'})"
     raise RuntimeError(_explain(detail))
+
+
+# ---------------------------------------------------------------- vigilar el canal
+def channel_name(text: str) -> str:
+    text = (text or "").strip()
+    m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)", text)
+    return (m.group(1) if m else text.lstrip("@")).lower()
+
+
+def is_live(channel: str) -> bool:
+    """True si el canal está en directo ahora mismo."""
+    exe = ensure_ytdlp()
+    r = subprocess.run([exe, *_net_opts(), "--no-warnings", "-q", "--skip-download", "--print", "is_live",
+                        f"https://www.twitch.tv/{channel}"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=90, **core._no_window())
+    return r.returncode == 0 and "True" in r.stdout
+
+
+def latest_vods(channel: str, n: int = 5) -> list[dict]:
+    """Últimos VODs (emisiones pasadas) del canal, del más nuevo al más viejo: [{'id','url','title'}]."""
+    exe = ensure_ytdlp()
+    url = f"https://www.twitch.tv/{channel}/videos?filter=archives&sort=time"
+    r = subprocess.run([exe, *_net_opts(), "--no-warnings", "--flat-playlist", "-J",
+                        "--playlist-end", str(n), url],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=120, **core._no_window())
+    if r.returncode != 0:
+        raise RuntimeError(_explain(r.stderr))
+    j = json.loads(r.stdout or "{}")
+    out = []
+    for e in j.get("entries") or []:
+        vid = str(e.get("id") or "")
+        if not vid:
+            continue
+        num = vid.lstrip("v")
+        out.append({"id": vid, "url": e.get("url") or f"https://www.twitch.tv/videos/{num}",
+                    "title": e.get("title") or ""})
+    return out
+
+
+def find_vod_urls(text: str) -> list[str]:
+    """Todos los enlaces de VOD de un texto (para pegar varios a la vez)."""
+    seen, out = set(), []
+    for m in re.finditer(r"(?:https?://)?(?:www\.)?twitch\.tv/(?:videos/|[^/\s]+/v(?:ideo)?/)(\d+)", text or ""):
+        if m.group(1) not in seen:
+            seen.add(m.group(1))
+            out.append(f"https://www.twitch.tv/videos/{m.group(1)}")
+    return out
