@@ -59,10 +59,16 @@ def ensure_ytdlp(progress=None) -> str:
     return exe
 
 
+def _net_opts() -> list[str]:
+    # Usar los certificados de Windows en vez de la lista propia de yt-dlp.
+    # Así funciona en redes que inspeccionan HTTPS (empresa, antivirus) sin desactivar la seguridad.
+    return ["--compat-options", "no-certifi"] if os.name == "nt" else []
+
+
 def vod_info(url: str) -> dict:
     """Título, duración y hora exacta de inicio del directo (UTC)."""
     exe = ensure_ytdlp()
-    r = subprocess.run([exe, "-J", "--no-warnings", "--no-playlist", url],
+    r = subprocess.run([exe, "-J", "--no-warnings", "--no-playlist", *_net_opts(), url],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        **core._no_window())
     if r.returncode != 0:
@@ -84,6 +90,9 @@ def _explain(err: str) -> str:
     e = err or ""
     if "subscriber" in e.lower() or "sub-only" in e.lower() or "401" in e:
         return "Ese VOD es solo para suscriptores. Ponlo público un momento en Twitch o descárgalo a mano."
+    if "CERTIFICATE_VERIFY_FAILED" in e:
+        return ("La red bloquea la conexión segura con Twitch (certificado no reconocido).\n"
+                "Prueba desde otra red (en casa) o descarga el VOD a mano y usa «Elegir VOD…».")
     if "404" in e or "does not exist" in e.lower():
         return "No encuentro ese VOD (¿está borrado o el enlace está mal?)."
     return "yt-dlp no pudo con el VOD:\n" + e.strip()[-600:]
@@ -94,7 +103,7 @@ def download(url: str, out_dir: str, progress=None, should_stop=None) -> str:
     exe = ensure_ytdlp(progress)
     os.makedirs(out_dir, exist_ok=True)
     ffmpeg = core.find_tool("ffmpeg")
-    cmd = [exe, "--no-playlist", "--newline", "--progress", "--no-part", "--windows-filenames",
+    cmd = [exe, *_net_opts(), "--no-playlist", "--newline", "--progress", "--no-part", "--windows-filenames",
            "-f", "b/bv*+ba", "-S", "res,fps,br", "--merge-output-format", "mp4",
            "--remux-video", "mp4", "-N", "8",
            "-o", os.path.join(out_dir, "%(upload_date>%Y-%m-%d)s %(title).80B [%(id)s].%(ext)s"),

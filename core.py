@@ -516,7 +516,7 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
 
 
 def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x264",
-           show_label: bool = True, progress=None, should_stop=None) -> str:
+           show_label: bool = False, progress=None, should_stop=None) -> str:
     """Recorta cada ronda y las une en un único vídeo con audio y vídeo sincronizados."""
     ffmpeg = find_tool("ffmpeg")
     if not ffmpeg:

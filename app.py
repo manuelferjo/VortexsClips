@@ -181,7 +181,6 @@ class App(tk.Tk):
         self.v_skipbuy = tk.BooleanVar(value=self.cfg.get("skip_buy", True))
         self.v_pre = tk.StringVar(value=str(self.cfg.get("pre", 3)))
         self.v_post = tk.StringVar(value=str(self.cfg.get("post", 4)))
-        self.v_label = tk.BooleanVar(value=self.cfg.get("label", True))
         enc_default = next((k for k, v in ENCODERS.items() if v == self.cfg.get("encoder")),
                            list(ENCODERS)[0])
         self.v_enc = tk.StringVar(value=enc_default)
@@ -212,8 +211,6 @@ class App(tk.Tk):
         ttk.Label(p2, text="Codificar con").grid(row=5, column=0, sticky="w", pady=4)
         ttk.Combobox(p2, textvariable=self.v_enc, values=list(ENCODERS), state="readonly",
                      width=30).grid(row=5, column=1, columnspan=2, sticky="w", padx=6)
-        ttk.Checkbutton(p2, text="Rótulo 3K/4K/ACE al inicio", variable=self.v_label).grid(
-            row=5, column=3, columnspan=3, sticky="w")
 
         ttk.Separator(p2).grid(row=6, column=0, columnspan=6, sticky="we", pady=8)
         ttk.Label(p2, text="o pega el enlace del VOD de Twitch y lo hago todo solo:").grid(
@@ -329,7 +326,7 @@ class App(tk.Tk):
                          "api_key": self.v_key.get(), "delay": self.v_delay.get(),
                          "min_kills": int(self.v_min.get() or 3), "skip_buy": self.v_skipbuy.get(),
                          "pre": self.v_pre.get(), "post": self.v_post.get(),
-                         "label": self.v_label.get(), "encoder": ENCODERS[self.v_enc.get()],
+                         "encoder": ENCODERS[self.v_enc.get()],
                          "calib": self.calib, "out_dir": self.v_outdir.get(),
                          "auto_process": self.v_auto.get()})
         try:
@@ -723,14 +720,13 @@ class App(tk.Tk):
         self.pb.configure(maximum=1, value=0)
         clips = list(self.clips)
         enc = ENCODERS[self.v_enc.get()]
-        label = self.v_label.get()
 
         def prog(frac, txt):
             self.after(0, lambda: (self.pb.configure(maximum=1, value=frac), self.status(txt)))
 
         def work():
             try:
-                return core.render(vod, clips, out, encoder=enc, show_label=label,
+                return core.render(vod, clips, out, encoder=enc, show_label=False,
                                    progress=prog, should_stop=lambda: self.stop_flag)
             finally:
                 self.after(0, lambda: self.set_running(False))

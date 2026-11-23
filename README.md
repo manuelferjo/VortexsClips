@@ -62,7 +62,6 @@ La primera vez también descarga, él solo, el programa que usa para bajar VODs 
 | **Saltar fase de compra** | Si está marcada, cada ronda empieza justo antes de que bajen las barreras. Si no, sale la ronda entera con la compra. |
 | **Margen antes / después** | Segundos de más al principio y al final de cada ronda. |
 | **Codificar con** | Con qué se genera el vídeo. NVIDIA, Intel o AMD son mucho más rápidos si tienes esa gráfica; la CPU funciona siempre. |
-| **Rótulo 3K/4K/ACE** | Muestra «4K · Ascent · Ronda 7» en amarillo durante los primeros 4 segundos de cada ronda. |
 | **Descargar VOD** | Descarga el VOD del enlace pegado y, si está marcada la casilla de abajo, lo procesa entero. |
 | **Carpeta…** | Dónde se guardan los VODs descargados y los vídeos. |
 | **Al terminar la descarga, sacar las rondas y generar el vídeo** | Si está marcada, después de la descarga lo hace todo solo. Si no, solo descarga y lo carga en el programa. |
@@ -99,6 +98,7 @@ La hora exacta de Twitch ya deja los cortes muy bien. Aun así, si una partida s
 ## Notas
 
 - Los VODs que son solo para suscriptores no se pueden descargar con el enlace. Ponlo público un momento o descárgalo a mano y usa **Elegir VOD…**.
+- Si en una red (por ejemplo, la del trabajo) falla la descarga por un «certificado», el programa ya usa los certificados de Windows. Si aun así falla, esa red bloquea Twitch: descárgalo desde casa.
 - Imagen y sonido: cada ronda se corta y se une en una sola pasada, así que el audio no se desfasa aunque juntes muchas rondas.
 
 ## Actualizaciones
