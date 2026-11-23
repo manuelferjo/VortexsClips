@@ -76,8 +76,22 @@ jobs:
           Copy-Item ffmpeg\bin\* dist\VortexsClips\ffmpeg\bin -Recurse
           $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest","$pwd\selftest.txt" -PassThru -Wait
           Get-Content selftest.txt
-          Remove-Item dist\VortexsClips\ffmpeg -Recurse -Force
           if ($p.ExitCode -ne 0) { throw "La autoprueba ha fallado" }
+
+      - name: Autoprueba de los subtítulos
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Speech
+          $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $es = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -like "es*" } | Select-Object -First 1
+          if ($es) { $s.SelectVoice($es.VoiceInfo.Name) }
+          $s.SetOutputToWaveFile("$pwd\voz.wav")
+          $s.Speak("Hola, esto es una prueba de los subtitulos de Vortexs Clips. Mira esta jugada, tres kills seguidas.")
+          $s.Dispose()
+          $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest-subs","$pwd\voz.wav","$pwd\subs.txt" -PassThru -Wait
+          Get-Content subs.txt
+          Remove-Item dist\VortexsClips\ffmpeg -Recurse -Force
+          if ($p.ExitCode -ne 0) { throw "La prueba de subtítulos ha fallado" }
 
       - name: Crear instalador
         shell: pwsh

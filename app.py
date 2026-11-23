@@ -1502,8 +1502,26 @@ def selftest(out_path):
     sys.exit(0 if all(r.startswith("OK") for r in results) else 1)
 
 
+def selftest_subs(wav, out_path):
+    """Prueba del transcriptor: descarga whisper.cpp + modelo y transcribe un audio."""
+    import traceback
+    try:
+        ws = subtitles.transcribe(wav)
+        txt = " ".join(w["text"] for w in ws)
+        ok = len(ws) >= 2
+        res = ("OK  " if ok else "FAIL") + f" transcripción ({len(ws)} palabras): {txt[:200]}"
+    except Exception:
+        ok, res = False, "FAIL " + traceback.format_exc()
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(res + "\n")
+    sys.exit(0 if ok else 1)
+
+
 if __name__ == "__main__":
-    if "--selftest" in sys.argv:
+    if "--selftest-subs" in sys.argv:
+        i = sys.argv.index("--selftest-subs")
+        selftest_subs(sys.argv[i + 1], sys.argv[i + 2])
+    elif "--selftest" in sys.argv:
         selftest(sys.argv[sys.argv.index("--selftest") + 1])
     else:
         App().mainloop()
