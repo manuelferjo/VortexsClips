@@ -19,7 +19,8 @@ import zipfile
 
 import core
 
-WHISPER_REPO = "ggml-org/whisper.cpp"
+# versión fija que sí publica los programas para Windows (las últimas solo traen el código)
+WHISPER_ZIP = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.2/whisper-bin-x64.zip"
 MODEL_NAME = "ggml-small-q5_1.bin"
 MODEL_URL = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{MODEL_NAME}"
 HALLUCINATIONS = ("subtítulos", "subtitulos", "amara.org", "suscríbete", "gracias por ver")
@@ -32,6 +33,12 @@ def whisper_dir() -> str:
 
 
 def _find_cli() -> str | None:
+    # 1) el que viene dentro del instalador; 2) el descargado
+    for base in (os.path.join(core.app_dir(), "whisper"), whisper_dir()):
+        for root, _d, files in os.walk(base):
+            for name in ("whisper-cli.exe", "main.exe"):
+                if name in files:
+                    return os.path.join(root, name)
     for root, _d, files in os.walk(whisper_dir()):
         for name in ("whisper-cli.exe", "main.exe", "whisper-cli", "main"):
             if name in files:
@@ -61,17 +68,8 @@ def ensure_whisper(progress=None) -> tuple[str, str]:
     if cli is None:
         if os.name != "nt":
             raise RuntimeError("Falta whisper-cli.")
-        api = f"https://api.github.com/repos/{WHISPER_REPO}/releases/latest"
-        req = urllib.request.Request(api, headers={"User-Agent": "VortexsClips",
-                                                   "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            rel = json.loads(r.read().decode("utf-8"))
-        asset = next((a for a in rel.get("assets", [])
-                      if re.search(r"whisper-bin-x64\.zip$", a.get("name", ""))), None)
-        if not asset:
-            raise RuntimeError("No encuentro whisper-bin-x64.zip en la última versión de whisper.cpp.")
         z = os.path.join(whisper_dir(), "whisper.zip")
-        _download(asset["browser_download_url"], z, progress, "Descargando transcriptor (solo la primera vez):")
+        _download(WHISPER_ZIP, z, progress, "Descargando transcriptor (solo la primera vez):")
         with zipfile.ZipFile(z) as zf:
             zf.extractall(whisper_dir())
         os.remove(z)

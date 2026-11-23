@@ -32,6 +32,7 @@ Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; Gr
 [Files]
 Source: "dist\VortexsClips\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "ffmpeg\bin\*"; DestDir: "{app}\ffmpeg\bin"; Flags: ignoreversion recursesubdirs
+Source: "whisper\*"; DestDir: "{app}\whisper"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\Vortexs Clips"; Filename: "{app}\VortexsClips.exe"

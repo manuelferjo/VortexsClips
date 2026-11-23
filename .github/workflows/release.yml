@@ -69,11 +69,21 @@ jobs:
           if (!(Test-Path ffmpeg\bin\ffplay.exe)) { throw "Falta ffplay" }
           ffmpeg\bin\ffmpeg.exe -hide_banner -filters | Select-String " ass "
 
+      - name: Descargar transcriptor (whisper.cpp v1.8.2)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.2/whisper-bin-x64.zip" -OutFile w.zip
+          Expand-Archive w.zip -DestinationPath whisper
+          $cli = Get-ChildItem whisper -Recurse -Filter whisper-cli.exe | Select-Object -First 1
+          if (!$cli) { throw "No viene whisper-cli.exe" }
+          Write-Host "whisper-cli: $($cli.FullName)"
+
       - name: Autoprueba del programa empaquetado
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist\VortexsClips\ffmpeg\bin | Out-Null
           Copy-Item ffmpeg\bin\* dist\VortexsClips\ffmpeg\bin -Recurse
+          Copy-Item whisper dist\VortexsClips\whisper -Recurse
           $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest","$pwd\selftest.txt" -PassThru -Wait
           Get-Content selftest.txt
           if ($p.ExitCode -ne 0) { throw "La autoprueba ha fallado" }
@@ -91,6 +101,7 @@ jobs:
           $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest-subs","$pwd\voz.wav","$pwd\subs.txt" -PassThru -Wait
           Get-Content subs.txt
           Remove-Item dist\VortexsClips\ffmpeg -Recurse -Force
+          Remove-Item dist\VortexsClips\whisper -Recurse -Force
           if ($p.ExitCode -ne 0) { throw "La prueba de subtítulos ha fallado" }
 
       - name: Crear instalador
