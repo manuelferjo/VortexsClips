@@ -118,7 +118,13 @@ class App(tk.Tk):
                     font=("Segoe UI Semibold", 9), borderwidth=0)
         s.map("Treeview", background=[("selected", "#3a3150")], foreground=[("selected", YELLOW)])
         s.configure("Horizontal.TProgressbar", background=YELLOW, troughcolor=FIELD,
-                    bordercolor=FIELD, lightcolor=YELLOW, darkcolor=YELLOW)
+                    bordercolor=FIELD, lightcolor=YELLOW, darkcolor=YELLOW, thickness=22)
+        s.configure("Step.TLabel", background=PANEL, foreground=YELLOW, font=("Segoe UI Semibold", 12))
+        s.configure("Pct.TLabel", background=PANEL, foreground=YELLOW, font=("Segoe UI Black", 16))
+        s.configure("Detail.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 10))
+        s.configure("ChipOff.TLabel", background=FIELD, foreground=MUTED, font=("Segoe UI", 9), padding=(10, 3))
+        s.configure("ChipOn.TLabel", background=YELLOW, foreground="#111", font=("Segoe UI Semibold", 9), padding=(10, 3))
+        s.configure("ChipDone.TLabel", background="#3a3150", foreground=PURPLE, font=("Segoe UI", 9), padding=(10, 3))
 
     def _panel(self, parent, title):
         f = ttk.Frame(parent, style="Panel.TFrame", padding=12)
@@ -284,13 +290,31 @@ class App(tk.Tk):
         ttk.Button(cb, text="Quitar", command=self.remove_clips).pack(side="left")
 
         # --- pie
-        foot = ttk.Frame(self, padding=(16, 4, 16, 14))
-        foot.pack(fill="x")
-        self.pb = ttk.Progressbar(foot, mode="determinate", style="Horizontal.TProgressbar")
-        self.pb.pack(fill="x", pady=(0, 6))
-        row = ttk.Frame(foot)
-        row.pack(fill="x")
-        self.lbl_status = ttk.Label(row, text="Listo.", style="Status.TLabel")
+        foot = ttk.Frame(self, style="Panel.TFrame", padding=(16, 10, 16, 12))
+        foot.pack(fill="x", padx=16, pady=(0, 14))
+        chips = ttk.Frame(foot, style="Panel.TFrame")
+        chips.pack(fill="x")
+        self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sacar rondas", "4 · Generar vídeo"]
+        self.chip_lbls = []
+        for i, n in enumerate(self.step_names):
+            lb = ttk.Label(chips, text=n, style="ChipOff.TLabel")
+            lb.pack(side="left", padx=(0, 4))
+            self.chip_lbls.append(lb)
+            if i < len(self.step_names) - 1:
+                ttk.Label(chips, text="›", style="Muted.TLabel").pack(side="left", padx=(0, 4))
+        self.lbl_time = ttk.Label(chips, text="", style="Muted.TLabel")
+        self.lbl_time.pack(side="right")
+        top_row = ttk.Frame(foot, style="Panel.TFrame")
+        top_row.pack(fill="x", pady=(8, 4))
+        self.lbl_step = ttk.Label(top_row, text="Listo para empezar", style="Step.TLabel")
+        self.lbl_step.pack(side="left")
+        self.lbl_pct = ttk.Label(top_row, text="", style="Pct.TLabel")
+        self.lbl_pct.pack(side="right")
+        self.pb = ttk.Progressbar(foot, mode="determinate", maximum=1, style="Horizontal.TProgressbar")
+        self.pb.pack(fill="x")
+        row = ttk.Frame(foot, style="Panel.TFrame")
+        row.pack(fill="x", pady=(6, 0))
+        self.lbl_status = ttk.Label(row, text="Pega un enlace de Twitch o elige un VOD.", style="Detail.TLabel")
         self.lbl_status.pack(side="left")
         self.btn_render = ttk.Button(row, text="GENERAR VÍDEO", style="Accent.TButton", command=self.render)
         self.btn_render.pack(side="right")
@@ -299,7 +323,58 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ util
     def status(self, txt):
-        self.lbl_status.configure(text=txt)
+        if txt:
+            self.lbl_status.configure(text=txt)
+
+    def set_step(self, idx, title=None):
+        """Marca el paso actual (0-3) o None para reposo."""
+        import time
+        for i, lb in enumerate(self.chip_lbls):
+            st = "ChipOff.TLabel" if idx is None or i > idx else ("ChipOn.TLabel" if i == idx else "ChipDone.TLabel")
+            lb.configure(style=st)
+        if idx is not None:
+            self.lbl_step.configure(text=title or self.step_names[idx][4:] + "…")
+            self._t0 = time.time()
+            if getattr(self, "_tick_id", None):
+                self.after_cancel(self._tick_id)
+            self._tick()
+        else:
+            self.lbl_step.configure(text=title or "Listo")
+            self.lbl_time.configure(text="")
+            self._t0 = None
+
+    def _tick(self):
+        import time
+        if getattr(self, "_t0", None) is None:
+            return
+        el = int(time.time() - self._t0)
+        self.lbl_time.configure(text=f"tiempo en este paso: {el // 60}:{el % 60:02d}")
+        self._tick_id = self.after(1000, self._tick)
+
+    def set_progress(self, frac, detail=None):
+        """frac 0..1, o None = trabajando sin porcentaje (barra animada)."""
+        if frac is None:
+            if str(self.pb.cget("mode")) != "indeterminate":
+                self.pb.configure(mode="indeterminate", maximum=100)
+                self.pb.start(12)
+            self.lbl_pct.configure(text="")
+        else:
+            if str(self.pb.cget("mode")) != "determinate":
+                self.pb.stop()
+                self.pb.configure(mode="determinate", maximum=1)
+            self.pb.configure(value=frac)
+            self.lbl_pct.configure(text=f"{frac * 100:.0f} %")
+        self.status(detail)
+
+    def progress_cb(self, step=None):
+        """Devuelve una función segura para llamar desde otro hilo: f(frac, detalle)."""
+        def f(frac, detail=None):
+            self.after(0, lambda: self.set_progress(frac, detail))
+        return f
+
+    def finish_steps(self, ok_text):
+        self.set_step(None, ok_text)
+        self.set_progress(1)
 
     def settings(self) -> core.CutSettings:
         def f(v, d):
@@ -345,7 +420,8 @@ class App(tk.Tk):
                 self.after(0, lambda: (setattr(self, "busy", False), done(res)))
             except Exception as e:
                 msg = str(e)
-                self.after(0, lambda: (setattr(self, "busy", False), self.status("Error."),
+                self.after(0, lambda: (setattr(self, "busy", False), self.set_progress(0, "Error."),
+                                       self.set_step(None, "Se ha parado por un error"),
                                        messagebox.showerror(err_title, msg)))
         threading.Thread(target=target, daemon=True).start()
 
@@ -357,7 +433,7 @@ class App(tk.Tk):
         self.persist()
         start = self.next_start if more else 0
         riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
-        self.status("Descargando partidas de competitivo…")
+        self.set_progress(None, "Descargando partidas de competitivo…")
 
         def work():
             raws = core.fetch_recent_matches(riot, key, reg, size=10, start=start)
@@ -379,7 +455,7 @@ class App(tk.Tk):
                 self.matches[m.match_id] = m
             self.refresh_matches()
             self.auto_check()
-            self.status(f"{len(self.matches)} partidas cargadas.")
+            self.set_progress(1, f"{len(self.matches)} partidas cargadas.")
         self.run_bg(work, done, "No se pudieron cargar las partidas")
 
     def add_by_link(self):
@@ -390,11 +466,11 @@ class App(tk.Tk):
             messagebox.showinfo(APP_NAME, "Falta la clave de la API de HenrikDev (ver README).")
             return
         riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
-        self.status("Descargando partida…")
+        self.set_progress(None, "Descargando partida…")
         self.run_bg(lambda: core.parse_match(core.fetch_match(link, key, reg), riot),
                     lambda m: (self.matches.__setitem__(m.match_id, m), self.checked.add(m.match_id),
                                self.refresh_matches(), self.v_link.set(""),
-                               self.status(f"Añadida: {m.map_name}")),
+                               self.set_progress(1, f"Añadida: {m.map_name}")),
                     "No se pudo añadir la partida")
 
     def refresh_matches(self):
@@ -526,7 +602,7 @@ class App(tk.Tk):
         if not p:
             return
         self.v_start.set("")
-        self.status("Leyendo el vídeo…")
+        self.set_progress(None, "Leyendo el vídeo…")
         self.run_bg(lambda: core.probe_vod(p), lambda info: self.set_vod(p, info),
                     "No se pudo leer el vídeo")
 
@@ -542,7 +618,7 @@ class App(tk.Tk):
             self.v_start.set(start_utc.astimezone().strftime("%d/%m/%Y %H:%M:%S"))
         elif not self.v_start.get().strip():
             self.v_start.set(info["start_guess"].astimezone().strftime("%d/%m/%Y %H:%M:%S"))
-        self.status("Revisa la hora de inicio del directo y pulsa «Marcar las que están en el VOD».")
+        self.set_progress(1, "VOD cargado. Revisa la hora de inicio y pulsa «Marcar las que están en el VOD».")
         self.auto_check()
 
     def pick_outdir(self):
@@ -578,16 +654,16 @@ class App(tk.Tk):
         out_dir = self.v_outdir.get()
         self.stop_flag = False
         self.set_running(True)
-        self.pb.configure(maximum=1, value=0)
-        self.status("Leyendo el VOD de Twitch…")
-
-        def prog(frac, txt):
-            self.after(0, lambda: (self.pb.configure(maximum=1, value=frac), self.status(txt)))
+        self.set_step(0, "Descargando el VOD de Twitch…")
+        self.set_progress(None, "Leyendo el VOD de Twitch…")
+        prog = self.progress_cb()
 
         def work():
             try:
                 info = twitch.vod_info(url)
-                prog(0, f"Descargando «{info['title'][:60]}» en {info['quality']}…")
+                self.after(0, lambda: self.lbl_step.configure(
+                    text=f"Descargando «{info['title'][:50]}» en {info['quality']}…"))
+                prog(None, "Empezando la descarga…")
                 path = twitch.download(url, out_dir, prog, lambda: self.stop_flag)
                 return info, path, core.probe_vod(path)
             finally:
@@ -600,7 +676,8 @@ class App(tk.Tk):
             if auto:
                 self.auto_process()
             else:
-                self.status(f"VOD descargado: {path}")
+                self.finish_steps("VOD descargado")
+                self.status(path)
         self.run_bg(work, done, "No se pudo descargar el VOD")
 
     def auto_process(self):
@@ -610,11 +687,14 @@ class App(tk.Tk):
         except ValueError:
             return
         riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
-        self.status("Buscando las partidas que jugaste durante el directo…")
+        self.set_step(1)
+        self.set_progress(None, "Buscando las partidas de competitivo que jugaste durante el directo…")
+        prog = self.progress_cb()
 
         def work():
             found = []
             for page in range(6):                     # hasta 60 partidas hacia atrás
+                prog(None, f"Revisando partidas {page * 10 + 1}–{page * 10 + 10}…")
                 raws = core.fetch_recent_matches(riot, key, reg, size=10, start=page * 10)
                 if not raws:
                     break
@@ -635,12 +715,15 @@ class App(tk.Tk):
             self.next_start = max(self.next_start, len(ms))
             self.auto_check()
             if not self.checked:
-                self.status("No hay partidas de competitivo dentro de este VOD.")
+                self.set_step(None, "No hay partidas en este VOD")
+                self.set_progress(0, "No hay partidas de competitivo dentro de este VOD.")
                 messagebox.showinfo(APP_NAME, "He descargado el VOD, pero no encuentro partidas de "
                                               "competitivo jugadas durante ese directo.")
                 return
+            self.set_step(2)
             self.compute()
             if not self.clips:
+                self.set_step(None, "Sin rondas de 3K o más")
                 messagebox.showinfo(APP_NAME, f"En las partidas de este VOD no hay rondas de "
                                               f"{self.settings().min_kills} kills o más.")
                 return
@@ -717,12 +800,27 @@ class App(tk.Tk):
         self.persist()
         self.stop_flag = False
         self.set_running(True)
-        self.pb.configure(maximum=1, value=0)
+        self.set_step(3, f"Generando el vídeo con {len(self.clips)} rondas…")
+        self.set_progress(0, "Empezando…")
         clips = list(self.clips)
         enc = ENCODERS[self.v_enc.get()]
 
+        import time
+        t0 = time.time()
+        total_s = sum(c.vod_end - c.vod_start for c in clips)
+        cb = self.progress_cb()
+
         def prog(frac, txt):
-            self.after(0, lambda: (self.pb.configure(maximum=1, value=frac), self.status(txt)))
+            el = time.time() - t0
+            bits = [f"{core.fmt_ts(frac * total_s).split('.')[0]} de {core.fmt_ts(total_s).split('.')[0]} de vídeo"]
+            if frac > 0.02:
+                left = el / frac - el
+                bits.append(f"quedan {twitch.fmt_eta(left)}")
+                bits.append(f"{(frac * total_s) / max(el, 0.1):.1f}x velocidad".replace(".", ","))
+            if frac >= 1:
+                cb(None, "Terminando el archivo…")
+            else:
+                cb(frac, "  ·  ".join(bits))
 
         def work():
             try:
@@ -732,8 +830,8 @@ class App(tk.Tk):
                 self.after(0, lambda: self.set_running(False))
 
         def finish(path):
-            self.pb.configure(value=1)
-            self.status(f"Hecho: {path}")
+            self.finish_steps("¡Vídeo listo!")
+            self.status(path)
             if messagebox.askyesno(APP_NAME, f"¡Vídeo listo! {len(clips)} rondas.\n\n{path}\n\n¿Abrir la carpeta?"):
                 if os.name == "nt":
                     subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
@@ -770,11 +868,12 @@ class App(tk.Tk):
                                              f"(tienes la {VERSION}).{notes}\n\n¿Actualizar ahora?"):
             return
         self.persist()
-        self.status("Descargando actualización…")
-        self.pb.configure(maximum=1, value=0)
+        self.set_step(None, "Actualizando el programa…")
+        self.set_progress(0, "Descargando actualización…")
+        cb = self.progress_cb()
 
         def prog(p):
-            self.after(0, lambda: self.pb.configure(value=p))
+            cb(p, "Descargando actualización…")
 
         def done(_):
             messagebox.showinfo(APP_NAME, "Actualizado. El programa se va a reiniciar.")

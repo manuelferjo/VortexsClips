@@ -17,7 +17,59 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 STAMP = os.path.join(APP_DIR, ".ytdlp_updated")
 VOD_RE = re.compile(r"twitch\.tv/(?:videos/|[^/]+/v(?:ideo)?/)(\d+)", re.I)
-PCT_RE = re.compile(r"(\d+(?:\.\d+)?)%")
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def fmt_size(b):
+    if b is None:
+        return "?"
+    for unit, div in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if b >= div:
+            return f"{b / div:.1f} {unit}".replace(".", ",")
+    return f"{int(b)} B"
+
+
+def fmt_eta(sec):
+    if sec is None:
+        return "?"
+    sec = int(sec)
+    h, m, s = sec // 3600, sec % 3600 // 60, sec % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def parse_progress(line: str):
+    """'PROG dl total total_est speed eta frag_i frag_n' -> (fracción, texto) o None."""
+    parts = line.split()
+    if len(parts) < 8 or parts[0] != "PROG":
+        return None
+    dl, tot, est, speed, eta, fi, fn = (_num(x) for x in parts[1:8])
+    total = tot or est
+    if fi is not None and fn:
+        frac = fi / fn                      # VOD de Twitch: por trozos, lo más fiable
+        if dl and not total:
+            total = dl / max(frac, 1e-6)
+    elif dl is not None and total:
+        frac = dl / total
+    else:
+        frac = None
+    if frac is not None:
+        frac = max(0.0, min(1.0, frac))
+    bits = []
+    if frac is not None:
+        bits.append(f"{frac * 100:.1f} %".replace(".", ","))
+    if dl is not None:
+        bits.append(f"{fmt_size(dl)} de {fmt_size(total)}" if total else fmt_size(dl))
+    if speed:
+        bits.append(f"{fmt_size(speed)}/s")
+    if eta is not None:
+        bits.append(f"quedan {fmt_eta(eta)}")
+    return frac, "  ·  ".join(bits)
 
 
 def is_twitch_vod(url: str) -> bool:
@@ -35,7 +87,7 @@ def ensure_ytdlp(progress=None) -> str:
         if os.name != "nt":
             raise RuntimeError("Falta yt-dlp. Instálalo (pip install yt-dlp).")
         if progress:
-            progress(0, "Descargando el descargador (yt-dlp)…")
+            progress(None, "Preparando el descargador (solo la primera vez)…")
         dst = os.path.join(APP_DIR, "yt-dlp.exe")
         req = urllib.request.Request(YTDLP_URL, headers={"User-Agent": "VortexsClips"})
         with urllib.request.urlopen(req, timeout=120) as r, open(dst + ".part", "wb") as f:
@@ -53,7 +105,7 @@ def ensure_ytdlp(progress=None) -> str:
         old = True
     if old and exe.startswith(APP_DIR):
         if progress:
-            progress(0, "Actualizando yt-dlp…")
+            progress(None, "Actualizando el descargador…")
         subprocess.run([exe, "-U"], capture_output=True, text=True, timeout=120, **core._no_window())
         open(STAMP, "w").close()
     return exe
@@ -108,12 +160,18 @@ def download(url: str, out_dir: str, progress=None, should_stop=None) -> str:
            "--remux-video", "mp4", "-N", "8",
            "-o", os.path.join(out_dir, "%(upload_date>%Y-%m-%d)s %(title).80B [%(id)s].%(ext)s"),
            "--print", "after_move:filepath",
-           "--progress-template", "download:PROG %(progress._percent_str)s %(progress._speed_str)s ETA %(progress._eta_str)s"]
+           "--progress-template",
+           "download:PROG %(progress.downloaded_bytes)s %(progress.total_bytes)s "
+           "%(progress.total_bytes_estimate)s %(progress.speed)s %(progress.eta)s "
+           "%(progress.fragment_index)s %(progress.fragment_count)s"]
     if ffmpeg:
         cmd += ["--ffmpeg-location", os.path.dirname(ffmpeg)]
     cmd.append(url)
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    if progress:
+        progress(None, "Conectando con Twitch…")
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                         encoding="utf-8", errors="replace", bufsize=1, **core._no_window())
+                         encoding="utf-8", errors="replace", bufsize=1, env=env, **core._no_window())
     final, tail = None, []
     try:
         for line in p.stdout:
@@ -124,16 +182,15 @@ def download(url: str, out_dir: str, progress=None, should_stop=None) -> str:
                 p.terminate()
                 raise RuntimeError("Descarga cancelada.")
             if line.startswith("PROG"):
-                m = PCT_RE.search(line)
-                if m and progress:
-                    rest = line[4:].strip()
-                    progress(float(m.group(1)) / 100, "Descargando VOD: " + " ".join(rest.split()))
+                r = parse_progress(line)
+                if r and progress:
+                    progress(*r)
             elif os.path.isabs(line) and os.path.splitext(line)[1]:
                 final = line
             else:
                 tail = (tail + [line])[-15:]
                 if progress and ("Merging" in line or "Remux" in line or "Fixup" in line):
-                    progress(1, "Preparando el MP4…")
+                    progress(None, "Descarga completa. Preparando el MP4 (puede tardar un poco)…")
         p.wait()
     finally:
         if p.poll() is None:

@@ -32,6 +32,16 @@ A partir de ahí el programa lo hace todo solo:
 
 La primera vez también descarga, él solo, el programa que usa para bajar VODs (yt-dlp), y lo mantiene actualizado.
 
+## Panel de progreso (abajo)
+
+Siempre ves qué está haciendo el programa:
+
+- **Pasos**: `1 · Descargar VOD › 2 · Buscar partidas › 3 · Sacar rondas › 4 · Generar vídeo`. El paso actual sale en amarillo y los terminados en morado.
+- **Barra y porcentaje**: lo que lleva hecho del paso actual.
+- **Detalles**: en la descarga, los GB descargados de los totales, la velocidad y el tiempo que queda. Al generar el vídeo, los minutos procesados, el tiempo que queda y la velocidad.
+- **Tiempo en este paso**: arriba a la derecha.
+- Si la barra se mueve de lado a lado, el programa está trabajando en algo que no se puede medir (por ejemplo, preparar el MP4). Solo hay que esperar.
+
 ## Qué hace cada botón
 
 ### Arriba
