@@ -1,8 +1,12 @@
 name: Publicar versión
 
+# Cada vez que llega a main un version.py con un número nuevo,
+# se crea la Release vX.Y.Z con VortexsClips.zip y los programas se actualizan solos.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["version.py", ".github/workflows/release.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,18 +17,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Comprobar que version.py coincide con la etiqueta
+      - name: Leer versión
+        id: v
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          grep -q "VERSION = \"$TAG\"" version.py || { echo "version.py no dice $TAG"; exit 1; }
+          VER=$(python3 -c "import version; print(version.VERSION)")
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+          echo "Versión: $VER"
+
+      - name: ¿Ya existe?
+        id: exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.v.outputs.tag }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "Ya publicada, nada que hacer."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Empaquetar
+        if: steps.exists.outputs.skip == 'false'
         run: |
           mkdir -p dist/VortexsClips
           cp app.py core.py updater.py version.py Instalar.bat Iniciar.bat README.md dist/VortexsClips/
           cd dist && zip -r VortexsClips.zip VortexsClips
 
       - name: Crear Release
+        if: steps.exists.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/VortexsClips.zip --title "Vortexs Clips $GITHUB_REF_NAME" --generate-notes
+        run: |
+          gh release create "${{ steps.v.outputs.tag }}" dist/VortexsClips.zip \
+            --target "$GITHUB_SHA" --title "Vortexs Clips ${{ steps.v.outputs.tag }}" --generate-notes

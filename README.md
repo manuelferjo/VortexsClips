@@ -53,5 +53,5 @@ El programa comprueba si hay versión nueva cada vez que lo abres, y también pu
 ### Publicar una versión nueva (para el desarrollador)
 
 1. Cambia `VERSION` en `version.py` (por ejemplo, `1.0.1`).
-2. Haz commit y crea la etiqueta: `git tag v1.0.1 && git push --tags`.
-3. GitHub Actions crea la Release con `VortexsClips.zip` y los programas instalados se actualizan al abrirse.
+2. Sube el cambio a `main`.
+3. GitHub Actions crea la Release `v1.0.1` con `VortexsClips.zip`, y los programas instalados se actualizan al abrirse.
