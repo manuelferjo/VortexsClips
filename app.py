@@ -561,7 +561,10 @@ class App(tk.Tk):
                   style="H.TLabel").pack(anchor="w")
         ttk.Label(fr, text=(f"Busca en el VOD tu PRIMERA kill de esta partida:\n"
                             f"ronda {k.round + 1}, con {k.weapon or 'arma desconocida'}.\n\n"
-                            f"Escribe el momento exacto del VOD (h:mm:ss) en que sale en el killfeed.")
+                            f"1. Pulsa «Buscar en el VOD»: se abre el vídeo un poco antes, con el minuto\n"
+                            f"    del VOD en grande arriba (flechas ←/→ 10 s, ↑/↓ 1 min, espacio pausa).\n"
+                            f"2. Cuando salga tu kill en el killfeed, pausa y escribe aquí ese minuto.\n"
+                            f"3. Pulsa «Guardar».")
                   ).pack(anchor="w", pady=8)
         v = tk.StringVar(value=guess)
         e = ttk.Entry(fr, textvariable=v, width=16)
@@ -574,10 +577,10 @@ class App(tk.Tk):
 
         def look():
             try:
-                t = core.parse_ts(v.get())
+                t = core.parse_ts(v.get() or guess)
             except ValueError:
-                return
-            self.play(max(0, t - 5), 12)
+                t = 0
+            self.play(max(0, t - 60), clock=True)
 
         def ok():
             try:
@@ -586,12 +589,26 @@ class App(tk.Tk):
                 messagebox.showerror(APP_NAME, "Formato no válido. Ejemplo: 1:23:45", parent=dlg)
                 return
             self.calib[m.match_id] = {"first_kill_vod_s": t}
-            self.persist()
             dlg.destroy()
-            self.refresh_matches()
-            if self.clips:
+            # cuánto estaba desplazada según la hora -> ofrecer aplicarlo a todas
+            try:
+                by_time = core.match_offset_s(m, self.vod_start_utc(), {})
+                diff = (t - first / 1000) - by_time
+            except ValueError:
+                diff = None
+            if diff is not None and abs(diff - self.settings().global_adjust_s) > 1.5:
+                sign = "después" if diff > 0 else "antes"
+                if messagebox.askyesno(APP_NAME,
+                        f"Esta partida en el VOD va {abs(diff):.0f} s {sign} de lo que decía la hora.\n\n"
+                        "Eso suele ser el delay del directo + la selección de agente, y es igual en "
+                        "todas las partidas del mismo directo.\n\n"
+                        "¿Aplico este ajuste a TODAS las partidas del VOD?"):
+                    self.v_delay.set(f"{diff:.1f}")
+            self.persist()
+            self.auto_check()
+            if self.clips or self.checked:
                 self.compute()
-        ttk.Button(bf, text="Ver ese momento", command=look).pack(side="left")
+        ttk.Button(bf, text="Buscar en el VOD", style="Purple.TButton", command=look).pack(side="left")
         ttk.Button(bf, text="Guardar", style="Accent.TButton", command=ok).pack(side="left", padx=6)
         dlg.bind("<Return>", lambda ev: ok())
 
@@ -745,14 +762,24 @@ class App(tk.Tk):
             self.render(out)
         self.run_bg(work, done, "No se pudieron cargar las partidas")
 
-    def play(self, start, dur):
+    def play(self, start, dur=None, clock=False):
+        """Reproduce el VOD desde 'start'. clock=True muestra encima el minuto del VOD."""
         ffplay = core.find_tool("ffplay")
         if not ffplay or not self.v_vod.get():
             messagebox.showinfo(APP_NAME, f"Abre el VOD en tu reproductor y ve a {core.fmt_ts(start)}.")
             return
-        subprocess.Popen([ffplay, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.2f}",
-                          "-t", f"{dur:.2f}", "-autoexit", "-window_title", "Vista previa",
-                          "-x", "960", "-y", "540", self.v_vod.get()])
+        cmd = [ffplay, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.2f}",
+               "-window_title", "Vista previa  (flechas: ←/→ 10 s, ↑/↓ 1 min, espacio: pausa)",
+               "-x", "1280", "-y", "720"]
+        if dur:
+            cmd += ["-t", f"{dur:.2f}", "-autoexit"]
+        font = core._font_for_drawtext()
+        if clock and font:
+            cmd += ["-vf", f"drawtext=fontfile='{core._esc_filter_path(font)}'"
+                           ":text='%{pts\\:hms}':fontsize=h/14:fontcolor=0xFFD21F"
+                           ":box=1:boxcolor=0x000000AA:boxborderw=12:x=(w-tw)/2:y=h/30"]
+        cmd.append(self.v_vod.get())
+        subprocess.Popen(cmd)
 
     # ------------------------------------------------------------ rondas
     def compute(self):
@@ -787,7 +814,7 @@ class App(tk.Tk):
         if not sel:
             return
         c = self.clips[int(sel[0])]
-        self.play(c.vod_start, c.vod_end - c.vod_start)
+        self.play(c.vod_start, c.vod_end - c.vod_start, clock=True)
 
     def remove_clips(self):
         idx = sorted((int(i) for i in self.tv_c.selection()), reverse=True)

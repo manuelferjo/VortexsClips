@@ -101,9 +101,17 @@ Siempre ves qué está haciendo el programa:
 | **GENERAR VÍDEO** | Corta todas las rondas de la lista y las une en un MP4, con imagen y sonido sincronizados. Junto al vídeo guarda `…_marcas.txt` con el minuto de cada ronda en el VOD y en el vídeo final, para tu editor. |
 | **Cancelar** | Para la descarga o la generación del vídeo. |
 
-## Sincronizar una partida (para que quede al segundo)
+## Si el vídeo sale sin kills (cortes desplazados)
 
-La hora exacta de Twitch ya deja los cortes muy bien. Aun así, si una partida sale unos segundos desplazada (por ejemplo, si cambió el delay dinámico), usa **Sincronizar partida…**: pon el minuto del VOD en el que sale tu primera kill y todas las rondas de esa partida quedan cuadradas. La sincronización queda guardada.
+El VOD de Twitch se graba **con el delay** de Vortexs Live, y la hora de inicio que da Riot puede incluir la selección de agente. Por eso los cortes pueden caer antes de las kills. Se arregla sincronizando **una sola partida**:
+
+1. Selecciona una partida que esté en el VOD y pulsa **Sincronizar partida…**.
+2. Pulsa **Buscar en el VOD**. Se abre el vídeo un minuto antes de donde debería estar tu primera kill, con el **minuto del VOD en grande** arriba. Muévete con las flechas: ←/→ 10 s, ↑/↓ 1 min, espacio para pausar.
+3. Cuando salga tu kill en el killfeed, pausa, escribe ese minuto y pulsa **Guardar**.
+4. El programa te dice cuántos segundos estaba desplazada y te pregunta si aplica ese ajuste a **todas** las partidas del VOD. Dile que sí.
+5. Pulsa **GENERAR VÍDEO** otra vez.
+
+El ajuste se queda guardado en «Delay / desfase», así que en los siguientes directos (con el mismo delay) ya saldrá bien a la primera.
 
 ## Notas
 
