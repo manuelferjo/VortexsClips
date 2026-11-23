@@ -254,7 +254,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
         if r.start_match_ms is None:
             prev = next((rounds[j] for j in range(i - 1, -1, -1) if rounds[j].start_match_ms is not None), None)
             if prev is not None:
-                r.start_match_ms = prev.start_match_ms + 100_000 * (i - prev.index) + 30_000
+                r.start_match_ms = prev.start_match_ms + 130_000 * (i - prev.index)
 
     # si existe stats por ronda (v4) úsalo como fuente fiable del número de kills
     for i, rr in enumerate(raw_rounds):
@@ -319,15 +319,16 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
             if r.start_match_ms is None:
                 continue
             start_round_ms = r.start_match_ms
+            # El reloj de ronda de Riot empieza cuando bajan las barreras (tras la compra).
             if settings.skip_buy_phase:
-                start_ms = start_round_ms + BUY_PHASE_MS - settings.pre_roll_s * 1000
-            else:
                 start_ms = start_round_ms - settings.pre_roll_s * 1000
+            else:
+                start_ms = start_round_ms - BUY_PHASE_MS - settings.pre_roll_s * 1000
             end_ms = start_round_ms + r.last_event_round_ms + settings.post_roll_s * 1000
             # no comerse la ronda siguiente
             nxt = next((x for x in m.rounds if x.index == r.index + 1 and x.start_match_ms), None)
             if nxt is not None:
-                end_ms = min(end_ms, nxt.start_match_ms - 500)
+                end_ms = min(end_ms, nxt.start_match_ms - BUY_PHASE_MS)
             s = base + start_ms / 1000
             e = base + end_ms / 1000
             if e <= 0 or (vod_duration_s and s >= vod_duration_s):
