@@ -852,6 +852,7 @@ def delay_log_candidates() -> list[str]:
         base = os.environ.get(env)
         if base:
             out.append(os.path.join(base, "VortexsLive", "delay_log.csv"))
+            out.append(os.path.join(base, "VortexsLive", "delay_log.old.csv"))
     return out
 
 
@@ -861,9 +862,9 @@ def load_delay_log(path: str | None = None) -> list[tuple[float, float]]:
     'epoch_ms;delay_segundos' (también al empezar el directo). Devuelve [(epoch_s, delay_s)].
     """
     paths = [path] if path else delay_log_candidates()
+    rows = []
     for p in paths:
         if p and os.path.isfile(p):
-            rows = []
             with open(p, encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     line = line.strip()
@@ -877,9 +878,8 @@ def load_delay_log(path: str | None = None) -> list[tuple[float, float]]:
                     except ValueError:
                         continue
                     rows.append((t / 1000 if t > 1e11 else t, d))
-            rows.sort()
-            return rows
-    return []
+    rows.sort()
+    return rows
 
 
 def make_delay_fn(rows: list[tuple[float, float]]):
@@ -889,10 +889,22 @@ def make_delay_fn(rows: list[tuple[float, float]]):
     import bisect
     times = [r[0] for r in rows]
 
-    def fn(dt: datetime):
-        t = dt.timestamp()
+    def at(t):
         i = bisect.bisect_right(times, t) - 1
         if i < 0 or t - times[i] > 14 * 3600:   # sin registro de ese directo
             return None
         return rows[i][1]
+
+    def fn(dt: datetime):
+        # Lo jugado en T se emite en W = T + delay(W): se busca ese W (2-3 vueltas bastan)
+        t = dt.timestamp()
+        d = at(t)
+        if d is None:
+            return None
+        for _ in range(3):
+            d2 = at(t + d)
+            if d2 is None or abs(d2 - d) < 0.05:
+                break
+            d = d2
+        return d
     return fn
