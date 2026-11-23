@@ -139,7 +139,7 @@ def vod_info(url: str) -> dict:
 
 
 def _explain(err: str) -> str:
-    e = err or ""
+    e = err or "(sin mensaje)"
     if "subscriber" in e.lower() or "sub-only" in e.lower() or "401" in e:
         return "Ese VOD es solo para suscriptores. Ponlo público un momento en Twitch o descárgalo a mano."
     if "CERTIFICATE_VERIFY_FAILED" in e:
@@ -150,16 +150,47 @@ def _explain(err: str) -> str:
     return "yt-dlp no pudo con el VOD:\n" + e.strip()[-600:]
 
 
-def download(url: str, out_dir: str, progress=None, should_stop=None) -> str:
+def base_name(info: dict) -> str:
+    """Nombre fijo y seguro para el archivo del VOD (sin tildes ni emojis)."""
+    day = info["start"].astimezone().strftime("%Y-%m-%d") if info.get("start") else "VOD"
+    return f"{day} Twitch {info['id']}"
+
+
+def find_existing(out_dir: str, info: dict) -> str | None:
+    """Busca en la carpeta un VOD ya descargado y COMPLETO de ese id (también con nombres antiguos)."""
+    if not os.path.isdir(out_dir):
+        return None
+    vid = str(info["id"]).lstrip("v")
+    need = (info.get("duration") or 0) - 120
+    cands = []
+    for n in os.listdir(out_dir):
+        low = n.lower()
+        if not low.endswith((".mp4", ".mkv", ".ts")) or low.endswith(".part"):
+            continue
+        if f"[{vid}]" in n or f"[v{vid}]" in n or f"twitch {vid}." in low or f"twitch v{vid}." in low:
+            cands.append(os.path.join(out_dir, n))
+    for p in sorted(cands, key=os.path.getsize, reverse=True):
+        try:
+            if core.probe_vod(p)["duration"] >= need:
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def download(url: str, out_dir: str, progress=None, should_stop=None, info: dict | None = None) -> str:
     """Descarga el VOD en la mejor calidad (normalmente 1080p60 'Source') y devuelve la ruta."""
     exe = ensure_ytdlp(progress)
     os.makedirs(out_dir, exist_ok=True)
+    info = info or vod_info(url)
+    base = base_name(info)
+    target = os.path.join(out_dir, base + ".mp4")
     ffmpeg = core.find_tool("ffmpeg")
-    cmd = [exe, *_net_opts(), "--no-playlist", "--newline", "--progress", "--no-part", "--windows-filenames",
+    cmd = [exe, *_net_opts(), "--encoding", "utf-8", "--no-playlist", "--newline", "--progress",
+           "--continue", "--force-overwrites" if os.path.isfile(target) else "--no-overwrites",
            "-f", "b/bv*+ba", "-S", "res,fps,br", "--merge-output-format", "mp4",
            "--remux-video", "mp4", "-N", "8",
-           "-o", os.path.join(out_dir, "%(upload_date>%Y-%m-%d)s %(title).80B [%(id)s].%(ext)s"),
-           "--print", "after_move:filepath",
+           "-o", os.path.join(out_dir, base + ".%(ext)s"),
            "--progress-template",
            "download:PROG %(progress.downloaded_bytes)s %(progress.total_bytes)s "
            "%(progress.total_bytes_estimate)s %(progress.speed)s %(progress.eta)s "
@@ -167,12 +198,12 @@ def download(url: str, out_dir: str, progress=None, should_stop=None) -> str:
     if ffmpeg:
         cmd += ["--ffmpeg-location", os.path.dirname(ffmpeg)]
     cmd.append(url)
-    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
     if progress:
         progress(None, "Conectando con Twitch…")
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                          encoding="utf-8", errors="replace", bufsize=1, env=env, **core._no_window())
-    final, tail = None, []
+    tail, last_prog = [], ""
     try:
         for line in p.stdout:
             line = line.strip()
@@ -180,21 +211,28 @@ def download(url: str, out_dir: str, progress=None, should_stop=None) -> str:
                 continue
             if should_stop and should_stop():
                 p.terminate()
-                raise RuntimeError("Descarga cancelada.")
+                raise RuntimeError("Descarga cancelada. Si vuelves a darle, sigue por donde iba.")
             if line.startswith("PROG"):
+                last_prog = line
                 r = parse_progress(line)
                 if r and progress:
                     progress(*r)
-            elif os.path.isabs(line) and os.path.splitext(line)[1]:
-                final = line
             else:
                 tail = (tail + [line])[-15:]
                 if progress and ("Merging" in line or "Remux" in line or "Fixup" in line):
-                    progress(None, "Descarga completa. Preparando el MP4 (puede tardar un poco)…")
+                    progress(None, "Descarga completa. Preparando el MP4 (puede tardar unos minutos)…")
         p.wait()
     finally:
         if p.poll() is None:
             p.kill()
-    if p.returncode != 0 or not final or not os.path.isfile(final):
-        raise RuntimeError(_explain("\n".join(tail)))
-    return final
+    # localizar el archivo final por su nombre fijo, sin depender de lo que imprima yt-dlp
+    found = None
+    for ext in (".mp4", ".mkv", ".ts"):
+        cand = os.path.join(out_dir, base + ext)
+        if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+            found = cand
+            break
+    if p.returncode == 0 and found:
+        return found
+    detail = "\n".join(tail) or f"(sin mensaje; código {p.returncode}; último progreso: {last_prog or 'ninguno'})"
+    raise RuntimeError(_explain(detail))

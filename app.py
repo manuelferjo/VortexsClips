@@ -671,7 +671,12 @@ class App(tk.Tk):
                 self.after(0, lambda: self.lbl_step.configure(
                     text=f"Descargando «{info['title'][:50]}» en {info['quality']}…"))
                 prog(None, "Empezando la descarga…")
-                path = twitch.download(url, out_dir, prog, lambda: self.stop_flag)
+                path = twitch.find_existing(out_dir, info)
+                if path:
+                    prog(1, f"Ya estaba descargado: {os.path.basename(path)}")
+                else:
+                    path = twitch.download(url, out_dir, prog, lambda: self.stop_flag, info)
+                prog(None, "Leyendo el vídeo descargado…")
                 return info, path, core.probe_vod(path)
             finally:
                 self.after(0, lambda: self.set_running(False))
