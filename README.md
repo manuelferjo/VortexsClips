@@ -28,7 +28,8 @@ A partir de ahí el programa lo hace todo solo:
 2. Copia de Twitch la **hora exacta** en que empezó el directo.
 3. Busca las partidas de competitivo que jugaste durante ese directo.
 4. Saca las rondas en las que hiciste 3 kills o más.
-5. Genera el vídeo junto al VOD, con el nombre `… - rondas 3K+.mp4`.
+5. **Sincroniza sola cada partida** mirando el killfeed del VOD, así que ya no hace falta buscar kills a mano.
+6. Genera el vídeo junto al VOD (`… - rondas 3K+.mp4`). Si tienes las opciones activadas, también genera la **versión vertical** y una **carpeta con un clip por ronda**.
 
 La primera vez también descarga, él solo, el programa que usa para bajar VODs (yt-dlp), y lo mantiene actualizado.
 
@@ -36,7 +37,7 @@ La primera vez también descarga, él solo, el programa que usa para bajar VODs 
 
 Siempre ves qué está haciendo el programa:
 
-- **Pasos**: `1 · Descargar VOD › 2 · Buscar partidas › 3 · Sacar rondas › 4 · Generar vídeo`. El paso actual sale en amarillo y los terminados en morado.
+- **Pasos**: `1 · Descargar VOD › 2 · Buscar partidas › 3 · Sincronizar › 4 · Sacar rondas › 5 · Generar vídeos`. El paso actual sale en amarillo y los terminados en morado.
 - **Barra y porcentaje**: lo que lleva hecho del paso actual.
 - **Detalles**: en la descarga, los GB descargados de los totales, la velocidad y el tiempo que queda. Al generar el vídeo, los minutos procesados, el tiempo que queda y la velocidad.
 - **Tiempo en este paso**: arriba a la derecha.
@@ -75,6 +76,10 @@ Siempre ves qué está haciendo el programa:
 | **Descargar VOD** | Descarga el VOD del enlace pegado y, si está marcada la casilla de abajo, lo procesa entero. |
 | **Carpeta…** | Dónde se guardan los VODs descargados y los vídeos. |
 | **Al terminar la descarga, sacar las rondas y generar el vídeo** | Si está marcada, después de la descarga lo hace todo solo. Si no, solo descarga y lo carga en el programa. |
+| **Sincronizar solo cada partida** | Antes de cortar, busca en el killfeed del VOD el patrón exacto de las kills de cada partida y la deja cuadrada al segundo. Si en alguna no lo ve claro, te avisa y esa partida se queda con la hora + el delay. |
+| **Versión vertical 9:16** | Además del vídeo normal, genera uno vertical como tus TikToks: el juego recortado al centro a toda la altura y tu cámara encima, centrada arriba. |
+| **Elegir cámara…** | Te enseña un fotograma del VOD; arrastras un recuadro sobre tu cámara y queda guardado. Con «Sin cámara» sale solo el juego. |
+| **Un clip suelto por cada ronda** | Además del vídeo unido, crea una carpeta con un archivo por ronda (y su versión vertical, si está activada). |
 
 ### 3 · Partidas
 
@@ -83,7 +88,8 @@ Siempre ves qué está haciendo el programa:
 | **☐ / ☑** | Haz clic para incluir o quitar una partida. |
 | **¿En el VOD?** | En amarillo («Sí»), las partidas que se jugaron durante ese directo. |
 | **Marcar las que están en el VOD** | Marca automáticamente las partidas que caen dentro del VOD. |
-| **Sincronizar partida…** | Para dejar una partida cuadrada al segundo: le dices en qué minuto del VOD aparece tu primera kill y el programa cuadra todas las rondas de esa partida. «Ver ese momento» te enseña ese trozo para comprobarlo. |
+| **Sincronizar solo** | Sincroniza automáticamente las partidas marcadas, mirando el killfeed del VOD. En la columna «Sincro» verás «Auto ✔» y lo seguro que está. |
+| **Sincronizar a mano…** | Por si alguna no sale sola: le dices en qué minuto del VOD aparece tu primera kill («Buscar en el VOD» te abre el vídeo con el minuto en grande) y queda cuadrada. |
 | **Quitar sincro** | Vuelve a calcular esa partida con la hora del directo. |
 
 ### 4 · Rondas
@@ -101,11 +107,22 @@ Siempre ves qué está haciendo el programa:
 | **GENERAR VÍDEO** | Corta todas las rondas de la lista y las une en un MP4, con imagen y sonido sincronizados. Junto al vídeo guarda `…_marcas.txt` con el minuto de cada ronda en el VOD y en el vídeo final, para tu editor. |
 | **Cancelar** | Para la descarga o la generación del vídeo. |
 
+## Qué sale al final
+
+En la carpeta del VOD:
+
+- `… - rondas 3K+.mp4`: todas las rondas en horizontal.
+- `… - rondas 3K+ (vertical).mp4`: lo mismo en 9:16, estilo TikTok.
+- `… - rondas 3K+ - clips sueltos\`: un archivo por ronda (`01 - 4K Ascent Ronda 7.mp4` y su versión vertical).
+- `… - rondas 3K+_marcas.txt`: minuto de cada ronda, para tu editor.
+
 ## Si el vídeo sale sin kills (cortes desplazados)
+
+Normalmente lo arregla solo la opción **Sincronizar solo**. Si alguna partida sigue desplazada, hazlo a mano:
 
 El VOD de Twitch se graba **con el delay** de Vortexs Live, y la hora de inicio que da Riot puede incluir la selección de agente. Por eso los cortes pueden caer antes de las kills. Se arregla sincronizando **una sola partida**:
 
-1. Selecciona una partida que esté en el VOD y pulsa **Sincronizar partida…**.
+1. Selecciona una partida que esté en el VOD y pulsa **Sincronizar a mano…**.
 2. Pulsa **Buscar en el VOD**. Se abre el vídeo un minuto antes de donde debería estar tu primera kill, con el **minuto del VOD en grande** arriba. Muévete con las flechas: ←/→ 10 s, ↑/↓ 1 min, espacio para pausar.
 3. Cuando salga tu kill en el killfeed, pausa, escribe ese minuto y pulsa **Guardar**.
 4. El programa te dice cuántos segundos estaba desplazada y te pregunta si aplica ese ajuste a **todas** las partidas del VOD. Dile que sí.

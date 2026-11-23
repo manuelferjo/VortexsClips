@@ -13,6 +13,8 @@ from tkinter import filedialog, messagebox, ttk
 
 import core
 import twitch
+import sync
+import tempfile
 import updater
 from version import VERSION
 
@@ -243,6 +245,23 @@ class App(tk.Tk):
         ttk.Checkbutton(p2, text="Al terminar la descarga, sacar las rondas y generar el vídeo",
                         variable=self.v_auto).grid(row=10, column=0, columnspan=6, sticky="w", pady=(6, 0))
 
+        ttk.Separator(p2).grid(row=11, column=0, columnspan=6, sticky="we", pady=8)
+        self.v_autosync = tk.BooleanVar(value=self.cfg.get("auto_sync", True))
+        self.v_vertical = tk.BooleanVar(value=self.cfg.get("vertical", True))
+        self.v_singles = tk.BooleanVar(value=self.cfg.get("singles", True))
+        self.cam = self.cfg.get("cam")
+        ttk.Checkbutton(p2, text="Sincronizar solo cada partida (busca el killfeed en el VOD)",
+                        variable=self.v_autosync).grid(row=12, column=0, columnspan=6, sticky="w")
+        vf2 = ttk.Frame(p2, style="Panel.TFrame")
+        vf2.grid(row=13, column=0, columnspan=6, sticky="we", pady=(4, 0))
+        ttk.Checkbutton(vf2, text="Versión vertical 9:16 (como tus TikToks)",
+                        variable=self.v_vertical).pack(side="left")
+        ttk.Button(vf2, text="Elegir cámara…", command=self.pick_cam).pack(side="left", padx=8)
+        self.lbl_cam = ttk.Label(vf2, text=self._cam_text(), style="Muted.TLabel")
+        self.lbl_cam.pack(side="left")
+        ttk.Checkbutton(p2, text="Además, un clip suelto por cada ronda (carpeta aparte)",
+                        variable=self.v_singles).grid(row=14, column=0, columnspan=6, sticky="w", pady=(4, 0))
+
         # --- 3. partidas
         mid = ttk.Frame(self, padding=(16, 8))
         mid.columnconfigure(0, weight=3)
@@ -269,7 +288,8 @@ class App(tk.Tk):
         mb = ttk.Frame(p3, style="Panel.TFrame")
         mb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
         ttk.Button(mb, text="Marcar las que están en el VOD", command=self.auto_check).pack(side="left")
-        ttk.Button(mb, text="Sincronizar partida…", command=self.calibrate).pack(side="left", padx=6)
+        ttk.Button(mb, text="Sincronizar solo", style="Purple.TButton", command=self.sync_checked).pack(side="left", padx=6)
+        ttk.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="left")
         ttk.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
 
         # --- 4. rondas
@@ -301,7 +321,8 @@ class App(tk.Tk):
         mid.pack(fill="both", expand=True)
         chips = ttk.Frame(foot, style="Panel.TFrame")
         chips.pack(fill="x")
-        self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sacar rondas", "4 · Generar vídeo"]
+        self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sincronizar",
+                           "4 · Sacar rondas", "5 · Generar vídeos"]
         self.chip_lbls = []
         for i, n in enumerate(self.step_names):
             lb = ttk.Label(chips, text=n, style="ChipOff.TLabel")
@@ -410,7 +431,9 @@ class App(tk.Tk):
                          "pre": self.v_pre.get(), "post": self.v_post.get(),
                          "encoder": ENCODERS[self.v_enc.get()],
                          "calib": self.calib, "out_dir": self.v_outdir.get(),
-                         "auto_process": self.v_auto.get()})
+                         "auto_process": self.v_auto.get(), "auto_sync": self.v_autosync.get(),
+                         "vertical": self.v_vertical.get(), "singles": self.v_singles.get(),
+                         "cam": self.cam})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -495,11 +518,13 @@ class App(tk.Tk):
                 invt = "Sí" if inv else "No"
             else:
                 inv, invt = None, "—"
-            sync = "Manual ✔" if m.match_id in self.calib else "Por hora"
+            c = self.calib.get(m.match_id) or {}
+            sync_txt = (f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)" if c.get("auto") else
+                        "Manual ✔" if c.get("first_kill_vod_s") is not None else "Por hora")
             self.tv_m.insert("", "end", iid=m.match_id, tags=(("in",) if inv else ("out",) if inv is False else ()),
                              values=("☑" if m.match_id in self.checked else "☐",
                                      local.strftime("%d/%m %H:%M"), m.map_name, m.agent, m.score,
-                                     n, invt, sync))
+                                     n, invt, sync_txt))
 
     def on_match_click(self, ev):
         if self.tv_m.identify_region(ev.x, ev.y) != "cell":
@@ -749,18 +774,168 @@ class App(tk.Tk):
                 messagebox.showinfo(APP_NAME, "He descargado el VOD, pero no encuentro partidas de "
                                               "competitivo jugadas durante ese directo.")
                 return
-            self.set_step(2)
-            self.compute()
-            if not self.clips:
-                self.set_step(None, "Sin rondas de 3K o más")
-                messagebox.showinfo(APP_NAME, f"En las partidas de este VOD no hay rondas de "
-                                              f"{self.settings().min_kills} kills o más.")
-                return
-            vod = self.v_vod.get()
-            base = os.path.splitext(os.path.basename(vod))[0]
-            out = os.path.join(os.path.dirname(vod), f"{base} - rondas {self.settings().min_kills}K+.mp4")
-            self.render(out)
+            if self.v_autosync.get():
+                self.run_sync(sorted(self.checked), then=self._finish_auto)
+            else:
+                self._finish_auto()
+
         self.run_bg(work, done, "No se pudieron cargar las partidas")
+
+    def _finish_auto(self):
+        self.set_step(3)
+        self.compute()
+        if not self.clips:
+            self.set_step(None, "Sin rondas de 3K o más")
+            messagebox.showinfo(APP_NAME, f"En las partidas de este VOD no hay rondas de "
+                                          f"{self.settings().min_kills} kills o más.")
+            return
+        vod = self.v_vod.get()
+        base = os.path.splitext(os.path.basename(vod))[0]
+        out = os.path.join(os.path.dirname(vod), f"{base} - rondas {self.settings().min_kills}K+.mp4")
+        self.render(out)
+
+    # ------------------------------------------------------------ sincronización automática
+    def run_sync(self, match_ids, then=None):
+        if not self.vod_info:
+            messagebox.showinfo(APP_NAME, "Primero elige o descarga el VOD.")
+            return
+        try:
+            vs = self.vod_start_utc()
+        except ValueError as e:
+            messagebox.showerror(APP_NAME, str(e))
+            return
+        ms = [self.matches[i] for i in match_ids if i in self.matches]
+        if not ms:
+            messagebox.showinfo(APP_NAME, "Marca al menos una partida (☐ → ☑).")
+            return
+        st = self.settings()
+        vod, dur = self.v_vod.get(), self.vod_info["duration"]
+        self.stop_flag = False
+        self.set_running(True)
+        self.set_step(2, f"Sincronizando {len(ms)} partidas con el VOD…")
+        cb = self.progress_cb()
+
+        def work():
+            try:
+                res = {}
+                for i, m in enumerate(sorted(ms, key=lambda x: x.started_at)):
+                    cb(i / len(ms), f"Partida {i + 1} de {len(ms)}: {m.map_name} "
+                                    f"({m.started_at.astimezone():%H:%M}) — buscando el killfeed…")
+                    # punto de partida: la sincro manual si la hay; si no, la hora + delay
+                    c = dict(self.calib.get(m.match_id) or {})
+                    c.pop("offset_s", None)
+                    tmp_cal = {m.match_id: c} if c else {}
+                    exp = core.match_offset_s(m, vs, tmp_cal)
+                    if not c:
+                        exp += st.global_adjust_s
+                    res[m.match_id] = sync.sync_match(vod, m, exp, dur, None, lambda: self.stop_flag)
+                return res
+            finally:
+                self.after(0, lambda: self.set_running(False))
+
+        def done(res):
+            good = bad = 0
+            shifts = []
+            for mid, r in res.items():
+                if r.ok:
+                    self.calib[mid] = {"offset_s": r.offset_s, "auto": True,
+                                       "conf": round(r.confidence, 2)}
+                    good += 1
+                    shifts.append(r.shift_s)
+                else:
+                    bad += 1
+            self.persist()
+            self.auto_check()
+            self.set_progress(1, f"Sincronizadas solas: {good}" + (f" · sin patrón claro: {bad} "
+                              "(se quedan con la hora + delay; puedes sincronizarlas a mano)" if bad else ""))
+            if then:
+                then()
+            else:
+                self.set_step(None, "Sincronización terminada")
+                if self.clips:
+                    self.compute()
+        self.run_bg(work, done, "No se pudo sincronizar")
+
+    def sync_checked(self):
+        self.run_sync(sorted(self.checked))
+
+    # ------------------------------------------------------------ cámara (vertical)
+    def _cam_text(self):
+        if not self.cam:
+            return "sin cámara elegida (solo juego)"
+        return f"cámara guardada ({self.cam['w'] * 100:.0f}% × {self.cam['h'] * 100:.0f}% de la imagen)"
+
+    def pick_cam(self):
+        if not self.vod_info:
+            messagebox.showinfo(APP_NAME, "Primero elige o descarga un VOD: sacaré un fotograma para que marques tu cámara.")
+            return
+        at = self.clips[0].vod_start + 10 if self.clips else self.vod_info["duration"] / 2
+        png = os.path.join(tempfile.gettempdir(), "vortexsclips_frame.png")
+        try:
+            core.grab_frame(self.v_vod.get(), at, png, 960)
+        except Exception as e:
+            messagebox.showerror(APP_NAME, str(e))
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title("Elige tu cámara")
+        dlg.configure(bg=PANEL)
+        dlg.transient(self)
+        dlg.grab_set()
+        ttk.Label(dlg, text="Arrastra con el ratón un recuadro justo encima de tu cámara y pulsa «Guardar».",
+                  style="H.TLabel").pack(anchor="w", padx=12, pady=(10, 6))
+        img = tk.PhotoImage(file=png)
+        cv = tk.Canvas(dlg, width=img.width(), height=img.height(), highlightthickness=0, bg=BG,
+                       cursor="crosshair")
+        cv.pack(padx=12)
+        cv.create_image(0, 0, anchor="nw", image=img)
+        cv.img = img
+        st = {"x0": 0, "y0": 0, "rect": None, "box": None}
+        if self.cam:
+            W_, H_ = img.width(), img.height()
+            b = (self.cam["x"] * W_, self.cam["y"] * H_, (self.cam["x"] + self.cam["w"]) * W_,
+                 (self.cam["y"] + self.cam["h"]) * H_)
+            st["rect"] = cv.create_rectangle(*b, outline=YELLOW, width=3)
+            st["box"] = b
+
+        def down(e):
+            st["x0"], st["y0"] = e.x, e.y
+            if st["rect"]:
+                cv.delete(st["rect"])
+            st["rect"] = cv.create_rectangle(e.x, e.y, e.x, e.y, outline=YELLOW, width=3)
+
+        def drag(e):
+            cv.coords(st["rect"], st["x0"], st["y0"], e.x, e.y)
+
+        def up(e):
+            x0, y0 = st["x0"], st["y0"]
+            st["box"] = (min(x0, e.x), min(y0, e.y), max(x0, e.x), max(y0, e.y))
+        cv.bind("<ButtonPress-1>", down)
+        cv.bind("<B1-Motion>", drag)
+        cv.bind("<ButtonRelease-1>", up)
+        bf = ttk.Frame(dlg, style="Panel.TFrame")
+        bf.pack(fill="x", padx=12, pady=10)
+
+        def save():
+            b = st["box"]
+            if not b or b[2] - b[0] < 20 or b[3] - b[1] < 20:
+                messagebox.showinfo(APP_NAME, "Marca un recuadro un poco más grande.", parent=dlg)
+                return
+            W_, H_ = img.width(), img.height()
+            x0, y0 = max(0, b[0]) / W_, max(0, b[1]) / H_
+            x1, y1 = min(W_, b[2]) / W_, min(H_, b[3]) / H_
+            self.cam = {"x": round(x0, 4), "y": round(y0, 4), "w": round(x1 - x0, 4), "h": round(y1 - y0, 4)}
+            self.lbl_cam.configure(text=self._cam_text())
+            self.persist()
+            dlg.destroy()
+
+        def none():
+            self.cam = None
+            self.lbl_cam.configure(text=self._cam_text())
+            self.persist()
+            dlg.destroy()
+        ttk.Button(bf, text="Guardar", style="Accent.TButton", command=save).pack(side="right")
+        ttk.Button(bf, text="Sin cámara (solo juego)", command=none).pack(side="right", padx=6)
+        self.wait_window(dlg)
 
     def play(self, start, dur=None, clock=False):
         """Reproduce el VOD desde 'start'. clock=True muestra encima el minuto del VOD."""
@@ -836,10 +1011,15 @@ class App(tk.Tk):
                                            filetypes=[("MP4", "*.mp4")])
         if not out:
             return
+        if self.v_vertical.get() and not self.cam and not self.cfg.get("cam_asked"):
+            self.cfg["cam_asked"] = True
+            if messagebox.askyesno(APP_NAME, "Para la versión vertical como tus TikToks tengo que saber dónde está "
+                                             "tu cámara en el directo.\n\n¿La marcas ahora? (solo una vez)"):
+                self.pick_cam()
         self.persist()
         self.stop_flag = False
         self.set_running(True)
-        self.set_step(3, f"Generando el vídeo con {len(self.clips)} rondas…")
+        self.set_step(4, f"Generando el vídeo con {len(self.clips)} rondas…")
         self.set_progress(0, "Empezando…")
         clips = list(self.clips)
         enc = ENCODERS[self.v_enc.get()]
@@ -861,17 +1041,43 @@ class App(tk.Tk):
             else:
                 cb(frac, "  ·  ".join(bits))
 
+        vertical, singles, cam = self.v_vertical.get(), self.v_singles.get(), self.cam
+
+        def sub(title):
+            self.after(0, lambda: self.lbl_step.configure(text=title))
+
         def work():
             try:
-                return core.render(vod, clips, out, encoder=enc, show_label=False,
-                                   progress=prog, should_stop=lambda: self.stop_flag)
+                stop = lambda: self.stop_flag
+                core.render(vod, clips, out, encoder=enc, show_label=False, progress=prog, should_stop=stop)
+                made = [out]
+                base = os.path.splitext(out)[0]
+                if vertical:
+                    sub("Generando la versión vertical (TikTok)…")
+                    v = base + " (vertical).mp4"
+                    core.make_vertical(out, v, cam, enc, lambda f, t: cb(f, "Versión vertical 9:16…"), stop)
+                    made.append(v)
+                if singles:
+                    sub("Sacando un clip por ronda…")
+                    folder = base + " - clips sueltos"
+                    core.export_singles(out, clips, folder, vertical_cam=cam, vertical=vertical,
+                                        encoder=enc, progress=cb, should_stop=stop)
+                    made.append(folder)
+                return made
             finally:
                 self.after(0, lambda: self.set_running(False))
 
-        def finish(path):
-            self.finish_steps("¡Vídeo listo!")
+        def finish(made):
+            path = made[0]
+            self.finish_steps("¡Vídeos listos!")
             self.status(path)
-            if messagebox.askyesno(APP_NAME, f"¡Vídeo listo! {len(clips)} rondas.\n\n{path}\n\n¿Abrir la carpeta?"):
+            extra = ""
+            if vertical:
+                extra += "\n• Versión vertical 9:16"
+            if singles:
+                extra += "\n• Carpeta con un clip por ronda"
+            if messagebox.askyesno(APP_NAME, f"¡Listo! {len(clips)} rondas.\n\n• Vídeo horizontal{extra}\n\n"
+                                             f"Todo está en:\n{os.path.dirname(path)}\n\n¿Abrir la carpeta?"):
                 if os.name == "nt":
                     subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
         self.run_bg(work, finish, "No se pudo generar el vídeo")

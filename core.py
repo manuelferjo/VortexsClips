@@ -297,11 +297,18 @@ def match_offset_s(match: Match, vod_start_utc: datetime, calib: dict) -> float:
     primera kill de esa partida). Si existe, manda sobre la hora.
     """
     c = calib.get(match.match_id) or {}
+    if c.get("offset_s") is not None:            # sincronización automática
+        return float(c["offset_s"])
     fk = c.get("first_kill_vod_s")
     first = match.first_my_kill_ms()
     if fk is not None and first is not None:
         return float(fk) - first / 1000.0
     return (match.started_at - vod_start_utc).total_seconds()
+
+
+def is_synced(calib: dict, match_id: str) -> bool:
+    c = calib.get(match_id) or {}
+    return c.get("offset_s") is not None or c.get("first_kill_vod_s") is not None
 
 
 def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: float,
@@ -310,7 +317,7 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
     clips: list[Clip] = []
     for m in matches:
         c = calib.get(m.match_id) or {}
-        uses_calib = c.get("first_kill_vod_s") is not None
+        uses_calib = is_synced(calib, m.match_id)
         base = match_offset_s(m, vod_start_utc, calib)
         if not uses_calib:
             base += settings.global_adjust_s
@@ -346,7 +353,7 @@ def match_in_vod(m: Match, vod_start_utc: datetime, vod_duration_s: float,
                  settings: CutSettings, calib: dict | None = None) -> bool:
     calib = calib or {}
     base = match_offset_s(m, vod_start_utc, calib)
-    if (calib.get(m.match_id) or {}).get("first_kill_vod_s") is None:
+    if not is_synced(calib, m.match_id):
         base += settings.global_adjust_s
     end = base + (m.length_ms / 1000 if m.length_ms else 3000)
     return end > 0 and base < vod_duration_s
@@ -573,3 +580,100 @@ def write_markers(clips: list[Clip], path: str) -> None:
             f.write(f"{fmt_ts(t)} | {fmt_ts(c.vod_start)} - {fmt_ts(c.vod_end)} | "
                     f"{c.label} ({c.match.agent}, {c.match.score})\n")
             t += c.vod_end - c.vod_start
+
+
+# ---------------------------------------------------------------- vertical y clips sueltos
+def vertical_filter(cam: dict | None) -> str:
+    """
+    Estilo TikTok de Vortexs: juego recortado al centro a toda la altura (1080x1920)
+    y la cámara encima, centrada arriba, con un borde oscuro fino.
+    cam = {'x','y','w','h'} en fracciones (0..1) de la imagen original.
+    """
+    bg = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920:flags=lanczos,setsar=1"
+    if not cam:
+        return f"[0:v]{bg},format=yuv420p[v]"
+    cx, cy, cw, ch = (float(cam[k]) for k in ("x", "y", "w", "h"))
+    return (f"[0:v]split[a][b];[a]{bg}[bg];"
+            f"[b]crop=iw*{cw:.4f}:ih*{ch:.4f}:iw*{cx:.4f}:ih*{cy:.4f},"
+            f"scale=520:-2:flags=lanczos,pad=iw+8:ih+8:4:4:color=0x111111,setsar=1[cam];"
+            f"[bg][cam]overlay=(W-w)/2:140,format=yuv420p[v]")
+
+
+def _run_ffmpeg(cmd: list[str], total_s: float, progress=None, should_stop=None, label=""):
+    p = subprocess.Popen(cmd + ["-nostats", "-progress", "pipe:1"], stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, **_no_window())
+    err = []
+    import threading
+    th = threading.Thread(target=lambda: err.extend(p.stderr), daemon=True)
+    th.start()
+    for line in p.stdout:
+        if should_stop and should_stop():
+            p.kill()
+            raise RuntimeError("Cancelado.")
+        if line.startswith("out_time_us=") and progress and total_s:
+            try:
+                progress(min(1.0, int(line.split("=")[1]) / 1e6 / total_s), label)
+            except ValueError:
+                pass
+    p.wait()
+    th.join(timeout=2)
+    if p.returncode != 0:
+        raise RuntimeError("ffmpeg falló:\n" + "".join(err)[-800:])
+
+
+def make_vertical(src: str, out: str, cam: dict | None, encoder: str = "x264",
+                  progress=None, should_stop=None, start: float | None = None,
+                  dur: float | None = None) -> str:
+    ffmpeg = find_tool("ffmpeg")
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    if start is not None:
+        cmd += ["-ss", f"{start:.3f}"]
+    if dur is not None:
+        cmd += ["-t", f"{dur:.3f}"]
+    cmd += ["-i", src, "-filter_complex", vertical_filter(cam), "-map", "[v]", "-map", "0:a?",
+            *_venc(encoder), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out]
+    total = dur or float(probe_vod(src)["duration"])
+    _run_ffmpeg(cmd, total, progress, should_stop, "Versión vertical…")
+    return out
+
+
+def _safe(name: str) -> str:
+    return "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
+
+
+def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=None, vertical=False,
+                   encoder: str = "x264", progress=None, should_stop=None) -> list[str]:
+    """Un archivo por ronda, sacado del vídeo ya montado (rápido y con el mismo audio/vídeo)."""
+    ffmpeg = find_tool("ffmpeg")
+    os.makedirs(folder, exist_ok=True)
+    outs, t = [], 0.0
+    n = len(clips)
+    for i, c in enumerate(clips):
+        d = c.vod_end - c.vod_start
+        name = _safe(f"{i + 1:02d} - {c.label.replace(' · ', ' ')}")
+        h = os.path.join(folder, name + ".mp4")
+        if progress:
+            progress(i / n, f"Clip suelto {i + 1} de {n}: {c.label}")
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
+               "-i", src, "-map", "0:v:0", "-map", "0:a?", *_venc(encoder),
+               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", h]
+        _run_ffmpeg(cmd, d, None, should_stop)
+        outs.append(h)
+        if vertical:
+            v = os.path.join(folder, name + " (vertical).mp4")
+            make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d)
+            outs.append(v)
+        t += d
+    if progress:
+        progress(1.0, "Clips sueltos listos")
+    return outs
+
+
+def grab_frame(vod: str, at: float, out_png: str, width: int = 960) -> str:
+    ffmpeg = find_tool("ffmpeg")
+    r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{at:.2f}", "-i", vod,
+                        "-frames:v", "1", "-vf", f"scale={width}:-2", out_png],
+                       capture_output=True, text=True, **_no_window())
+    if r.returncode != 0 or not os.path.isfile(out_png):
+        raise RuntimeError("No se pudo sacar un fotograma del VOD:\n" + r.stderr[-300:])
+    return out_png
