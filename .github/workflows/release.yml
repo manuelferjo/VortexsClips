@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.v.outputs.tag }}
@@ -21,43 +21,26 @@ jobs:
       skip: ${{ steps.exists.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Leer versión
         id: v
         run: |
           VER=$(python3 -c "import version; print(version.VERSION)")
           echo "tag=v$VER" >> "$GITHUB_OUTPUT"
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
-
       - name: ¿Ya existe?
         id: exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "${{ steps.v.outputs.tag }}" >/dev/null 2>&1; then
+          if gh release view "${{ steps.v.outputs.tag }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"; echo "Ya publicada."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Empaquetar código
-        if: steps.exists.outputs.skip == 'false'
-        run: |
-          mkdir -p dist/VortexsClips
-          cp *.py icon.ico Instalar.bat Iniciar.bat README.md dist/VortexsClips/
-          cd dist && zip -r VortexsClips.zip VortexsClips
-
-      - name: Crear Release
-        if: steps.exists.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${{ steps.v.outputs.tag }}" dist/VortexsClips.zip \
-            --target "$GITHUB_SHA" --title "Vortexs Clips ${{ steps.v.outputs.tag }}" --generate-notes
-
   windows:
-    needs: release
-    if: needs.release.outputs.skip == 'false'
+    needs: check
+    if: needs.check.outputs.skip == 'false'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,16 +69,46 @@ jobs:
           if (!(Test-Path ffmpeg\bin\ffplay.exe)) { throw "Falta ffplay" }
           ffmpeg\bin\ffmpeg.exe -hide_banner -filters | Select-String " ass "
 
+      - name: Autoprueba del programa empaquetado
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\VortexsClips\ffmpeg\bin | Out-Null
+          Copy-Item ffmpeg\bin\* dist\VortexsClips\ffmpeg\bin -Recurse
+          $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest","$pwd\selftest.txt" -PassThru -Wait
+          Get-Content selftest.txt
+          Remove-Item dist\VortexsClips\ffmpeg -Recurse -Force
+          if ($p.ExitCode -ne 0) { throw "La autoprueba ha fallado" }
+
       - name: Crear instalador
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress; }
-          & $iscc "/DAppVersion=${{ needs.release.outputs.ver }}" installer.iss
+          & $iscc "/DAppVersion=${{ needs.check.outputs.ver }}" installer.iss
           if (!(Test-Path dist\VortexsClips-Setup.exe)) { throw "No se generó el instalador" }
 
-      - name: Subir instalador a la Release
-        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup
+          path: dist/VortexsClips-Setup.exe
+
+  publish:
+    needs: [check, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: setup
+          path: out
+      - name: Empaquetar código
+        run: |
+          mkdir -p dist/VortexsClips
+          cp *.py icon.ico Instalar.bat Iniciar.bat README.md dist/VortexsClips/
+          cd dist && zip -r VortexsClips.zip VortexsClips
+      - name: Crear Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ needs.release.outputs.tag }}" dist\VortexsClips-Setup.exe --clobber
+        run: |
+          gh release create "${{ needs.check.outputs.tag }}" dist/VortexsClips.zip out/VortexsClips-Setup.exe \
+            --target "$GITHUB_SHA" --title "Vortexs Clips ${{ needs.check.outputs.tag }}" --generate-notes

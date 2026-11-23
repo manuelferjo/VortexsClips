@@ -1454,5 +1454,56 @@ class App(tk.Tk):
         self.destroy()
 
 
+def selftest(out_path):
+    """Prueba automática (la usa GitHub antes de publicar): monta la ventana, reproduce
+    un vídeo en la vista previa y genera una vertical con subtítulos."""
+    import traceback
+    results = []
+
+    def log(ok, what):
+        results.append(("OK  " if ok else "FAIL") + " " + what)
+
+    try:
+        tmp = tempfile.mkdtemp(prefix="vc_selftest_")
+        ff = core.find_tool("ffmpeg")
+        log(bool(ff), f"ffmpeg: {ff}")
+        log(bool(core.find_tool("ffprobe")), "ffprobe")
+        log(bool(core.find_tool("ffplay")), "ffplay")
+        vid = os.path.join(tmp, "t.mp4")
+        subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "testsrc2=size=1920x1080:rate=30", "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000",
+                        "-t", "6", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", vid],
+                       check=True, **core._no_window())
+        log(os.path.isfile(vid), "vídeo de prueba")
+        log(True, f"codificador: {core.best_encoder()}")
+        words = [{"start": 0.5, "end": 0.9, "text": "vale"}, {"start": 1.0, "end": 1.4, "text": "mira"},
+                 {"start": 1.5, "end": 2.0, "text": "esto"}]
+        cam = {"x": 0.7, "y": 0.6, "w": 0.25, "h": 0.3}
+        vout = os.path.join(tmp, "v.mp4")
+        core.make_vertical(vid, vout, cam, "auto", words=words)
+        info = core.probe_vod(vout)
+        log(info["width"] == 1080 and info["height"] == 1920, f"vertical con subtítulos {info['width']}x{info['height']}")
+        app = App()
+        log(True, "ventana creada")
+        app.v_vod.set(vid)
+        app.nb4.select(app.tab_prev)
+        app.player.open(1.0, 4.0)
+
+        def finish():
+            log(app.player._img is not None, f"vista previa pinta fotogramas (raw={app.player._raw_ok})")
+            app.player.stop()
+            app.destroy()
+        app.after(4000, finish)
+        app.mainloop()
+    except Exception:
+        log(False, traceback.format_exc())
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(results) + "\n")
+    sys.exit(0 if all(r.startswith("OK") for r in results) else 1)
+
+
 if __name__ == "__main__":
-    App().mainloop()
+    if "--selftest" in sys.argv:
+        selftest(sys.argv[sys.argv.index("--selftest") + 1])
+    else:
+        App().mainloop()
