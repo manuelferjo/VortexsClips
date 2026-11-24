@@ -91,6 +91,7 @@ class App(tk.Tk):
         self.current_url = None
         self.batch_size = 0
         self.errors_log = []
+        self.sync_warning = ""
         self.delay_fn = None
 
         self._style()
@@ -368,6 +369,7 @@ class App(tk.Tk):
         ttk.Button(mb, text="Marcar las que están en el VOD", command=self.auto_check).pack(side="left")
         ttk.Button(mb, text="Sincronizar solo", style="Purple.TButton", command=self.sync_checked).pack(side="left", padx=6)
         ttk.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="left")
+        ttk.Button(mb, text="Informes", command=self.open_reports).pack(side="right")
         ttk.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
 
         # --- 4. rondas
@@ -1121,6 +1123,7 @@ class App(tk.Tk):
         def done(res):
             good = bad = 0
             shifts = []
+            failed = []
             learned = []
             for mid, r in res.items():
                 if r.ok and dfn is not None and mid in self.matches:
@@ -1135,6 +1138,9 @@ class App(tk.Tk):
                     shifts.append(r.shift_s)
                 else:
                     bad += 1
+                    m_ = self.matches.get(mid)
+                    if m_:
+                        failed.append(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}")
             if learned:
                 learned.sort()
                 self.cfg["residual_s"] = round(learned[len(learned) // 2], 2)
@@ -1142,13 +1148,44 @@ class App(tk.Tk):
             self.auto_check()
             self.set_progress(1, f"Sincronizadas solas: {good}" + (f" · sin patrón claro: {bad} "
                               "(se quedan con la hora + delay; puedes sincronizarlas a mano)" if bad else ""))
+            if failed:
+                self.sync_warning = (f"{len(failed)} partida(s) no se han podido sincronizar solas "
+                                     f"({', '.join(failed[:6])}{'…' if len(failed) > 6 else ''}). "
+                                     "Sus cortes pueden caer desplazados: revísalas con «Ver ronda» o "
+                                     "sincronízalas a mano.")
+            else:
+                self.sync_warning = ""
             if then:
                 then()
             else:
                 self.set_step(None, "Sincronización terminada")
                 if self.clips:
                     self.compute()
+                if failed:
+                    self.show_warnings([self.sync_warning], ask_report=True)
         self.run_bg(work, done, "No se pudo sincronizar")
+
+    # ------------------------------------------------------------ avisos
+    def show_warnings(self, items, ask_report=False):
+        """Ventana con los avisos (en vez de dejarlos solo en la línea de abajo)."""
+        items = [i for i in items if i]
+        if not items or self.unattended():
+            return
+        txt = "\n\n".join("⚠ " + i for i in items)
+        if ask_report:
+            txt += ("\n\nHe guardado un informe de esas partidas. Si me lo pasas, ajusto el detector "
+                    "con tu imagen real.\n\n¿Abrir la carpeta de informes?")
+            if messagebox.askyesno(APP_NAME, txt, icon="warning"):
+                self.open_reports()
+        else:
+            messagebox.showwarning(APP_NAME, txt)
+
+    def open_reports(self):
+        d = sync.report_dir()
+        if os.name == "nt":
+            os.startfile(d)
+        else:
+            messagebox.showinfo(APP_NAME, d)
 
     def sync_checked(self):
         self.run_sync(sorted(self.checked))
@@ -1379,6 +1416,8 @@ class App(tk.Tk):
             path = made[0]
             self.finish_steps("¡Vídeos listos!")
             self.status(path)
+            if getattr(self, "sync_warning", ""):
+                warnings.insert(0, self.sync_warning)
             if warnings:
                 self.status(path + "   ⚠ " + " · ".join(warnings)[:200])
             if self.unattended():
@@ -1391,6 +1430,8 @@ class App(tk.Tk):
                 extra += "\n• Carpeta con un clip por ronda"
             if self.flow_active:
                 self.after(2000, lambda: self.flow_done(f"Listo: {os.path.basename(path)}"))
+            if warnings:
+                self.show_warnings(warnings, ask_report=bool(getattr(self, "sync_warning", "")))
             if messagebox.askyesno(APP_NAME, f"¡Listo! {len(clips)} rondas.\n\n• Vídeo horizontal{extra}\n\n"
                                              f"Todo está en:\n{os.path.dirname(path)}\n\n¿Abrir la carpeta?"):
                 if os.name == "nt":
@@ -1501,6 +1542,29 @@ def selftest(out_path):
         core.make_vertical(vid, vout, cam, "auto", words=words)
         info = core.probe_vod(vout)
         log(info["width"] == 1080 and info["height"] == 1920, f"vertical con subtítulos {info['width']}x{info['height']}")
+        # sincronización automática con una partida simulada (killfeed a horas conocidas)
+        import random
+        from datetime import datetime, timezone
+        random.seed(3)
+        kills = sorted(random.uniform(15, 200) for _ in range(30))
+        true_off = 20.0
+        boxes = []
+        for i, k in enumerate(kills):
+            t, y = true_off + k, 30 + (i % 5) * 26
+            boxes.append(f"drawbox=x=880:y={y}:w=380:h=22:color=0x202020@0.9:t=fill:enable='between(t,{t:.2f},{t + 5:.2f})'")
+            boxes.append(f"drawbox=x={960 + (i * 37) % 150}:y={y + 4}:w=70:h=14:color=red:t=fill:enable='between(t,{t:.2f},{t + 5:.2f})'")
+        fpath = os.path.join(tmp, "f.txt")
+        with open(fpath, "w") as f:
+            f.write("[0:v]" + ",".join(boxes) + "[v]")
+        svod = os.path.join(tmp, "s.mp4")
+        subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "testsrc2=size=1280x720:rate=15", "-filter_complex_script", fpath, "-map", "[v]",
+                        "-t", "260", "-c:v", "libx264", "-preset", "ultrafast", svod], check=True, **core._no_window())
+        m = core.Match("t", "Prueba", datetime.now(timezone.utc), 0, "Jett", "me", "13-0")
+        m.kills = [core.Kill(0, int(k * 1000), 0, "me" if i % 3 == 0 else "a", "b") for i, k in enumerate(kills)]
+        r = sync.sync_match(svod, m, true_off - 37.5, 260)
+        log(r.ok and abs(r.offset_s - true_off) <= 0.5,
+            f"sincronización automática (error {r.offset_s - true_off:+.2f} s, ok={r.ok}, {r.reason})")
         app = App()
         log(True, "ventana creada")
         app.v_vod.set(vid)

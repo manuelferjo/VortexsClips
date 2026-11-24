@@ -52,9 +52,9 @@ jobs:
       - name: Construir el programa (.exe)
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip pyinstaller
+          python -m pip install --upgrade pip pyinstaller numpy
           pyinstaller --noconfirm --clean --windowed --onedir --name VortexsClips `
-            --icon icon.ico --add-data "icon.ico;." app.py
+            --icon icon.ico --add-data "icon.ico;." --hidden-import numpy app.py
           if (!(Test-Path dist\VortexsClips\VortexsClips.exe)) { throw "No se generó el .exe" }
 
       - name: Descargar ffmpeg
@@ -126,6 +126,15 @@ jobs:
         with:
           name: setup
           path: out
+      - name: Modelo de voz en GitHub (para redes donde HuggingFace está bloqueado)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view modelo-voz -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            curl -fL -o ggml-small-q5_1.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin
+            gh release create modelo-voz ggml-small-q5_1.bin -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "Modelo de voz (subtítulos)" --notes "Modelo whisper.cpp small q5_1 que descarga Vortexs Clips la primera vez que genera subtítulos."
+          fi
       - name: Empaquetar código
         run: |
           mkdir -p dist/VortexsClips

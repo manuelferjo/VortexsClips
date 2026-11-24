@@ -22,7 +22,11 @@ import core
 # versión fija que sí publica los programas para Windows (las últimas solo traen el código)
 WHISPER_ZIP = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.2/whisper-bin-x64.zip"
 MODEL_NAME = "ggml-small-q5_1.bin"
-MODEL_URL = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{MODEL_NAME}"
+MODEL_URLS = [
+    # copia en GitHub (funciona en redes donde HuggingFace está bloqueado)
+    f"https://github.com/manuelferjo/VortexsClips/releases/download/modelo-voz/{MODEL_NAME}",
+    f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{MODEL_NAME}",
+]
 HALLUCINATIONS = ("subtítulos", "subtitulos", "amara.org", "suscríbete", "gracias por ver")
 
 
@@ -78,7 +82,15 @@ def ensure_whisper(progress=None) -> tuple[str, str]:
             raise RuntimeError("No se pudo preparar el transcriptor.")
     model = os.path.join(whisper_dir(), MODEL_NAME)
     if not os.path.isfile(model):
-        _download(MODEL_URL, model, progress, "Descargando modelo de voz (solo la primera vez):")
+        errors = []
+        for url in MODEL_URLS:
+            try:
+                _download(url, model, progress, "Descargando modelo de voz (solo la primera vez):")
+                break
+            except Exception as e:
+                errors.append(f"{url.split('/')[2]}: {e}")
+        else:
+            raise RuntimeError("No se pudo descargar el modelo de voz (" + " · ".join(errors) + ")")
     return cli, model
 
 
