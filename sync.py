@@ -456,6 +456,47 @@ def _halves_ok(r, tol=1.0) -> bool:
     return bool(h) and all(abs(x - r["shift"]) <= tol for x in h)
 
 
+LATE = {"cartel": (5.0, 8.5), "marcador": (5.0, 8.5), "killfeed": (4.0, 5.75), "aviso": (4.0, 5.75)}
+
+
+def _supports(x: dict, p: float) -> bool:
+    """¿El resultado x respalda que la partida esté en p (mismo segundo o con su retraso típico)?"""
+    if x.get("zpeak", 0) < 5.0 or x.get("family") == "acuerdo":
+        return False
+    d = x["shift"] - p
+    if abs(d) <= 1.0:
+        return True
+    lo, hi = LATE.get(x.get("family"), (99, 99))
+    return lo <= d <= hi
+
+
+def _decide(results: list):
+    pareja = next((r for r in results if r.get("set") == "cartel(pareja)"), None)
+    if pareja is not None and pareja["ok"]:
+        return pareja
+    if pareja is not None and pareja.get("zpeak", 0) >= 4.0 and pareja.get("ratio", 0) >= 1.15 \
+            and abs(pareja["shift"]) < SEARCH_S - 2:
+        sup = [x for x in results if x is not pareja and _supports(x, pareja["shift"])]
+        if sup:
+            out = dict(pareja)
+            out.update(ok=True, conf=0.65, family="acuerdo",
+                       set="cartel(pareja)+" + "+".join(x["set"] for x in sup))
+            return out
+    oks = [r for r in results if r["ok"] and r is not pareja]
+    if oks:
+        oks.sort(key=lambda r: r["conf"], reverse=True)
+        b = oks[0]
+        # ¿es el segundo texto / la línea que desaparece de un pico de pareja anterior?
+        if pareja is not None and b.get("family") in LATE:
+            lo, hi = LATE[b["family"]]
+            if lo <= b["shift"] - pareja["shift"] <= hi and pareja.get("zpeak", 0) >= 3.5:
+                out = dict(pareja)
+                out.update(ok=True, conf=0.6, family="acuerdo", set=f"cartel(pareja) corregido desde {b['set']}")
+                return out
+        return b
+    return _agreement(results)
+
+
 def _agreement(results: list):
     """
     Dos métodos independientes (cartel, marcador, killfeed, aviso) que señalan el mismo segundo:
@@ -468,6 +509,9 @@ def _agreement(results: list):
         for j in range(i + 1, len(cands)):
             a, b = cands[i], cands[j]
             if a["family"] == b["family"] or abs(a["shift"] - b["shift"]) > 1.0:
+                continue
+            # el cartel solo y el marcador se equivocan juntos (los dos saltan con el segundo texto)
+            if {a.get("set"), b.get("set")} == {"cartel(cartel)", "marcador"}:
                 continue
             if not (_halves_ok(a) or _halves_ok(b)):
                 continue
@@ -552,16 +596,12 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
         results.append(r)
     if not results:
         return SyncResult(expected_offset_s, 0, 0, False, "no se pudo leer el vídeo")
-    # 3) decisión: el cartel manda; si no, el mejor método claro; si no, dos métodos que coincidan
-    best = None
-    oks = [r for r in results if r["ok"]]
-    if oks:
-        oks.sort(key=lambda r: (r["family"] == "cartel", r["conf"]), reverse=True)
-        best = oks[0]
-    else:
-        best = _agreement(results)
-        if best is not None:
-            results.append(best)
+    # 3) decisión (medida con VODs reales): el cartel en pareja es el que acierta; los demás o
+    #    coinciden con él o van con un retraso fijo (segundo texto / marcador: 5-8,5 s; killfeed: la
+    #    línea que desaparece, ~4-5,5 s). Esos retrasos también cuentan como respaldo de la pareja.
+    best = _decide(results)
+    if best is not None and best not in results:
+        results.append(best)
     if best is not None:
         _log(match, expected_offset_s, results)
         out = SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], True, "", "", None)
@@ -647,8 +687,9 @@ def sync_many(vod: str, items: list, vod_duration: float, workers: int = 2, prog
 def verify_match(vod: str, match: core.Match, offset_s: float, vod_duration: float = 0.0,
                  should_stop=None) -> dict:
     """
-    Comprobación independiente de una partida ya colocada en offset_s: con TODAS las kills de la
-    partida, ¿el killfeed cambia justo ahí? Busca solo ±20 s alrededor (rápido: usa la caché).
+    Comprobación de una partida ya colocada en offset_s, buscando solo ±20 s alrededor (rápido:
+    usa la caché). Primero con la pareja de textos del final de ronda (lo más fiable en tu emisión);
+    si no hay finales de ronda, con el killfeed teniendo en cuenta el «eco» de cuando desaparece la línea.
     Devuelve {"state": "ok" | "dudosa" | "?", "shift": s, "z": z}; con "dudosa", offset_s + shift
     es dónde parece estar de verdad.
     """
@@ -658,10 +699,12 @@ def verify_match(vod: str, match: core.Match, offset_s: float, vod_duration: flo
     except ImportError:
         return out
     allk = sorted(k.t_match / 1000.0 for k in match.kills)
+    ends = sorted(r.end_match_ms / 1000.0 for r in match.rounds if r.end_match_ms)
     if len(allk) < 8:
         return out
-    a = max(0.0, offset_s + allk[0] - 25)
-    b = offset_s + allk[-1] + 25
+    evs = ends if len(ends) >= MIN_ENDS else allk
+    a = max(0.0, offset_s + min(evs[0], allk[0]) - 25)
+    b = offset_s + max(evs[-1], allk[-1]) + 25
     if vod_duration:
         b = min(vod_duration, b)
     if b - a < 30:
@@ -669,17 +712,30 @@ def verify_match(vod: str, match: core.Match, offset_s: float, vod_duration: flo
     u0, arr = _read_all(vod, a, b - a, should_stop, vod_duration)
     if arr is None:
         return out
-    fr, t0 = _tile(arr, u0, "killfeed", a, b)
-    if fr is None:
-        return out
-    r = _analyze_once(fr, t0, offset_s, allk, 20.0)
-    out.update(shift=float(r["shift"]), z=float(r["zpeak"]))
-    if abs(r["shift"]) <= 1.0 and r["zpeak"] >= 3.0:
-        out["state"] = "ok"
-    elif abs(r["shift"]) > 1.5 and r["zpeak"] >= 6.0 and r["ratio"] >= 1.3:
-        out["state"] = "dudosa"
+    how = ""
+    if len(ends) >= MIN_ENDS:
+        fr, t0 = _tile(arr, u0, "cartel", a, b)
+        if fr is not None:
+            r = _validated(fr, t0, offset_s, ends, 20.0, PAIR_LAG, "pareja")
+            how = "cartel"
+            out.update(shift=float(r["shift"]), z=float(r["zpeak"]))
+            if abs(r["shift"]) <= 1.0 and r["zpeak"] >= 2.5:
+                out["state"] = "ok"
+            elif abs(r["shift"]) > 1.5 and r["zpeak"] >= 6.0 and r["ratio"] >= 1.3 and _halves_ok(r):
+                out["state"] = "dudosa"
+    if out["state"] == "?" and not how:
+        fr, t0 = _tile(arr, u0, "killfeed", a, b)
+        if fr is not None:
+            r = _analyze_once(fr, t0, offset_s, allk, 20.0)
+            how = "killfeed"
+            out.update(shift=float(r["shift"]), z=float(r["zpeak"]))
+            lo, hi = LATE["killfeed"]
+            if (abs(r["shift"]) <= 1.0 or lo <= r["shift"] <= hi) and r["zpeak"] >= 3.0:
+                out["state"] = "ok"
+            elif abs(r["shift"]) > 1.5 and r["zpeak"] >= 6.0 and r["ratio"] >= 1.3:
+                out["state"] = "dudosa"
     _log_line(f"comprobación {match.map_name} {match.started_at.astimezone():%d/%m %H:%M}: {out['state']} "
-              f"(pico {r['shift']:+.2f} s, z {r['zpeak']:.1f}, ratio {r['ratio']:.2f})")
+              f"({how}: pico {out['shift']:+.2f} s, z {out['z']:.1f})")
     return out
 
 

@@ -25,6 +25,33 @@ def log(out, msg):
         f.write(msg + "\n")
 
 
+def fetch_all(riots, key, region, until, log_out):
+    """Partidas de todas tus cuentas hasta la fecha 'until' (UTC): [(Match, raw, riot)]."""
+    got = {}
+    for riot in riots:
+        pos = 0
+        for page in range(25):
+            try:
+                raws = core.fetch_recent_matches(riot, key, region, size=10, start=pos)
+            except Exception as e:
+                log(log_out, f"API ({riot}, página {page}): {e}")
+                break
+            time.sleep(2.2)          # clave básica: 30 peticiones por minuto
+            pos += 10
+            olds = []
+            for raw in raws:
+                try:
+                    mm = core.parse_match(raw, riot)
+                except Exception:
+                    continue
+                got.setdefault(mm.match_id, (mm, raw, riot))
+                olds.append(mm.started_at)
+            if not raws or (olds and min(olds) < until):
+                break
+    log(log_out, f"API: {len(got)} partidas de {', '.join(riots)}")
+    return list(got.values())
+
+
 def main(cfg_path, out):
     os.makedirs(out, exist_ok=True)
     cfg = json.load(open(cfg_path, encoding="utf-8"))
@@ -32,10 +59,47 @@ def main(cfg_path, out):
     if not key:
         log(out, "FALTA LA CLAVE: añade el secreto HDEV_KEY en GitHub (Settings → Secrets and variables → Actions).")
         return 2
-    url, riot, region = cfg["vod"], cfg["riot"], cfg.get("region", "eu")
-    base_delay = float(cfg.get("desfase", 115))
+    region = cfg.get("region", "eu")
+    riots = cfg.get("riots") or [cfg["riot"]]
+    vods = list(cfg.get("vods") or [])
+    if cfg.get("canal_de"):
+        exe = twitch.ensure_ytdlp()
+        j = json.loads(subprocess.run([exe, "-J", "--no-warnings", cfg["canal_de"]], capture_output=True,
+                                      text=True).stdout or "{}")
+        ch = j.get("uploader_id") or j.get("channel_id") or j.get("uploader")
+        lst = twitch.latest_vods(ch, int(cfg.get("n", 4)) + len(cfg.get("excluir", [])) + 2)
+        excl = {str(x).lstrip("v") for x in cfg.get("excluir", [])}
+        vods += [v["url"] for v in lst if str(v["id"]).lstrip("v") not in excl][: int(cfg.get("n", 4))]
+        log(out, f"Canal {ch}: VODs a probar: {', '.join(vods)}")
+    infos = []
+    for u in vods:
+        try:
+            infos.append((u, twitch.vod_info(u)))
+        except Exception as e:
+            log(out, f"{u}: no se pudo leer ({e})")
+    if not infos:
+        return 3
+    oldest = min(i["start"] for _, i in infos)
+    allm = fetch_all(riots, key, region, oldest, out)
+    rc = 0
+    for u, info in infos:
+        sub = os.path.join(out, str(info["id"]))
+        os.makedirs(sub, exist_ok=True)
+        try:
+            rc |= one(u, info, allm, float(cfg.get("desfase", 115)), sub)
+        except Exception as e:
+            import traceback
+            log(sub, "ERROR:\n" + traceback.format_exc())
+        vod = os.path.join(out, "..", "vod.mp4")
+        if os.path.isfile(vod):
+            os.remove(vod)
+        for d in (sync.cache_root(),):
+            shutil.rmtree(d, ignore_errors=True)
+    return rc
+
+
+def one(url, info, allm, base_delay, out):
     t0 = time.time()
-    info = twitch.vod_info(url)
     log(out, f"VOD {info['id']} · {info['title']!r} · {info['duration'] / 3600:.1f} h · inicio {info['start']}")
     vod = os.path.join(out, "..", "vod.mp4")
     if not os.path.isfile(vod):
@@ -52,19 +116,9 @@ def main(cfg_path, out):
     vs = info["start"]
     # partidas del directo
     st = core.CutSettings(global_adjust_s=base_delay)
-    ms, pos, rawby = [], 0, {}
-    for page in range(12):
-        raws = core.fetch_recent_matches(riot, key, region, size=10, start=pos)
-        pos += 10
-        for raw in raws:
-            try:
-                mm = core.parse_match(raw, riot)
-                ms.append(mm)
-                rawby[mm.match_id] = raw
-            except Exception:
-                pass
-        if not raws or (ms and min(m.started_at for m in ms) < vs):
-            break
+    ms = [x[0] for x in allm]
+    rawby = {x[0].match_id: x[1] for x in allm}
+    riotby = {x[0].match_id: x[2] for x in allm}
     inv = sorted((m for m in ms if core.match_in_vod(m, vs, dur, st, {}, None)), key=lambda m: m.started_at)
     log(out, f"{len(ms)} partidas leídas · {len(inv)} dentro del VOD")
     if not inv:
@@ -146,7 +200,7 @@ def main(cfg_path, out):
         tag = f"{m.map_name}_{m.started_at.astimezone():%H%M}"
         np.savez_compressed(os.path.join(datos, f"{tag}.npz"), expected=np.array([e]), **tiles)
         with open(os.path.join(datos, f"{tag}.json"), "w", encoding="utf-8") as f:
-            json.dump({"riot": riot, "raw": rawby.get(m.match_id)}, f)
+            json.dump({"riot": riotby.get(m.match_id), "raw": rawby.get(m.match_id)}, f)
         # imágenes: filas = candidatos (cada método + lo elegido), columnas = 2 kills antes/después
         cands = []
         for x in (getattr(r, "methods", None) or []):
@@ -191,8 +245,9 @@ def main(cfg_path, out):
         os.remove(os.path.join(out, "_c.png"))
     # informes del detector
     for f in os.listdir(sync.report_dir()):
-        if f.endswith((".txt", ".npz")):
+        if f.endswith(".txt"):
             shutil.copy2(os.path.join(sync.report_dir(), f), os.path.join(out, f))
+            os.remove(os.path.join(sync.report_dir(), f))
     log(out, f"\nTotal: {(time.time() - t0) / 60:.1f} min")
     return 0
 
