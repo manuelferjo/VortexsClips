@@ -1116,7 +1116,10 @@ class App(tk.Tk):
                     exp = core.match_offset_s(m, vs, tmp_cal)
                     if not c:
                         exp += core.delay_offset(m, st, dfn)
-                    res[m.match_id] = sync.sync_match(vod, m, exp, dur, None, lambda: self.stop_flag)
+                    res[m.match_id] = sync.sync_match(
+                        vod, m, exp, dur,
+                        lambda f, t, i=i, n=len(ms): cb(i / n, f"Partida {i + 1} de {n}: {t}"),
+                        lambda: self.stop_flag)
                 if len(res) > 1 and any(not r.ok for r in res.values()):
                     cb(1, "Afinando con el desfase común de todas las partidas…")
                     res = sync.consensus(res, os.path.basename(vod))
@@ -1555,27 +1558,37 @@ def selftest(out_path):
         core.make_vertical(vid, vout, cam, "auto", words=words)
         info = core.probe_vod(vout)
         log(info["width"] == 1080 and info["height"] == 1920, f"vertical con subtítulos {info['width']}x{info['height']}")
-        # sincronización automática con una partida simulada (killfeed a horas conocidas)
+        # sincronización automática con una partida simulada: cartel WON/LOST al final de cada ronda
         import random
         from datetime import datetime, timezone
         random.seed(3)
-        kills = sorted(random.uniform(15, 200) for _ in range(30))
-        true_off = 20.0
+        true_off, t, rounds_ = 20.0, 10.0, []
+        for i in range(12):
+            st_ = t + 5
+            en_ = st_ + random.uniform(8, 18)
+            rounds_.append((st_, en_))
+            t = en_ + 4
         boxes = []
-        for i, k in enumerate(kills):
-            t, y = true_off + k, 30 + (i % 5) * 26
-            boxes.append(f"drawbox=x=880:y={y}:w=380:h=22:color=0x202020@0.9:t=fill:enable='between(t,{t:.2f},{t + 5:.2f})'")
-            boxes.append(f"drawbox=x={960 + (i * 37) % 150}:y={y + 4}:w=70:h=14:color=red:t=fill:enable='between(t,{t:.2f},{t + 5:.2f})'")
+        for st_, en_ in rounds_:
+            b_ = true_off + en_ + 0.4
+            boxes.append(f"drawbox=x=480:y=100:w=320:h=70:color=0x1f8f80:t=fill:enable='between(t,{b_:.2f},{b_ + 3:.2f})'")
+            boxes.append(f"drawbox=x=540:y=118:w=200:h=26:color=white:t=fill:enable='between(t,{b_:.2f},{b_ + 3:.2f})'")
         svod = os.path.join(tmp, "s.mp4")
+        total_ = true_off + t + 20
         subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                         "testsrc2=size=1280x720:rate=15", "-filter_complex", "[0:v]" + ",".join(boxes) + "[v]",
-                        "-map", "[v]",
-                        "-t", "260", "-c:v", "libx264", "-preset", "ultrafast", svod], check=True, **core._no_window())
+                        "-map", "[v]", "-t", f"{total_:.1f}", "-c:v", "libx264", "-preset", "ultrafast", svod],
+                       check=True, **core._no_window())
         m = core.Match("t", "Prueba", datetime.now(timezone.utc), 0, "Jett", "me", "13-0")
-        m.kills = [core.Kill(0, int(k * 1000), 0, "me" if i % 3 == 0 else "a", "b") for i, k in enumerate(kills)]
-        r = sync.sync_match(svod, m, true_off - 37.5, 260)
-        log(r.ok and abs(r.offset_s - true_off) <= 0.5,
-            f"sincronización automática (error {r.offset_s - true_off:+.2f} s, ok={r.ok}, {r.reason})")
+        m.rounds, m.kills = [], []
+        for i, (st_, en_) in enumerate(rounds_):
+            rr_ = core.Round(i, start_match_ms=int(st_ * 1000))
+            rr_.result, rr_.end_match_ms = "Elimination", int(en_ * 1000)
+            m.rounds.append(rr_)
+            m.kills.append(core.Kill(i, int(en_ * 1000), int((en_ - st_) * 1000), "me", "b"))
+        r = sync.sync_match(svod, m, true_off - 37.5, total_)
+        log(r.ok and abs(r.offset_s - true_off - 0.4) <= 0.5,
+            f"sincronización por cartel de fin de ronda (error {r.offset_s - true_off - 0.4:+.2f} s, ok={r.ok})")
         app = App()
         log(True, "ventana creada")
         app.v_vod.set(vid)

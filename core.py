@@ -47,6 +47,10 @@ class Round:
     start_match_ms: int | None = None   # inicio de la ronda dentro de la partida
     last_event_round_ms: int = 0        # último suceso (kill/plant/defuse) en ms de ronda
     won: bool | None = None
+    result: str = ""                    # cómo acabó: eliminación, desactivada, explotó, tiempo…
+    plant_round_ms: int | None = None
+    defuse_round_ms: int | None = None
+    end_match_ms: int | None = None     # momento EXACTO del final (para el cartel WON/LOST)
 
 
 @dataclass
@@ -233,6 +237,14 @@ def parse_match(raw: dict, riot_id: str) -> Match:
         win = rr.get("winning_team")
         if win and my_team:
             rnd.won = (str(win).lower() == str(my_team).lower())
+        rnd.result = str(rr.get("result") or rr.get("end_type") or "")
+        for key, t_key, attr in (("plant", "round_time_in_ms", "plant_round_ms"),
+                                 ("defuse", "round_time_in_ms", "defuse_round_ms"),
+                                 ("plant_events", "plant_time_in_round", "plant_round_ms"),
+                                 ("defuse_events", "defuse_time_in_round", "defuse_round_ms")):
+            ev = rr.get(key)
+            if isinstance(ev, dict) and ev.get(t_key):
+                setattr(rnd, attr, int(ev[t_key]))
         for ev_key, t_key in (("plant", "round_time_in_ms"), ("defuse", "round_time_in_ms")):
             ev = rr.get(ev_key)
             if isinstance(ev, dict) and ev.get(t_key):
@@ -261,6 +273,24 @@ def parse_match(raw: dict, riot_id: str) -> Match:
             prev = next((rounds[j] for j in range(i - 1, -1, -1) if rounds[j].start_match_ms is not None), None)
             if prev is not None:
                 r.start_match_ms = prev.start_match_ms + 130_000 * (i - prev.index)
+
+    # final exacto de cada ronda (lo que dispara el cartel WON/LOST)
+    last_kill: dict[int, int] = {}
+    for k in kills:
+        last_kill[k.round] = max(last_kill.get(k.round, 0), k.t_match)
+    for r in rounds:
+        if r.start_match_ms is None:
+            continue
+        res = r.result.lower()
+        if r.defuse_round_ms:
+            r.end_match_ms = r.start_match_ms + r.defuse_round_ms
+        elif "deton" in res and r.plant_round_ms:
+            r.end_match_ms = r.start_match_ms + r.plant_round_ms + 45000
+        elif "elimin" in res and r.index in last_kill:
+            r.end_match_ms = last_kill[r.index]
+        elif not res and r.index in last_kill and not r.plant_round_ms:
+            r.end_match_ms = last_kill[r.index]   # sin dato de resultado: sin spike, acaba en la última muerte
+        # tiempo agotado / rendición: sin momento exacto -> no se usa
 
     # si existe stats por ronda (v4) úsalo como fuente fiable del número de kills
     for i, rr in enumerate(raw_rounds):

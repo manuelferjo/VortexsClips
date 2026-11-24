@@ -28,6 +28,10 @@ SEARCH_S = 120.0           # se busca ±2 min alrededor de lo esperado
 USE_MATCH_S = 420.0        # kills de los primeros ~7 min de partida (desde la primera)
 TOP_CELLS = 10
 # zonas de la imagen (fracciones): killfeed arriba a la derecha y aviso de kill abajo al centro
+# cartel WON/LOST de fin de ronda: centro de arriba, por debajo del reloj del overlay
+BANNER = ("crop=iw*0.30:ih*0.17:iw*0.35:ih*0.10", 24, 12)
+MIN_ENDS = 10              # rondas con final exacto necesarias para fiarse del cartel
+
 # killfeed: caja exacta del HUD de VALORANT (medida sobre la emisión de Vortexs), con más detalle
 REGIONS = {
     "killfeed": ("todas", "crop=iw*0.31:ih*0.22:iw*0.685:ih*0.035", 32, 24),
@@ -170,7 +174,8 @@ def _analyze_once(frames, t0: float, expected: float, events: list, search_s: fl
             "n_events": len(events)}
 
 
-def analyze(frames, t0: float, expected: float, events: list, search_s: float = SEARCH_S):
+def analyze(frames, t0: float, expected: float, events: list, search_s: float = SEARCH_S,
+            kind: str = "killfeed"):
     """
     Valida con dos mitades independientes (kills pares e impares): cada mitad elige sus celdas y su
     desplazamiento por su cuenta. Si la partida está de verdad, las dos señalan el mismo momento;
@@ -185,7 +190,15 @@ def analyze(frames, t0: float, expected: float, events: list, search_s: float = 
     b = _analyze_once(frames, t0, expected, events[1::2], search_s)
     agree = abs(a["shift"] - full["shift"]) <= 1.0 and abs(b["shift"] - full["shift"]) <= 1.0
     full["halves"] = [a["shift"], b["shift"]]
-    full["ok"] = bool(agree and full["zpeak"] >= 7 and full["ratio"] >= 1.3)
+    edge = abs(full["shift"]) >= search_s - 2          # pico pegado al borde: artefacto
+    if kind == "cartel":
+        # medido: partida real z≈40 y ratio≈6,5; patrones falsos z≤12 y ratio≤1,4
+        full["ok"] = bool(not edge and ((full["zpeak"] >= 20 and full["ratio"] >= 2.5)
+                                        or (agree and full["zpeak"] >= 14 and full["ratio"] >= 1.8)))
+    else:
+        # medido: killfeed real z 13-16 y ratio ≥2,8; falsos z ≤6-12 y ratio ≤1,4
+        # (con mucho movimiento detrás, un patrón falso llegó a z 12 y ratio 2,3: listón por encima)
+        full["ok"] = bool(not edge and agree and full["zpeak"] >= 13 and full["ratio"] >= 2.5)
     # % que se ve en «Sincro»: validada por las dos mitades = 60-100 %; si no, como mucho 30 %
     full["conf"] = 0.6 + 0.4 * full["conf"] if full["ok"] else min(full["conf"], 0.3)
     return full
@@ -229,6 +242,27 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
     if t1 - t0 < 30:
         return SyncResult(expected_offset_s, 0, 0, False, "la partida no está en el VOD")
     results, saved = [], {}
+
+    # 1) cartel WON/LOST: grande y opaco, una señal fuerte por ronda en toda la partida
+    ends = sorted(r.end_match_ms / 1000.0 for r in match.rounds if r.end_match_ms)
+    if len(ends) >= MIN_ENDS:
+        if progress:
+            progress(None, f"Leyendo la partida entera de {match.map_name} (carteles de fin de ronda)…")
+        b0 = max(0.0, expected_offset_s + ends[0] - SEARCH_S - 5)
+        b1 = expected_offset_s + ends[-1] + SEARCH_S + 8
+        if vod_duration:
+            b1 = min(vod_duration, b1)
+        crop, gw, gh = BANNER
+        frames = _read_region(vod, b0, b1 - b0, crop, should_stop, gw, gh)
+        if frames is not None:
+            saved["cartel"] = frames
+            r = analyze(frames, b0, expected_offset_s, ends, kind="cartel")
+            r["set"] = "cartel"
+            results.append(r)
+            if r["ok"]:
+                _log(match, expected_offset_s, results)
+                return SyncResult(expected_offset_s + r["shift"], r["shift"], r["conf"], True, "", "",
+                                  None)
     for region, (kind, crop, gw, gh) in REGIONS.items():
         ev = allk if kind == "todas" else mine
         if len(ev) < 5:
@@ -352,7 +386,9 @@ def save_report(saved, t0, expected, allk, mine, match, results) -> str:
     arrays = {f"frames_{k}": v for k, v in saved.items()}
     rounds = [r.start_match_ms / 1000.0 for r in match.rounds if r.start_match_ms is not None]
     deaths = sorted(k.t_match / 1000.0 for k in match.kills if k.victim == match.my_puuid)
+    ends = [r.end_match_ms / 1000.0 for r in match.rounds if r.end_match_ms]
     np.savez_compressed(path, allk=np.array(allk), mine=np.array(mine), rounds=np.array(rounds),
+                        ends=np.array(ends),
                         deaths=np.array(deaths),
                         meta=np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8), **arrays)
     files = sorted((os.path.join(report_dir(), f) for f in os.listdir(report_dir()) if f.endswith(".npz")),
