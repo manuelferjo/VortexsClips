@@ -34,7 +34,7 @@ TEXT = "#f2eef8"
 MUTED = "#958ca3"
 YELLOW = "#ffd21f"
 PURPLE = "#c7a6ff"
-BORDER = "#2c2638"        # borde fino de tarjetas y campos
+BORDER = "#252030"        # borde fino de tarjetas y campos
 HOVER = "#2d2738"
 ROW_ALT = "#1b1722"       # filas alternas de las tablas
 DARK = "#111"
@@ -201,7 +201,7 @@ class App(tk.Tk):
               lightcolor=[("active", FIELD)], darkcolor=[("active", FIELD)], bordercolor=[("active", FIELD)])
         # pestañas tipo píldora
         s.configure("TNotebook", background=PANEL, borderwidth=0, bordercolor=PANEL, lightcolor=PANEL,
-                    darkcolor=PANEL, tabmargins=(0, 0, 0, 8))
+                    darkcolor=PANEL, tabmargins=(0, 0, 0, 4))
         s.configure("TNotebook.Tab", background=FIELD, foreground=MUTED, padding=(14, 6), borderwidth=0,
                     bordercolor=PANEL, lightcolor=FIELD, darkcolor=FIELD, font=("Segoe UI Semibold", 9))
         s.map("TNotebook.Tab", background=[("selected", YELLOW), ("active", HOVER)],
@@ -209,7 +209,7 @@ class App(tk.Tk):
               lightcolor=[("selected", YELLOW)], darkcolor=[("selected", YELLOW)],
               expand=[("selected", (0, 0, 0, 0))])
         # tablas
-        s.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=30,
+        s.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=27,
                     borderwidth=0, bordercolor=BORDER, lightcolor=PANEL, darkcolor=PANEL, font=base_font)
         s.configure("Treeview.Heading", background=FIELD, foreground=PURPLE, font=("Segoe UI Semibold", 9),
                     borderwidth=0, bordercolor=FIELD, lightcolor=FIELD, darkcolor=FIELD, padding=(6, 7),
@@ -238,9 +238,9 @@ class App(tk.Tk):
 
     def _panel(self, parent, title, sub=""):
         """Tarjeta con número y título: «1 · Cuenta y partidas» -> [1] Cuenta y partidas."""
-        f = ttk.Frame(parent, style="Card.TFrame", padding=(16, 14, 16, 14))
+        f = ttk.Frame(parent, style="Card.TFrame", padding=(16, 12, 16, 12))
         hd = ttk.Frame(f, style="Panel.TFrame")
-        hd.grid(row=0, column=0, columnspan=10, sticky="w", pady=(0, 12))
+        hd.grid(row=0, column=0, columnspan=10, sticky="w", pady=(0, 8))
         num, _, txt = title.partition(" · ")
         if txt:
             ttk.Label(hd, text=num, style="Badge.TLabel").pack(side="left", padx=(0, 10))
@@ -253,7 +253,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ UI
     def _build(self):
-        head = ttk.Frame(self, style="Head.TFrame", padding=(20, 14, 20, 10))
+        head = ttk.Frame(self, style="Head.TFrame", padding=(20, 10, 20, 8))
         head.pack(fill="x")
         ttk.Label(head, text="VORTEXS CLIPS", style="Title.TLabel").pack(side="left")
         ttk.Label(head, text="    Tus 3K, 4K, ACE y clutches del directo, listos para TikTok",
@@ -276,7 +276,7 @@ class App(tk.Tk):
                 stripe.create_rectangle(i * w / steps, 0, (i + 1) * w / steps + 1, 3, fill=col, width=0)
         stripe.bind("<Configure>", draw_stripe)
 
-        top = ttk.Frame(self, padding=(16, 14, 16, 4))
+        top = ttk.Frame(self, padding=(16, 12, 16, 0))
         top.pack(fill="x")
         top.columnconfigure(0, weight=1)
         top.columnconfigure(1, weight=1)
@@ -309,6 +309,19 @@ class App(tk.Tk):
         lf.grid(row=5, column=0, columnspan=4, sticky="we")
         ttk.Entry(lf, textvariable=self.v_link, width=44).pack(side="left", fill="x", expand=True)
         ttk.Button(lf, text="Añadir", command=self.add_by_link).pack(side="left", padx=6)
+        kp = ttk.Frame(p1, style="Panel.TFrame")
+        kp.grid(row=6, column=0, columnspan=4, sticky="we", pady=(16, 0))
+        self.kpi = {}
+        for i, (key, cap) in enumerate((("invod", "partidas en el VOD"), ("synced", "sincronizadas"),
+                                        ("plays", "jugadas para cortar"))):
+            kp.columnconfigure(i, weight=1, uniform="kpi")
+            box = tk.Frame(kp, bg=FIELD, highlightthickness=1, highlightbackground=BORDER)
+            box.grid(row=0, column=i, sticky="we", padx=(0 if i == 0 else 8, 0))
+            num = tk.Label(box, text="—", bg=FIELD, fg=YELLOW if i != 1 else PURPLE,
+                           font=("Segoe UI Black", 20))
+            num.pack(anchor="w", padx=12, pady=(8, 0))
+            tk.Label(box, text=cap, bg=FIELD, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", padx=12, pady=(0, 9))
+            self.kpi[key] = num
 
         # --- 2. VOD y ajustes (pestañas)
         p2 = self._panel(top, "2 · VOD y ajustes")
@@ -474,7 +487,7 @@ class App(tk.Tk):
         ttk.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
 
         # --- 3. partidas
-        mid = ttk.Frame(self, padding=(16, 12))
+        mid = ttk.Frame(self, padding=(16, 12, 16, 10))
         mid.columnconfigure(0, weight=3)
         mid.columnconfigure(1, weight=2)
         mid.rowconfigure(0, weight=1)
@@ -547,7 +560,7 @@ class App(tk.Tk):
         ttk.Button(cb, text="Quitar", style="Ghost.TButton", command=self.remove_clips).pack(side="left")
 
         # --- pie
-        foot = ttk.Frame(self, style="Card.TFrame", padding=(18, 12, 18, 14))
+        foot = ttk.Frame(self, style="Card.TFrame", padding=(18, 10, 18, 12))
         # el panel de progreso se coloca primero abajo para que nunca quede cortado;
         # si falta sitio, encogen las listas del medio
         foot.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
@@ -890,6 +903,7 @@ class App(tk.Tk):
                     "No se pudo añadir la partida")
 
     def refresh_matches(self):
+        self.after_idle(self.update_kpis)
         self.tv_m.delete(*self.tv_m.get_children())
         st = self.settings()
         try:
@@ -921,6 +935,25 @@ class App(tk.Tk):
                              values=("☑" if m.match_id in self.checked else "☐",
                                      local.strftime("%d/%m %H:%M"), m.map_name, m.agent, m.score,
                                      n, invt, sync_txt))
+
+    def update_kpis(self):
+        """Cifras del resumen (tarjeta 1)."""
+        if not getattr(self, "kpi", None):
+            return
+        try:
+            vs = self.vod_start_utc() if self.vod_info else None
+        except ValueError:
+            vs = None
+        st = self.settings()
+        inv = synced = 0
+        for m in self.matches.values():
+            if vs and core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib, self.delay_fn_for_vod()):
+                inv += 1
+                if sync_tag(self.calib.get(m.match_id) or {}) == "s_ok":
+                    synced += 1
+        self.kpi["invod"].configure(text=str(inv) if vs else "—")
+        self.kpi["synced"].configure(text=f"{synced}/{inv}" if vs else "—")
+        self.kpi["plays"].configure(text=str(len({c.group for c in self.clips})) if self.clips else "—")
 
     def on_match_click(self, ev):
         if self.tv_m.identify_region(ev.x, ev.y) != "cell":
@@ -1976,6 +2009,7 @@ class App(tk.Tk):
                     f"Doble clic en una ronda para comprobarla.")
 
     def fill_clips(self):
+        self.after_idle(self.update_kpis)
         self.tv_c.delete(*self.tv_c.get_children())
         for i, c in enumerate(self.clips):
             self.tv_c.insert("", "end", iid=str(i), tags=(("alt",) if i % 2 else ()), values=(
@@ -2447,6 +2481,8 @@ def demo_screenshot(out_png):
             app.tv_c.insert("", "end", values=(lab, a, b, d))
         except Exception:
             pass
+    app.update_kpis()
+    app.kpi["plays"].configure(text="4")
     app.set_step(2, "Sincronizando 10 partidas con el VOD…")
     app.set_progress(0.62, "6 de 10 listas (2 a la vez) · Haven 17:30: Buscando el patrón de Haven…")
 
