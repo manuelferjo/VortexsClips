@@ -1,0 +1,17 @@
+VOD v2938474894 · '🇪🇸 |🔴SOLOQ CHALLENGE AL BORDE DE LA LOCURA🔴|🏆VALORANT PARTNER🏆|🏹PREMIER 19:00🏹|!commands|Follow: @VORTEXS_MC' · 4.0 h · inicio 2026-11-23 16:49:29+00:00
+Descargado (2.1 GB, 852x480) en 1.1 min
+30 partidas leídas · 7 dentro del VOD
+Desfase base aprendido: 104.5 s (punto de partida 115 s)
+Repito con el desfase aprendido (como hace el programa la 2ª vez)…
+Sincronización: 3 s para 7 partidas
+
+PARTIDA | RESULTADO | DESFASE vs ESPERADO | MÉTODO | COMPROBACIÓN
+Summit   23/11 17:06 | OK   conf 0.75 |  -60.25 s | cartel(pareja) | ok (pico +0.00 s, z 3.8)
+Bind     23/11 17:38 | OK   conf 0.65 |   -7.25 s | consenso | ? (pico +0.00 s, z 2.2)
+Abyss    23/11 18:02 | OK   conf 0.75 |   +0.00 s | cartel(pareja) | ok (pico +0.00 s, z 6.3)
+Corrode  23/11 18:32 | OK   conf 0.75 |  -19.25 s | cartel(pareja) | ok (pico +0.00 s, z 4.9)
+Sunset   23/11 19:04 | OK   conf 0.75 |   +8.00 s | cartel(pareja) | ok (pico +0.00 s, z 3.7)
+Haven    23/11 19:34 | OK   conf 0.65 |   +7.00 s | consenso | ok (pico +0.00 s, z 2.7)
+Summit   23/11 20:09 | OK   conf 0.75 |  -10.75 s | cartel(pareja) | ok (pico +0.00 s, z 5.2)
+
+Total: 5.5 min

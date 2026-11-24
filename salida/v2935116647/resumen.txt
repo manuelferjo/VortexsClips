@@ -1,0 +1,13 @@
+VOD v2935116647 · '🇪🇸 |🔴SOLOQ CHALLENGE - DÍA 5🔴|🏆VALORANT PARTNER🏆|🏹CAZANDO ELO🏹|!commands|Follow: @VORTEXS_MC' · 3.2 h · inicio 2026-11-20 17:29:07+00:00
+Descargado (1.7 GB, 852x480) en 0.9 min
+30 partidas leídas · 4 dentro del VOD
+Desfase base aprendido: 112.0 s (punto de partida 115 s)
+Sincronización: 170 s para 4 partidas
+
+PARTIDA | RESULTADO | DESFASE vs ESPERADO | MÉTODO | COMPROBACIÓN
+Bind     20/11 17:48 | OK   conf 0.65 |  -26.25 s | consenso | ok (pico +0.00 s, z 2.8)
+Haven    20/11 18:29 | OK   conf 0.65 |   -2.25 s | consenso | ok (pico +0.00 s, z 3.5)
+Lotus    20/11 19:07 | OK   conf 0.75 |   -3.00 s | cartel(pareja) | ok (pico +0.00 s, z 5.4)
+Sunset   20/11 19:53 | OK   conf 0.60 |   -4.00 s | cartel(pareja) | ok (pico +0.00 s, z 3.7)
+
+Total: 4.1 min

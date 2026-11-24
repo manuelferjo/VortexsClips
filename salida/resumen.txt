@@ -1,0 +1,8 @@
+Canal vortexs_mc: VODs a probar: https://www.twitch.tv/videos/2939461539, https://www.twitch.tv/videos/2938474894, https://www.twitch.tv/videos/2937387599, https://www.twitch.tv/videos/2935116647
+API guardadas (Sovadin#linup, página 1): Demasiadas peticiones seguidas. Espera un minuto y vuelve a probar.
+{"errors":[{"code":0,"message":"Rate limit exceeded, please try again later. For further information check the headers of the response.","status":429,"details":null}]}
+API (Vortexs#vrtxs, página 0): Demasiadas peticiones seguidas. Espera un minuto y vuelve a probar.
+{"errors":[{"code":0,"message":"Rate limit exceeded, please try again later. For further information check the headers of the response.","status":429,"details":null}]}
+API guardadas (Vortexs#vrtxs, página 1): Demasiadas peticiones seguidas. Espera un minuto y vuelve a probar.
+{"errors":[{"code":0,"message":"Rate limit exceeded, please try again later. For further information check the headers of the response.","status":429,"details":null}]}
+API: 30 partidas de Sovadin#linup, Vortexs#vrtxs

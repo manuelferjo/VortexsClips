@@ -1,0 +1,15 @@
+VOD v2939461539 · 'SOLOQ CHALLENGE 0 TILT (ESPERO)🔴|🏆VALORANT PARTNER🏆|🏹PREMIER 19:00🏹|!commands|Follow: @VORTEXS_MC' · 3.6 h · inicio 2026-11-24 16:47:26+00:00
+Descargado (1.9 GB, 852x480) en 1.1 min
+30 partidas leídas · 5 dentro del VOD
+Desfase base aprendido: 106.0 s (punto de partida 115 s)
+Repito con el desfase aprendido (como hace el programa la 2ª vez)…
+Sincronización: 5 s para 5 partidas
+
+PARTIDA | RESULTADO | DESFASE vs ESPERADO | MÉTODO | COMPROBACIÓN
+Haven    24/11 17:06 | OK   conf 0.65 |   +3.75 s | consenso | ok (pico +0.00 s, z 2.7)
+Sunset   24/11 17:46 | OK   conf 0.65 |   -1.50 s | consenso | ok (pico +0.00 s, z 5.0)
+Lotus    24/11 18:15 | OK   conf 0.75 |   +0.00 s | cartel(pareja) | ok (pico +0.25 s, z 5.8)
+Lotus    24/11 18:53 | OK   conf 0.75 |   +6.25 s | cartel(pareja) | ok (pico +0.25 s, z 6.4)
+Abyss    24/11 19:26 | OK   conf 0.75 |   -6.50 s | cartel(pareja) | ok (pico +0.00 s, z 4.8)
+
+Total: 4.9 min
