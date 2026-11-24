@@ -2320,7 +2320,62 @@ def selftest_subs(wav, out_path):
     sys.exit(0 if ok else 1)
 
 
+def demo_screenshot(out_png):
+    """Abre la ventana con datos de ejemplo y guarda una captura (para revisar el diseño en GitHub)."""
+    from datetime import timezone as _tz
+    os.environ.setdefault("APPDATA", tempfile.mkdtemp())
+    app = App()
+    try:
+        app.state("zoomed")
+    except Exception:
+        app.geometry("1600x900+0+0")
+    base = datetime(2026, 11, 21, 12, 40, tzinfo=_tz.utc)
+    maps = [("Corrode", "Hush", "3-13"), ("Summit", "Phoenix", "13-8"), ("Abyss", "Sova", "14-12"),
+            ("Abyss", "Hush", "13-11"), ("Corrode", "Phoenix", "9-13"), ("Haven", "Phoenix", "13-11"),
+            ("Bind", "Chamber", "13-6"), ("Sunset", "Sova", "13-10"), ("Abyss", "Hush", "11-2"),
+            ("Summit", "Sova", "13-3")]
+    calibs = [{"auto": True, "conf": .75, "offset_s": 1}, {"auto": True, "conf": .65, "offset_s": 1},
+              {"auto": True, "conf": .75, "offset_s": 1}, {"auto": True, "conf": .65, "offset_s": 1},
+              {"auto": True, "conf": .35, "approx": True, "offset_s": 1},
+              {"auto": True, "conf": .55, "offset_s": 1, "check": "dudosa", "check_shift": 26.3},
+              {"auto": True, "conf": .55, "offset_s": 1}, {"failed": True}, {"auto": True, "conf": .75, "offset_s": 1},
+              {}]
+    app.matches, app.calib = {}, {}
+    for i, (mp, ag, sc) in enumerate(maps):
+        m = core.Match(f"demo{i}", mp, base + timedelta(minutes=35 * i), 2_000_000, ag, "me", sc)
+        m.rounds = [core.Round(j, my_kills=(3 + (i + j) % 3) if j % 4 == 0 else 1) for j in range(20)]
+        app.matches[m.match_id] = m
+        app.calib[m.match_id] = calibs[i]
+    app.checked = set(app.matches)
+    app.refresh_matches()
+    for i, (lab, a, b, d) in enumerate([("4K 1v3 · Haven · Ronda 7", "4:21:05", "4:21:48", "43 s"),
+                                        ("ACE · Abyss · Ronda 12", "5:48:10", "5:49:02", "52 s"),
+                                        ("3K · Summit · Ronda 4", "1:02:33", "1:03:01", "28 s"),
+                                        ("1v2 · Bind · Ronda 18", "5:20:40", "5:21:30", "50 s")]):
+        try:
+            app.tv_c.insert("", "end", values=(lab, a, b, d))
+        except Exception:
+            pass
+    app.set_step(2, "Sincronizando 10 partidas con el VOD…")
+    app.set_progress(0.62, "6 de 10 listas (2 a la vez) · Haven 17:30: Buscando el patrón de Haven…")
+
+    def shot():
+        try:
+            from PIL import ImageGrab
+            app.update()
+            x, y = app.winfo_rootx(), app.winfo_rooty()
+            w, h = app.winfo_width(), app.winfo_height()
+            ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True).save(out_png)
+        finally:
+            app.destroy()
+    app.after(3500, shot)
+    app.mainloop()
+
+
 if __name__ == "__main__":
+    if "--demo-screenshot" in sys.argv:
+        demo_screenshot(sys.argv[sys.argv.index("--demo-screenshot") + 1])
+        sys.exit(0)
     if "--selftest-subs" in sys.argv:
         i = sys.argv.index("--selftest-subs")
         selftest_subs(sys.argv[i + 1], sys.argv[i + 2])
