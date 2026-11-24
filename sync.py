@@ -474,7 +474,20 @@ def _decide(results: list):
     pareja = next((r for r in results if r.get("set") == "cartel(pareja)"), None)
     if pareja is not None and pareja["ok"]:
         return pareja
-    if pareja is not None and pareja.get("zpeak", 0) >= 4.0 and pareja.get("ratio", 0) >= 1.15 \
+    pz = pareja.get("zpeak", 0) if pareja is not None else 0
+    oks = [r for r in results if r["ok"] and r is not pareja]
+    if oks:
+        oks.sort(key=lambda r: r["conf"], reverse=True)
+        b = oks[0]
+        # ¿es el segundo texto / la línea que desaparece de un pico de pareja anterior?
+        if pareja is not None and b.get("family") in LATE and pz >= 3.5:
+            lo, hi = LATE[b["family"]]
+            if lo <= b["shift"] - pareja["shift"] <= hi:
+                out = dict(pareja)
+                out.update(ok=True, conf=0.6, family="acuerdo", set=f"cartel(pareja) corregido desde {b['set']}")
+                return out
+        return b
+    if pareja is not None and pz >= 4.0 and pareja.get("ratio", 0) >= 1.15 \
             and abs(pareja["shift"]) < SEARCH_S - 2:
         sup = [x for x in results if x is not pareja and _supports(x, pareja["shift"])]
         if sup:
@@ -482,18 +495,6 @@ def _decide(results: list):
             out.update(ok=True, conf=0.65, family="acuerdo",
                        set="cartel(pareja)+" + "+".join(x["set"] for x in sup))
             return out
-    oks = [r for r in results if r["ok"] and r is not pareja]
-    if oks:
-        oks.sort(key=lambda r: r["conf"], reverse=True)
-        b = oks[0]
-        # ¿es el segundo texto / la línea que desaparece de un pico de pareja anterior?
-        if pareja is not None and b.get("family") in LATE:
-            lo, hi = LATE[b["family"]]
-            if lo <= b["shift"] - pareja["shift"] <= hi and pareja.get("zpeak", 0) >= 3.5:
-                out = dict(pareja)
-                out.update(ok=True, conf=0.6, family="acuerdo", set=f"cartel(pareja) corregido desde {b['set']}")
-                return out
-        return b
     return _agreement(results)
 
 
