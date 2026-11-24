@@ -101,6 +101,7 @@ class App(tk.Tk):
         self.load_delay()
         self.after(800, self.detect_encoder)
         self.after(1200, self.restore_last_vod)
+        self.after(1500, lambda: self.mirror_delay_log(True))
         if self.v_watch.get():
             self.after(30_000, self.watch_tick)
             self.lbl_watch.configure(text="Vigilando… (primera comprobación en 30 s)")
@@ -310,6 +311,11 @@ class App(tk.Tk):
         self.lbl_delaylog.grid(row=8, column=0, columnspan=4, sticky="w", pady=(2, 0))
         ttk.Button(t_cut, text="Elegir registro…", command=self.pick_delay_log).grid(
             row=8, column=4, sticky="e", pady=(2, 0))
+        mf_ = ttk.Frame(t_cut, style="Panel.TFrame")
+        mf_.grid(row=9, column=0, columnspan=5, sticky="we", pady=(4, 0))
+        ttk.Button(mf_, text="Copiar mi registro a…", command=self.pick_mirror).pack(side="left")
+        self.lbl_mirror = ttk.Label(mf_, text="", style="Muted.TLabel")
+        self.lbl_mirror.pack(side="left", padx=8)
 
         # ---- pestaña Salida
         ttk.Label(t_out, text="Codificar con").grid(row=0, column=0, sticky="w")
@@ -552,6 +558,47 @@ class App(tk.Tk):
         self.persist()
         self.load_delay()
 
+    # ------------------------------------------------------------ copia del registro (PC de streaming)
+    def pick_mirror(self):
+        d = filedialog.askdirectory(title="Carpeta donde copiar el registro de delay (p. ej. tu carpeta de Google Drive)")
+        if not d:
+            if self.cfg.get("delay_log_mirror") and messagebox.askyesno(APP_NAME, "¿Dejar de copiar el registro?"):
+                self.cfg.pop("delay_log_mirror", None)
+                self.persist()
+                self.update_mirror_label()
+            return
+        self.cfg["delay_log_mirror"] = d
+        self.persist()
+        self.mirror_delay_log()
+
+    def update_mirror_label(self, extra=""):
+        d = self.cfg.get("delay_log_mirror")
+        self.lbl_mirror.configure(text=(f"Se copia a: {d}{extra}" if d else
+                                        "En el PC donde streameas: copia el registro a una carpeta compartida."))
+
+    def mirror_delay_log(self, schedule=False):
+        """Copia delay_log.csv de Vortexs Live a la carpeta elegida (si ha cambiado)."""
+        import shutil as _sh
+        d = self.cfg.get("delay_log_mirror")
+        extra = ""
+        if d and os.path.isdir(d):
+            copied = 0
+            for src in core.delay_log_candidates():
+                if os.path.isfile(src):
+                    dst = os.path.join(d, os.path.basename(src))
+                    try:
+                        if not os.path.isfile(dst) or os.path.getmtime(src) > os.path.getmtime(dst) + 1:
+                            _sh.copy2(src, dst)
+                        copied += 1
+                    except OSError:
+                        pass
+            extra = f"  ·  última copia {time.strftime('%H:%M')}" if copied else "  ·  (aún no hay registro en este PC)"
+        elif d:
+            extra = "  ·  ⚠ la carpeta no existe ahora mismo"
+        self.update_mirror_label(extra)
+        if schedule:
+            self.after(10 * 60_000, lambda: self.mirror_delay_log(True))
+
     # ------------------------------------------------------------ ajustes entre PCs
     def export_settings(self):
         p = filedialog.asksaveasfilename(title="Exportar ajustes de Vortexs Clips", defaultextension=".json",
@@ -560,7 +607,7 @@ class App(tk.Tk):
             return
         self.persist()
         keep = {k: v for k, v in self.cfg.items() if k not in ("calib", "last_vod", "processed_vods",
-                                                              "migrate_asked", "cam_asked")}
+                                                              "migrate_asked", "cam_asked", "delay_log_mirror")}
         with open(p, "w", encoding="utf-8") as f:
             json.dump(keep, f, indent=2, ensure_ascii=False)
         messagebox.showinfo(APP_NAME, "Ajustes exportados (incluye tu clave de la API: no lo compartas).\n\n"

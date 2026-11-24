@@ -78,7 +78,9 @@ Si ese VOD ya estaba descargado, no lo vuelve a bajar. Si pegaste varios, los pr
 - **Instálalo igual** en cada PC (VortexsClips-Setup.exe). Se actualizan todos solos.
 - **Pasar tus ajustes** (clave de la API, cámara de la vertical, desfase, carpetas…): en el PC que ya lo tienes, ve a **Automático → Exportar ajustes**; en el otro, **Importar ajustes**. El archivo lleva tu clave de la API: no lo compartas.
 - **PC donde streameas:** es el mejor sitio para procesar, porque ahí está el registro de delay de Vortexs Live y la vigilancia del canal funciona al acabar cada directo. Nunca procesa mientras estás en directo.
-- **Procesar en otro PC:** en **Cortes → Elegir registro…**, elige una copia de `delay_log.csv` del PC de streaming (por ejemplo, en una carpeta compartida o de Google Drive).
+- **Procesar en otro PC:** instala **Google Drive para ordenador** en los dos PCs para que tu carpeta de Drive aparezca en el Explorador.
+  1. En el **PC de streaming**: **Cortes → Copiar mi registro a…** y elige esa carpeta de Drive. Vortexs Clips copia `delay_log.csv` al abrirse y cada 10 minutos.
+  2. En el **otro PC**: **Cortes → Elegir registro…** y elige el `delay_log.csv` de esa carpeta.
 
 ## Panel 3 · Partidas
 
