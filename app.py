@@ -307,7 +307,9 @@ class App(tk.Tk):
                   style="Muted.TLabel").grid(row=7, column=2, columnspan=3, sticky="w", pady=(6, 0))
         ttk.Entry(t_cut, textvariable=self.v_delay, width=8).grid(row=7, column=1, sticky="w", padx=6, pady=(6, 0))
         self.lbl_delaylog = ttk.Label(t_cut, text="", style="Muted.TLabel")
-        self.lbl_delaylog.grid(row=8, column=0, columnspan=5, sticky="w", pady=(2, 0))
+        self.lbl_delaylog.grid(row=8, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ttk.Button(t_cut, text="Elegir registro…", command=self.pick_delay_log).grid(
+            row=8, column=4, sticky="e", pady=(2, 0))
 
         # ---- pestaña Salida
         ttk.Label(t_out, text="Codificar con").grid(row=0, column=0, sticky="w")
@@ -343,6 +345,12 @@ class App(tk.Tk):
         ttk.Label(t_auto, text="Mira cada 10 minutos. Espera a que termine el directo, descarga el VOD y "
                                "genera todos los vídeos.\nEl programa tiene que estar abierto (aunque sea minimizado).",
                   style="Muted.TLabel").grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Separator(t_auto).grid(row=5, column=0, columnspan=4, sticky="we", pady=8)
+        sf = ttk.Frame(t_auto, style="Panel.TFrame")
+        sf.grid(row=6, column=0, columnspan=4, sticky="w")
+        ttk.Label(sf, text="Usar en otro PC:").pack(side="left")
+        ttk.Button(sf, text="Exportar ajustes", command=self.export_settings).pack(side="left", padx=6)
+        ttk.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
 
         # --- 3. partidas
         mid = ttk.Frame(self, padding=(16, 8))
@@ -513,8 +521,13 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ delay de Vortexs Live
     def load_delay(self):
+        custom = self.cfg.get("delay_log_path")
         try:
-            rows = core.load_delay_log()
+            rows = core.load_delay_log(custom if custom and os.path.isfile(custom) else None)
+            if custom and os.path.isfile(custom):
+                old = os.path.join(os.path.dirname(custom), "delay_log.old.csv")
+                if os.path.isfile(old):
+                    rows = sorted(rows + core.load_delay_log(old))
         except Exception:
             rows = []
         self.delay_fn = core.make_delay_fn(rows)
@@ -523,6 +536,52 @@ class App(tk.Tk):
                                              "el delay de cada momento se suma al desfase solo.")
         else:
             self.lbl_delaylog.configure(text="Sin registro de delay de Vortexs Live: si pusiste delay, súmalo al desfase.")
+
+    def pick_delay_log(self):
+        """Para procesar en un PC distinto del que streamea: usar una copia del registro de delay."""
+        p = filedialog.askopenfilename(title="Registro de delay de Vortexs Live (delay_log.csv)",
+                                       filetypes=[("Registro de delay", "delay_log*.csv"), ("CSV", "*.csv")])
+        if not p:
+            if self.cfg.get("delay_log_path") and messagebox.askyesno(
+                    APP_NAME, "¿Volver a usar el registro de este PC (el de Vortexs Live)?"):
+                self.cfg.pop("delay_log_path", None)
+                self.persist()
+                self.load_delay()
+            return
+        self.cfg["delay_log_path"] = p
+        self.persist()
+        self.load_delay()
+
+    # ------------------------------------------------------------ ajustes entre PCs
+    def export_settings(self):
+        p = filedialog.asksaveasfilename(title="Exportar ajustes de Vortexs Clips", defaultextension=".json",
+                                         initialfile="VortexsClips-ajustes.json", filetypes=[("Ajustes", "*.json")])
+        if not p:
+            return
+        self.persist()
+        keep = {k: v for k, v in self.cfg.items() if k not in ("calib", "last_vod", "processed_vods",
+                                                              "migrate_asked", "cam_asked")}
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(keep, f, indent=2, ensure_ascii=False)
+        messagebox.showinfo(APP_NAME, "Ajustes exportados (incluye tu clave de la API: no lo compartas).\n\n"
+                                      "En el otro PC: pestaña Automático → «Importar ajustes».")
+
+    def import_settings(self):
+        p = filedialog.askopenfilename(title="Importar ajustes de Vortexs Clips", filetypes=[("Ajustes", "*.json")])
+        if not p:
+            return
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"No se pudo leer el archivo:\n{e}")
+            return
+        data.pop("out_dir", None) if not os.path.isdir(data.get("out_dir", "")) else None
+        data.pop("delay_log_path", None) if not os.path.isfile(data.get("delay_log_path", "")) else None
+        self.cfg.update(data)
+        save_cfg(self.cfg)
+        messagebox.showinfo(APP_NAME, "Ajustes importados. El programa se va a reiniciar para aplicarlos.")
+        updater.restart()
 
     def delay_fn_for_vod(self):
         return getattr(self, "delay_fn", None)

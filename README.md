@@ -73,6 +73,13 @@ Si ese VOD ya estaba descargado, no lo vuelve a bajar. Si pegaste varios, los pr
 | **Vigilar el canal** | Cada 10 minutos mira tu canal. Cuando termina un directo, descarga el VOD nuevo y genera todos los vídeos sin que hagas nada. Solo procesa los directos que salgan **después** de activarlo. |
 | **Abrir al encender el PC** | Vortexs Clips se abre minimizado al encender Windows, para que la vigilancia funcione siempre. |
 
+## Usarlo en varios PCs
+
+- **Instálalo igual** en cada PC (VortexsClips-Setup.exe). Se actualizan todos solos.
+- **Pasar tus ajustes** (clave de la API, cámara de la vertical, desfase, carpetas…): en el PC que ya lo tienes, ve a **Automático → Exportar ajustes**; en el otro, **Importar ajustes**. El archivo lleva tu clave de la API: no lo compartas.
+- **PC donde streameas:** es el mejor sitio para procesar, porque ahí está el registro de delay de Vortexs Live y la vigilancia del canal funciona al acabar cada directo. Nunca procesa mientras estás en directo.
+- **Procesar en otro PC:** en **Cortes → Elegir registro…**, elige una copia de `delay_log.csv` del PC de streaming (por ejemplo, en una carpeta compartida o de Google Drive).
+
 ## Panel 3 · Partidas
 
 | Botón | Qué hace |
