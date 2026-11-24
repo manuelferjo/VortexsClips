@@ -1,0 +1,44 @@
+name: Captura de la interfaz
+
+# Solo para revisar el diseño: abre el programa con datos de ejemplo en Windows y guarda una captura.
+# No publica nada.
+on:
+  push:
+    branches: [ui]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  captura:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pantalla 1920x1080 (si se puede)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - name: Captura
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip numpy pillow
+          python app.py --demo-screenshot capturas
+          if (!(Test-Path capturas\1_principal.png)) { throw "No hay captura" }
+      - name: Guardar la captura en la rama «capturas»
+        shell: pwsh
+        run: |
+          Copy-Item capturas $env:RUNNER_TEMP\capturas -Recurse
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan capturas
+          git rm -rf --cached . | Out-Null
+          Remove-Item capturas -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item $env:RUNNER_TEMP\capturas capturas -Recurse
+          git add -f capturas
+          git commit -m "captura ${{ github.sha }}"
+          git push -f origin capturas
