@@ -328,6 +328,7 @@ class App(tk.Tk):
         p2.grid(row=0, column=1, sticky="nsew")
         nb = ttk.Notebook(p2)
         nb.grid(row=1, column=0, columnspan=6, sticky="nsew")
+        self.nb2 = nb
         t_vod = ttk.Frame(nb, style="Panel.TFrame", padding=10)
         t_cut = ttk.Frame(nb, style="Panel.TFrame", padding=10)
         t_out = ttk.Frame(nb, style="Panel.TFrame", padding=10)
@@ -2486,16 +2487,67 @@ def demo_screenshot(out_png):
     app.set_step(2, "Sincronizando 10 partidas con el VOD…")
     app.set_progress(0.62, "6 de 10 listas (2 a la vez) · Haven 17:30: Buscando el patrón de Haven…")
 
-    def shot():
+    os.makedirs(out_png, exist_ok=True)
+
+    def grab(win, name):
+        from PIL import ImageGrab
+        win.update()
+        x, y = win.winfo_rootx(), win.winfo_rooty()
+        w, h = win.winfo_width(), win.winfo_height()
+        ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True).save(os.path.join(out_png, name))
+
+    steps = []
+
+    def tab(i, name):
+        def f():
+            app.nb2.select(i)
+            app.after(600, lambda: grab(app, name))
+        return f
+    steps.append(lambda: grab(app, "1_principal.png"))
+    for i, nm in ((1, "2_cortes.png"), (2, "3_salida.png"), (3, "4_automatico.png")):
+        steps.append(tab(i, nm))
+
+    def review():
+        from PIL import Image, ImageDraw
+        app.nb2.select(0)
+        tmpd = tempfile.mkdtemp()
+        rows = []
+        for j, mid in enumerate(list(app.matches)[4:7]):
+            ks = []
+            for k in range(2):
+                pa, pb = os.path.join(tmpd, f"{j}{k}a.png"), os.path.join(tmpd, f"{j}{k}b.png")
+                for pth, lines in ((pa, 2), (pb, 3)):
+                    im = Image.new("RGB", (300, 96), (30, 34, 40))
+                    d = ImageDraw.Draw(im)
+                    for ln in range(lines):
+                        d.rectangle((60, 8 + ln * 28, 292, 28 + ln * 28), fill=(70, 70, 78) if ln < 2 else (190, 60, 60))
+                    im.save(pth)
+                ks.append((core.Kill(k, 1000, 1000, "me", "b"), 15000 + 300 * j + 60 * k, pa, pb))
+            rows.append((app.matches[mid], ks))
+        w = app._show_review(rows, tmpd)
+        w.geometry("1380x620+60+60")
+        app.after(900, lambda: (grab(w, "5_revision.png"), w._close()))
+    steps.append(review)
+
+    def subs():
+        words = [{"start": 0.4 + i * 0.45, "end": 0.8 + i * 0.45, "text": t}
+                 for i, t in enumerate("madre mía qué ACE con la sheriff tío esto es una locura".split())]
+        words[1]["hl"] = "p"
+        d = app.edit_subtitles(words, lambda r: None)
+        d.geometry("760x640+80+80")
+        app.after(900, lambda: (grab(d, "6_subtitulos.png"), d.destroy()))
+    steps.append(subs)
+    steps.append(app.destroy)
+
+    def run(i=0):
         try:
-            from PIL import ImageGrab
-            app.update()
-            x, y = app.winfo_rootx(), app.winfo_rooty()
-            w, h = app.winfo_width(), app.winfo_height()
-            ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True).save(out_png)
-        finally:
-            app.destroy()
-    app.after(3500, shot)
+            steps[i]()
+        except Exception as e:
+            with open(os.path.join(out_png, f"error_{i}.txt"), "w", encoding="utf-8") as f:
+                f.write(repr(e))
+        if i + 1 < len(steps):
+            app.after(1800, lambda: run(i + 1))
+    app.after(3500, run)
     app.mainloop()
 
 

@@ -27,17 +27,18 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip numpy pillow
-          python app.py --demo-screenshot captura.png
-          if (!(Test-Path captura.png)) { throw "No hay captura" }
+          python app.py --demo-screenshot capturas
+          if (!(Test-Path capturas\1_principal.png)) { throw "No hay captura" }
       - name: Guardar la captura en la rama «capturas»
         shell: pwsh
         run: |
-          Copy-Item captura.png $env:RUNNER_TEMP\captura.png
+          Copy-Item capturas $env:RUNNER_TEMP\capturas -Recurse
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git checkout --orphan capturas
           git rm -rf --cached . | Out-Null
-          Copy-Item $env:RUNNER_TEMP\captura.png captura.png -Force
-          git add -f captura.png
+          Remove-Item capturas -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item $env:RUNNER_TEMP\capturas capturas -Recurse
+          git add -f capturas
           git commit -m "captura ${{ github.sha }}"
           git push -f origin capturas
