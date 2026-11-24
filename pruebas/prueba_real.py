@@ -48,6 +48,25 @@ def fetch_all(riots, key, region, until, log_out):
                 olds.append(mm.started_at)
             if not raws or (olds and min(olds) < until):
                 break
+        # el historial reciente solo da ~10: para directos más antiguos, el historial guardado
+        for page in range(1, 8):
+            try:
+                ids = core.fetch_stored_ids(riot, key, region, page=page)
+            except Exception as e:
+                log(log_out, f"API guardadas ({riot}, página {page}): {e}")
+                break
+            time.sleep(2.2)
+            for mid, when in ids:
+                if mid in got or when < until:
+                    continue
+                try:
+                    raw = core.fetch_match(mid, key, region)
+                    time.sleep(2.2)
+                    got[mid] = (core.parse_match(raw, riot), raw, riot)
+                except Exception as e:
+                    log(log_out, f"partida {mid}: {e}")
+            if not ids or min(w for _, w in ids) < until:
+                break
     log(log_out, f"API: {len(got)} partidas de {', '.join(riots)}")
     return list(got.values())
 
@@ -74,7 +93,11 @@ def main(cfg_path, out):
     infos = []
     for u in vods:
         try:
-            infos.append((u, twitch.vod_info(u)))
+            inf = twitch.vod_info(u)
+            if not inf.get("duration"):
+                log(out, f"{u}: está en directo todavía, lo salto")
+                continue
+            infos.append((u, inf))
         except Exception as e:
             log(out, f"{u}: no se pudo leer ({e})")
     if not infos:
@@ -90,7 +113,7 @@ def main(cfg_path, out):
         except Exception as e:
             import traceback
             log(sub, "ERROR:\n" + traceback.format_exc())
-        vod = os.path.join(out, "..", "vod.mp4")
+        vod = os.path.join(out, "vod.mp4")
         if os.path.isfile(vod):
             os.remove(vod)
         for d in (sync.cache_root(),):
@@ -102,6 +125,8 @@ def one(url, info, allm, base_delay, out):
     t0 = time.time()
     log(out, f"VOD {info['id']} · {info['title']!r} · {info['duration'] / 3600:.1f} h · inicio {info['start']}")
     vod = os.path.join(out, "..", "vod.mp4")
+    if os.path.isfile(vod):
+        os.remove(vod)
     if not os.path.isfile(vod):
         exe = twitch.ensure_ytdlp()
         r = subprocess.run([exe, "-f", "bv*[height<=480]/b[height<=480]/worst", "-N", "16", "--no-part",

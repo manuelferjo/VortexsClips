@@ -38,6 +38,6 @@ jobs:
           git checkout --orphan pruebas
           git rm -rf --cached . > /dev/null
           rm -rf salida && cp -r "$RUNNER_TEMP/salida" salida
-          git add -f salida
+          rm -f salida/vod.mp4; git add -f salida
           git commit -m "prueba ${{ github.sha }}"
           git push -f origin pruebas

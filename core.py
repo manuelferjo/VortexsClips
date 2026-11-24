@@ -256,6 +256,21 @@ def fetch_recent_matches(riot_id: str, api_key: str, region: str = "eu",
     return data.get("data") or []
 
 
+def fetch_stored_ids(riot_id: str, api_key: str, region: str = "eu", page: int = 1, size: int = 20,
+                     mode: str = "competitive") -> list[tuple[str, datetime]]:
+    """Ids y fecha de partidas más antiguas (el historial guardado de HenrikDev, que sí pagina)."""
+    name, tag = split_riot_id(riot_id)
+    path = f"/valorant/v1/stored-matches/{region}/{urllib.parse.quote(name)}/{urllib.parse.quote(tag)}"
+    data = _get(path, api_key, {"mode": mode, "page": page, "size": size})
+    out = []
+    for e in data.get("data") or []:
+        meta = e.get("meta") or {}
+        mid = meta.get("id") or e.get("match_id")
+        if mid:
+            out.append((mid, _parse_dt(meta.get("started_at") or meta.get("game_start"))))
+    return out
+
+
 def fetch_match(match_id_or_url: str, api_key: str, region: str = "eu") -> dict:
     """Acepta un id de partida o un enlace de tracker.gg con el id dentro."""
     m = UUID_RE.search(match_id_or_url)
