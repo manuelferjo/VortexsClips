@@ -1269,9 +1269,26 @@ class App(tk.Tk):
                         vod, m, exp, dur,
                         lambda f, t, i=i, n=len(ms): cb(i / n, f"Partida {i + 1} de {n}: {t}"),
                         lambda: self.stop_flag)
-                if len(res) > 1 and any(not r.ok for r in res.values()):
+                # referencias extra: partidas de este mismo VOD que ya se sincronizaron solas antes
+                # (así, al repetir solo las que fallaron, hay desfase común con el que compararlas)
+                refs = {}
+                if any(not r.ok for r in res.values()):
+                    for mid, c in self.calib.items():
+                        m = self.matches.get(mid)
+                        if (mid in res or m is None or not c.get("auto") or c.get("approx")
+                                or c.get("offset_s") is None or float(c.get("conf") or 0) < 0.6):
+                            continue
+                        if not core.match_in_vod(m, vs, dur, st, {}, dfn):
+                            continue
+                        exp = core.match_offset_s(m, vs, {}) + core.delay_offset(m, st, dfn)
+                        off = float(c["offset_s"])
+                        if abs(off - exp) > sync.SEARCH_S:
+                            continue
+                        refs[mid] = sync.SyncResult(off, off - exp, float(c["conf"]), True)
+                if len(res) + len(refs) > 1 and any(not r.ok for r in res.values()):
                     cb(1, "Afinando con el desfase común de todas las partidas…")
-                    res = sync.consensus(res, os.path.basename(vod))
+                    res = sync.consensus({**refs, **res}, os.path.basename(vod))
+                    res = {mid: r for mid, r in res.items() if mid not in refs}
                 return res
             finally:
                 self.after(0, lambda: self.set_running(False))
