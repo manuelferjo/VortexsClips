@@ -52,13 +52,15 @@ def main(cfg_path, out):
     vs = info["start"]
     # partidas del directo
     st = core.CutSettings(global_adjust_s=base_delay)
-    ms, pos = [], 0
+    ms, pos, rawby = [], 0, {}
     for page in range(12):
         raws = core.fetch_recent_matches(riot, key, region, size=10, start=pos)
         pos += 10
         for raw in raws:
             try:
-                ms.append(core.parse_match(raw, riot))
+                mm = core.parse_match(raw, riot)
+                ms.append(mm)
+                rawby[mm.match_id] = raw
             except Exception:
                 pass
         if not raws or (ms and min(m.started_at for m in ms) < vs):
@@ -121,6 +123,72 @@ def main(cfg_path, out):
                 os.remove(os.path.join(out, "_tmp.png"))
             except Exception as e:
                 log(out, f"   (sin imágenes: {e})")
+    # ---- datos para probar variantes del detector sin volver a descargar, e imágenes por candidato
+    import numpy as np
+    from PIL import Image, ImageDraw
+    datos = os.path.join(out, "datos")
+    os.makedirs(datos, exist_ok=True)
+    for m in inv:
+        r = res[m.match_id]
+        e = exp[m.match_id]
+        allk = sorted(k.t_match / 1000.0 for k in m.kills)
+        ends = sorted(rr.end_match_ms / 1000.0 for rr in m.rounds if rr.end_match_ms)
+        a = max(0.0, e + min(allk[0], ends[0] if ends else allk[0]) - 140)
+        b = min(dur, e + max(allk[-1], ends[-1] if ends else 0) + 150)
+        u0, arr = sync._read_all(vod, a, b - a, None, dur)
+        tiles = {}
+        for nm, _, gw, gh in sync.TILES:
+            if nm == "completa":
+                continue
+            fr, tt = sync._tile(arr, u0, nm, a, b)
+            tiles[nm] = fr
+            tiles[nm + "_t0"] = np.array([tt])
+        tag = f"{m.map_name}_{m.started_at.astimezone():%H%M}"
+        np.savez_compressed(os.path.join(datos, f"{tag}.npz"), expected=np.array([e]), **tiles)
+        with open(os.path.join(datos, f"{tag}.json"), "w", encoding="utf-8") as f:
+            json.dump({"riot": riot, "raw": rawby.get(m.match_id)}, f)
+        # imágenes: filas = candidatos (cada método + lo elegido), columnas = 2 kills antes/después
+        cands = []
+        for x in (getattr(r, "methods", None) or []):
+            cands.append((x["shift"], x["set"]))
+        cands.append((r.shift_s, "ELEGIDO"))
+        uniq = []
+        for sh, lab in sorted(cands):
+            if uniq and abs(uniq[-1][0] - sh) < 0.75:
+                uniq[-1] = (uniq[-1][0], uniq[-1][1] + "+" + lab)
+            else:
+                uniq.append((sh, lab))
+        mine = sorted((k for k in m.kills if k.killer == m.my_puuid), key=lambda k: k.t_match)
+        pick = [mine[len(mine) // 4], mine[(3 * len(mine)) // 4]] if len(mine) >= 4 else mine[:2]
+        rows = []
+        for sh, lab in uniq[:7]:
+            tl = []
+            for k in pick:
+                t = e + sh + k.t_match / 1000
+                for dt, cap in ((-1.0, "antes"), (1.5, "despues")):
+                    png = os.path.join(out, "_c.png")
+                    try:
+                        core.grab_crop(vod, t + dt, png, sync.REGIONS["killfeed"][1], 240)
+                        im = Image.open(png).convert("RGB")
+                    except Exception:
+                        im = Image.new("RGB", (240, 96), (40, 0, 0))
+                    tl.append((im, f"r{k.round + 1} {cap}"))
+            rows.append((sh, lab, tl))
+        if rows and rows[0][2]:
+            w, h = rows[0][2][0][0].width, rows[0][2][0][0].height
+            sheet = Image.new("RGB", (190 + len(rows[0][2]) * (w + 4), len(rows) * (h + 20)), (11, 10, 15))
+            d = ImageDraw.Draw(sheet)
+            for ri, (sh, lab, tl) in enumerate(rows):
+                y = ri * (h + 20)
+                d.text((4, y + h // 2), f"{sh:+.2f}s", fill=(255, 210, 31))
+                d.text((4, y + h // 2 + 14), lab[:30], fill=(199, 166, 255))
+                for ci, (im, cap) in enumerate(tl):
+                    x = 190 + ci * (w + 4)
+                    sheet.paste(im, (x, y + 16))
+                    d.text((x + 2, y + 2), cap, fill=(200, 200, 200))
+            sheet.save(os.path.join(out, f"candidatos_{tag}.png"))
+    if os.path.exists(os.path.join(out, "_c.png")):
+        os.remove(os.path.join(out, "_c.png"))
     # informes del detector
     for f in os.listdir(sync.report_dir()):
         if f.endswith((".txt", ".npz")):
