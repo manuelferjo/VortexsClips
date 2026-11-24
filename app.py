@@ -580,29 +580,47 @@ class App(tk.Tk):
         self.persist()
         start = self.next_start if more else 0
         riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
+        # si hay un VOD cargado, ir hacia atrás hasta llegar al día de ese directo
+        target = None
+        if not more and self.vod_info:
+            try:
+                target = self.vod_start_utc()
+            except ValueError:
+                target = None
         self.set_progress(None, "Descargando partidas de competitivo…")
+        cb = self.progress_cb()
 
         def work():
-            raws = core.fetch_recent_matches(riot, key, reg, size=10, start=start)
-            out = []
-            for r in raws:
-                try:
-                    out.append(core.parse_match(r, riot))
-                except Exception:
-                    pass
-            return out
+            out, pos = [], start
+            for page in range(12 if target else 1):          # hasta 120 partidas hacia atrás
+                if target:
+                    cb(None, f"Buscando las partidas del directo… (revisadas {pos})")
+                raws = core.fetch_recent_matches(riot, key, reg, size=10, start=pos)
+                pos += 10
+                ms = []
+                for r in raws:
+                    try:
+                        ms.append(core.parse_match(r, riot))
+                    except Exception:
+                        pass
+                out += ms
+                if not raws or not target or (ms and min(m.started_at for m in ms) < target):
+                    break
+            return out, pos
 
-        def done(ms):
+        def done(res):
+            ms, pos = res
             if not more:
                 self.matches.clear()
                 self.checked.clear()
-                self.next_start = 0
-            self.next_start += 10
+            self.next_start = pos
             for m in ms:
                 self.matches[m.match_id] = m
             self.refresh_matches()
             self.auto_check()
-            self.set_progress(1, f"{len(self.matches)} partidas cargadas.")
+            n_in = len(self.checked)
+            extra = f" · {n_in} en el VOD" if self.vod_info else ""
+            self.set_progress(1, f"{len(self.matches)} partidas cargadas{extra}.")
         self.run_bg(work, done, "No se pudieron cargar las partidas")
 
     def add_by_link(self):
