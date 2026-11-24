@@ -1132,12 +1132,13 @@ class App(tk.Tk):
                     cb(i / len(ms), f"Partida {i + 1} de {len(ms)}: {m.map_name} "
                                     f"({m.started_at.astimezone():%H:%M}) — buscando el killfeed…")
                     # punto de partida: la sincro manual si la hay; si no, la hora + delay
-                    c = dict(self.calib.get(m.match_id) or {})
-                    c.pop("offset_s", None)
-                    tmp_cal = {m.match_id: c} if c else {}
-                    exp = core.match_offset_s(m, vs, tmp_cal)
-                    if not c:
-                        exp += core.delay_offset(m, st, dfn)
+                    # punto de partida: tu sincronización a mano si la hay; si no, la hora + el desfase
+                    # (las sincronizaciones automáticas anteriores NO se usan como punto de partida)
+                    c = self.calib.get(m.match_id) or {}
+                    if c.get("first_kill_vod_s") is not None:
+                        exp = core.match_offset_s(m, vs, {m.match_id: {"first_kill_vod_s": c["first_kill_vod_s"]}})
+                    else:
+                        exp = core.match_offset_s(m, vs, {}) + core.delay_offset(m, st, dfn)
                     res[m.match_id] = sync.sync_match(
                         vod, m, exp, dur,
                         lambda f, t, i=i, n=len(ms): cb(i / n, f"Partida {i + 1} de {n}: {t}"),

@@ -273,6 +273,7 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
     if t1 - t0 < 30:
         return SyncResult(expected_offset_s, 0, 0, False, "la partida no está en el VOD")
     results, saved = [], {}
+    b0, ends = 0.0, []
 
     # 1) cartel WON/LOST: grande y opaco, una señal fuerte por ronda en toda la partida
     ends = sorted(r.end_match_ms / 1000.0 for r in match.rounds if r.end_match_ms)
@@ -320,9 +321,11 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
             saved["completa"] = full
         rep = save_report(saved, t0, expected_offset_s, allk, mine, match, results)
     _log(match, expected_offset_s, results)
-    data = None
+    data = {"expected": expected_offset_s}
     if "killfeed" in saved:
-        data = {"frames": saved["killfeed"], "t0": t0, "expected": expected_offset_s, "events": allk}
+        data.update({"frames": saved["killfeed"], "t0": t0, "events": allk})
+    if "cartel" in saved:
+        data.update({"cartel": saved["cartel"], "b0": b0, "ends": ends})
     return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], best["ok"],
                       "" if best["ok"] else "no he encontrado un patrón claro de kills", rep, data)
 
@@ -339,7 +342,8 @@ def consensus(results: dict, log_name: str = "") -> dict:
     """
     import numpy as np
     good = [r for r in results.values() if r.ok]
-    bad = {mid: r for mid, r in results.items() if not r.ok and r.data}
+    bad = {mid: r for mid, r in results.items() if not r.ok and r.data and
+           ("frames" in r.data or "cartel" in r.data)}
     if not bad:
         return results
     g = None
@@ -350,6 +354,10 @@ def consensus(results: dict, log_name: str = "") -> dict:
     elif len(bad) >= 2:
         # sumar la señal de todas las partidas (misma rejilla del killfeed)
         offs = np.arange(-SEARCH_S, SEARCH_S + 1e-6, 1 / FPS)
+        bad = {mid: r for mid, r in bad.items() if "frames" in r.data}
+        if len(bad) < 2:
+            _log_line(f"{log_name} consenso: no hay desfase común claro")
+            return results
         preps = {mid: _prep(r.data["frames"]) for mid, r in bad.items()}
 
         def total(part):
@@ -378,6 +386,23 @@ def consensus(results: dict, log_name: str = "") -> dict:
     out = dict(results)
     for mid, r in bad.items():
         d = r.data
+        # a) cartel (pareja de textos) en ±20 s alrededor del desfase común
+        if "cartel" in d and len(d["ends"]) >= MIN_ENDS:
+            loc = _validated(d["cartel"], d["b0"], d["expected"] + g, d["ends"], LOCAL_S, PAIR_LAG, "pareja")
+            loc_ok = (loc["halves"] is not None and abs(loc["halves"][0] - loc["shift"]) <= 1.0
+                      and abs(loc["halves"][1] - loc["shift"]) <= 1.0 and loc["zpeak"] >= 2.8
+                      and loc["ratio"] >= 1.35 and abs(loc["shift"]) < LOCAL_S - 1)
+            if loc_ok:
+                shift = g + loc["shift"]
+                out[mid] = SyncResult(d["expected"] + shift, shift, 0.65, True, "", r.report, None, False)
+                _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {shift:+.2f}s afinada con el cartel "
+                          f"(z {loc['zpeak']:.1f} ratio {loc['ratio']:.2f})")
+                continue
+        if "frames" not in d:
+            out[mid] = SyncResult(d["expected"] + g, g, 0.35, True, "", r.report, None, True)
+            _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {g:+.2f}s aprox (desfase común)")
+            continue
+        # b) killfeed en ±20 s
         S = _prep(d["frames"])
         loc = np.arange(g - LOCAL_S, g + LOCAL_S + 1e-6, 1 / FPS)
         sc = _scores(S, d["t0"], d["expected"], d["events"], loc)
