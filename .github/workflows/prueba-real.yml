@@ -1,0 +1,43 @@
+name: Prueba real
+
+# Prueba con un VOD y partidas reales. Se lanza subiendo pruebas/config.json a la rama «prueba-real».
+# Necesita el secreto HDEV_KEY (tu clave de HenrikDev). No publica nada: deja el resultado en la rama «pruebas».
+on:
+  push:
+    branches: [prueba-real]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prueba:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Herramientas
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          python -m pip install --upgrade pip numpy pillow yt-dlp
+      - name: Prueba
+        env:
+          HDEV_KEY: ${{ secrets.HDEV_KEY }}
+        run: |
+          mkdir -p work/salida
+          python pruebas/prueba_real.py pruebas/config.json work/salida || echo "código $?" >> work/salida/resumen.txt
+      - name: Guardar el resultado en la rama «pruebas»
+        if: always()
+        run: |
+          cp -r work/salida "$RUNNER_TEMP/salida"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan pruebas
+          git rm -rf --cached . > /dev/null
+          rm -rf salida && cp -r "$RUNNER_TEMP/salida" salida
+          git add -f salida
+          git commit -m "prueba ${{ github.sha }}"
+          git push -f origin pruebas
