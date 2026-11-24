@@ -116,7 +116,13 @@ def _scores(S, t0, expected, events, offs):
     return sc
 
 
-def _analyze_once(frames, t0: float, expected: float, events: list, search_s: float = SEARCH_S):
+# En la emisión de Vortexs, al final de cada ronda salen DOS textos en el centro de arriba:
+# el cartel WON/LOST justo en el momento exacto y otro texto 5,5-8 s después. Se busca la pareja.
+PAIR_LAG = (5.5, 8.0)
+
+
+def _analyze_once(frames, t0: float, expected: float, events: list, search_s: float = SEARCH_S,
+                  pair=None):
     """
     frames: array (n, GW*GH) uint8 de UNA zona. Para cada celda se mide cuánto cambia su brillo
     entre fotogramas (normalizado: picos sobre lo normal de esa celda) y se suma en los momentos
@@ -149,10 +155,19 @@ def _analyze_once(frames, t0: float, expected: float, events: list, search_s: fl
     prom_cell = coarse.max(axis=0) / (coarse.mean(axis=0) + 1e-6)
     top = np.argsort(prom_cell)[-max(TOP_CELLS, S.shape[1] // 20):]
     combo = scores[:, top].sum(axis=1)
+    if pair:
+        # nota de cada momento = su señal + la mejor señal 5,5-8 s después (el segundo texto)
+        a_, b_ = int(round(pair[0] * FPS)), int(round(pair[1] * FPS))
+        nxt = np.full(len(combo), 0.0)
+        for k in range(a_, b_ + 1):
+            sh = np.zeros(len(combo))
+            sh[:len(combo) - k] = combo[k:]
+            nxt = np.maximum(nxt, sh)
+        combo = combo + nxt
     best = int(np.argmax(combo))
     peak = float(combo[best])
     # eco: las líneas del killfeed también "desaparecen" unos segundos después -> pico más tarde
-    for j in range(best - 1, max(-1, best - 41), -1):
+    for j in (range(best - 1, max(-1, best - 41), -1) if not pair else []):
         if (combo[j] >= 0.8 * peak and combo[j] >= combo[max(j - 1, 0)]
                 and combo[j] >= combo[min(j + 1, len(combo) - 1)]):
             best, peak = j, float(combo[j])
@@ -177,30 +192,46 @@ def _analyze_once(frames, t0: float, expected: float, events: list, search_s: fl
 def analyze(frames, t0: float, expected: float, events: list, search_s: float = SEARCH_S,
             kind: str = "killfeed"):
     """
-    Valida con dos mitades independientes (kills pares e impares): cada mitad elige sus celdas y su
-    desplazamiento por su cuenta. Si la partida está de verdad, las dos señalan el mismo momento;
-    si es casualidad, cada una apunta a un sitio distinto.
+    Valida con dos mitades independientes (rondas/kills pares e impares): cada mitad elige sus
+    celdas y su desplazamiento por su cuenta. Si es real, las dos señalan el mismo momento.
+    Para el cartel se prueba con la pareja de textos (tu emisión) y con el cartel solo.
     """
-    full = _analyze_once(frames, t0, expected, events, search_s)
+    if kind != "cartel":
+        return _validated(frames, t0, expected, events, search_s, None, "killfeed")
+    con = _validated(frames, t0, expected, events, search_s, PAIR_LAG, "pareja")
+    sin = _validated(frames, t0, expected, events, search_s, None, "cartel")
+    for r in (con, sin):
+        if r["ok"]:
+            return r
+    return max((con, sin), key=lambda r: r["zpeak"])
+
+
+def _validated(frames, t0, expected, events, search_s, pair, mode):
+    full = _analyze_once(frames, t0, expected, events, search_s, pair)
+    full["mode"] = mode
     if len(events) < 10:
         full["ok"] = False
         full["halves"] = None
         return full
-    a = _analyze_once(frames, t0, expected, events[0::2], search_s)
-    b = _analyze_once(frames, t0, expected, events[1::2], search_s)
+    a = _analyze_once(frames, t0, expected, events[0::2], search_s, pair)
+    b = _analyze_once(frames, t0, expected, events[1::2], search_s, pair)
     agree = abs(a["shift"] - full["shift"]) <= 1.0 and abs(b["shift"] - full["shift"]) <= 1.0
     full["halves"] = [a["shift"], b["shift"]]
     edge = abs(full["shift"]) >= search_s - 2          # pico pegado al borde: artefacto
-    if kind == "cartel":
-        # medido: partida real z≈40 y ratio≈6,5; patrones falsos z≤12 y ratio≤1,4
-        full["ok"] = bool(not edge and ((full["zpeak"] >= 20 and full["ratio"] >= 2.5)
-                                        or (agree and full["zpeak"] >= 14 and full["ratio"] >= 1.8)))
+    z, ratio = full["zpeak"], full["ratio"]
+    if mode == "pareja":
+        # medido con tu emisión real: z 6-7, ratio 1,40 y mitades de acuerdo; falsos z ≤4,2 y ratio ≤1,19
+        ok = agree and z >= 5.2 and ratio >= 1.28
+    elif mode == "cartel":
+        # cartel solo (sin segundo texto): real z≈40 y ratio≈6,5; falsos z≤12 y ratio≤1,4
+        ok = (z >= 20 and ratio >= 2.5) or (agree and z >= 14 and ratio >= 1.8)
     else:
-        # medido: killfeed real z 13-16 y ratio ≥2,8; falsos z ≤6-12 y ratio ≤1,4
-        # (con mucho movimiento detrás, un patrón falso llegó a z 12 y ratio 2,3: listón por encima)
-        full["ok"] = bool(not edge and agree and full["zpeak"] >= 13 and full["ratio"] >= 2.5)
-    # % que se ve en «Sincro»: validada por las dos mitades = 60-100 %; si no, como mucho 30 %
+        # killfeed: con mucho movimiento detrás, un patrón falso llegó a z 12 y ratio 2,3
+        ok = agree and z >= 13 and ratio >= 2.5
+    full["ok"] = bool(ok and not edge)
     full["conf"] = 0.6 + 0.4 * full["conf"] if full["ok"] else min(full["conf"], 0.3)
+    if full["ok"] and mode == "pareja":
+        full["conf"] = max(full["conf"], 0.75)
     return full
 
 
@@ -257,7 +288,7 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
         if frames is not None:
             saved["cartel"] = frames
             r = analyze(frames, b0, expected_offset_s, ends, kind="cartel")
-            r["set"] = "cartel"
+            r["set"] = "cartel(" + r.get("mode", "") + ")"
             results.append(r)
             if r["ok"]:
                 _log(match, expected_offset_s, results)
