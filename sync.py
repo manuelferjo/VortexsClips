@@ -250,6 +250,9 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
     best = results[0]
     rep = ""
     if not best["ok"]:
+        full = _read_region(vod, t0, t1 - t0, "", should_stop, 32, 18)
+        if full is not None:
+            saved["completa"] = full
         rep = save_report(saved, t0, expected_offset_s, allk, mine, match, results)
     _log(match, expected_offset_s, results)
     data = None
@@ -347,7 +350,10 @@ def save_report(saved, t0, expected, allk, mine, match, results) -> str:
             "match_id": match.match_id, "results": results,
             "regions": {k: list(v[1:]) for k, v in REGIONS.items()}}
     arrays = {f"frames_{k}": v for k, v in saved.items()}
-    np.savez_compressed(path, allk=np.array(allk), mine=np.array(mine),
+    rounds = [r.start_match_ms / 1000.0 for r in match.rounds if r.start_match_ms is not None]
+    deaths = sorted(k.t_match / 1000.0 for k in match.kills if k.victim == match.my_puuid)
+    np.savez_compressed(path, allk=np.array(allk), mine=np.array(mine), rounds=np.array(rounds),
+                        deaths=np.array(deaths),
                         meta=np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8), **arrays)
     files = sorted((os.path.join(report_dir(), f) for f in os.listdir(report_dir()) if f.endswith(".npz")),
                    key=os.path.getmtime)

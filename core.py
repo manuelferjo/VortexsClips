@@ -298,6 +298,8 @@ class CutSettings:
     kill_pre_s: float = 2.5       # modo kills: segundos antes de cada kill
     kill_post_s: float = 1.5      # modo kills: segundos después de cada kill
     residual_s: float = 0.0       # con registro de delay de Vortexs Live: corrección fija aprendida
+    unsynced_extra_pre_s: float = 6.0   # modo kills: margen extra si la partida NO está sincronizada
+    unsynced_extra_post_s: float = 4.0
 
 
 def delay_offset(m: "Match", settings: CutSettings, delay_fn=None) -> float:
@@ -331,13 +333,16 @@ def is_synced(calib: dict, match_id: str) -> bool:
 
 
 def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
-                   vod_duration_s: float) -> list[tuple[float, float]]:
-    """Modo solo kills: un trozo alrededor de cada kill tuya; las kills seguidas se juntan."""
+                   vod_duration_s: float, synced: bool = True) -> list[tuple[float, float]]:
+    """Modo solo kills: un trozo alrededor de cada kill tuya; las kills seguidas se juntan.
+    Si la partida no está sincronizada al segundo, se deja margen extra para no perder la jugada."""
     ts = sorted(base + k.t_match / 1000 for k in m.kills
                 if k.round == r.index and k.killer == m.my_puuid)
+    pre = settings.kill_pre_s + (0 if synced else settings.unsynced_extra_pre_s)
+    post = settings.kill_post_s + (0 if synced else settings.unsynced_extra_post_s)
     segs: list[list[float]] = []
     for t in ts:
-        a, b = t - settings.kill_pre_s, t + settings.kill_post_s
+        a, b = t - pre, t + post
         if segs and a <= segs[-1][1] + 0.05:
             segs[-1][1] = max(segs[-1][1], b)
         else:
@@ -367,7 +372,9 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
             if r.start_match_ms is None:
                 continue
             if settings.mode == "kills":
-                segs = _kill_segments(m, r, base, settings, vod_duration_s)
+                c_ = calib.get(m.match_id) or {}
+                precise = uses_calib and not c_.get("approx")
+                segs = _kill_segments(m, r, base, settings, vod_duration_s, synced=precise)
                 if segs and (segs[0][0] < (vod_duration_s or 1e12)) and segs[-1][1] > 0:
                     for i, (a, b) in enumerate(segs):
                         clips.append(Clip(m, r, a, b, i, len(segs)))
