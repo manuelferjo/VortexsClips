@@ -237,6 +237,7 @@ class App(tk.Tk):
         self.v_mode = tk.StringVar(value=cfg.get("mode", "round"))
         self.v_kpre = tk.StringVar(value=str(cfg.get("kill_pre", 2.5)))
         self.v_kpost = tk.StringVar(value=str(cfg.get("kill_post", 1.5)))
+        self.v_kgap = tk.StringVar(value=str(cfg.get("kill_gap", 4.0)))
         enc_default = next((k for k, v in ENCODERS.items() if v == cfg.get("encoder", "auto")), list(ENCODERS)[0])
         self.v_enc = tk.StringVar(value=enc_default)
         self.v_twitch = tk.StringVar()
@@ -246,6 +247,8 @@ class App(tk.Tk):
         self.v_autosync = tk.BooleanVar(value=cfg.get("auto_sync", True))
         self.v_vertical = tk.BooleanVar(value=cfg.get("vertical", True))
         self.v_subs = tk.BooleanVar(value=cfg.get("subtitles", True))
+        self.v_subhl = tk.BooleanVar(value=cfg.get("sub_highlight", True))
+        self.v_subedit = tk.BooleanVar(value=cfg.get("sub_edit", True))
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
         self.cam = cfg.get("cam")
         self.v_channel = tk.StringVar(value=cfg.get("watch_channel", ""))
@@ -292,6 +295,9 @@ class App(tk.Tk):
         ttk.Entry(kf, textvariable=self.v_kpre, width=4).pack(side="left", padx=4)
         ttk.Label(kf, text="  y después").pack(side="left")
         ttk.Entry(kf, textvariable=self.v_kpost, width=4).pack(side="left", padx=4)
+        ttk.Label(kf, text="  · no cortar si entre kills hay menos de").pack(side="left")
+        ttk.Entry(kf, textvariable=self.v_kgap, width=4).pack(side="left", padx=4)
+        ttk.Label(kf, text="s").pack(side="left")
         ttk.Radiobutton(t_cut, text="La ronda completa", value="round", variable=self.v_mode).grid(
             row=3, column=1, columnspan=4, sticky="w", pady=(6, 2))
         rf = ttk.Frame(t_cut, style="Panel.TFrame")
@@ -334,8 +340,12 @@ class App(tk.Tk):
         self.lbl_cam.pack(side="left")
         ttk.Checkbutton(t_out, text="Subtítulos automáticos en la vertical (lo que dices, en grande bajo la cámara)",
                         variable=self.v_subs).grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(t_out, text="Además, un clip suelto por cada ronda (carpeta aparte)",
-                        variable=self.v_singles).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(t_out, text="    Palabras destacadas en amarillo y morado (colores del canal)",
+                        variable=self.v_subhl).grid(row=5, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ttk.Checkbutton(t_out, text="    Revisar y editar los subtítulos antes de generar la vertical",
+                        variable=self.v_subedit).grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ttk.Checkbutton(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
+                        variable=self.v_singles).grid(row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         # ---- pestaña Automático
         ttk.Label(t_auto, text="Tu canal de Twitch").grid(row=0, column=0, sticky="w")
@@ -387,6 +397,7 @@ class App(tk.Tk):
         ttk.Button(mb, text="Sincronizar solo", style="Purple.TButton", command=self.sync_checked).pack(side="left", padx=6)
         ttk.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="left")
         ttk.Button(mb, text="Informes", command=self.open_reports).pack(side="right")
+        ttk.Button(mb, text="Revisar sincro", command=self.review_sync).pack(side="right", padx=6)
         ttk.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
 
         # --- 4. rondas
@@ -523,6 +534,7 @@ class App(tk.Tk):
                                 global_adjust_s=f(self.v_delay, 0),
                                 mode=self.v_mode.get(), kill_pre_s=f(self.v_kpre, 2.5),
                                 kill_post_s=f(self.v_kpost, 1.5),
+                                merge_gap_s=f(self.v_kgap, 4.0),
                                 residual_s=float(self.cfg.get("residual_s", 0.0)))
 
     # ------------------------------------------------------------ delay de Vortexs Live
@@ -652,7 +664,9 @@ class App(tk.Tk):
                          "auto_process": self.v_auto.get(), "auto_sync": self.v_autosync.get(),
                          "vertical": self.v_vertical.get(), "singles": self.v_singles.get(),
                          "cam": self.cam, "subtitles": self.v_subs.get(), "mode": self.v_mode.get(),
+                         "sub_highlight": self.v_subhl.get(), "sub_edit": self.v_subedit.get(),
                          "kill_pre": self.v_kpre.get(), "kill_post": self.v_kpost.get(),
+                         "kill_gap": self.v_kgap.get(),
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
                          "startup": self.v_startup.get()})
         try:
@@ -1230,6 +1244,17 @@ class App(tk.Tk):
         self.render(out)
 
     # ------------------------------------------------------------ sincronización automática
+    def sync_workers(self) -> int:
+        """Partidas que se leen a la vez (cada una es un ffmpeg decodificando el VOD)."""
+        try:
+            n = int(self.cfg.get("sync_workers") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            return min(n, 6)
+        cpus = os.cpu_count() or 4
+        return 3 if cpus >= 12 else 2
+
     def run_sync(self, match_ids, then=None):
         if not self.vod_info:
             messagebox.showinfo(APP_NAME, "Primero elige o descarga el VOD.")
@@ -1253,11 +1278,8 @@ class App(tk.Tk):
 
         def work():
             try:
-                res = {}
-                for i, m in enumerate(sorted(ms, key=lambda x: x.started_at)):
-                    cb(i / len(ms), f"Partida {i + 1} de {len(ms)}: {m.map_name} "
-                                    f"({m.started_at.astimezone():%H:%M}) — buscando el killfeed…")
-                    # punto de partida: la sincro manual si la hay; si no, la hora + delay
+                items = []
+                for m in sorted(ms, key=lambda x: x.started_at):
                     # punto de partida: tu sincronización a mano si la hay; si no, la hora + el desfase
                     # (las sincronizaciones automáticas anteriores NO se usan como punto de partida)
                     c = self.calib.get(m.match_id) or {}
@@ -1265,10 +1287,8 @@ class App(tk.Tk):
                         exp = core.match_offset_s(m, vs, {m.match_id: {"first_kill_vod_s": c["first_kill_vod_s"]}})
                     else:
                         exp = core.match_offset_s(m, vs, {}) + core.delay_offset(m, st, dfn)
-                    res[m.match_id] = sync.sync_match(
-                        vod, m, exp, dur,
-                        lambda f, t, i=i, n=len(ms): cb(i / n, f"Partida {i + 1} de {n}: {t}"),
-                        lambda: self.stop_flag)
+                    items.append((m, exp))
+                res = sync.sync_many(vod, items, dur, self.sync_workers(), cb, lambda: self.stop_flag)
                 # referencias extra: partidas de este mismo VOD que ya se sincronizaron solas antes
                 # (así, al repetir solo las que fallaron, hay desfase común con el que compararlas)
                 refs = {}
@@ -1372,6 +1392,280 @@ class App(tk.Tk):
 
     def sync_checked(self):
         self.run_sync(sorted(self.checked))
+
+    # ------------------------------------------------------------ editor de subtítulos
+    def edit_subtitles(self, words, callback):
+        """
+        Ventana para corregir los subtítulos antes de la vertical: cambiar el texto de una palabra,
+        borrarla, ponerla en amarillo / morado / sin color, o quitar todos los subtítulos.
+        callback(lista de palabras) al continuar, o callback(None) para no poner subtítulos.
+        """
+        ws = [dict(w) for w in words]
+        dlg = tk.Toplevel(self)
+        dlg.title("Revisar subtítulos")
+        dlg.configure(bg=PANEL)
+        dlg.geometry("760x640")
+        dlg.transient(self)
+        ttk.Label(dlg, text="Revisa los subtítulos antes de generar la vertical", style="H.TLabel").pack(
+            anchor="w", padx=12, pady=(10, 0))
+        ttk.Label(dlg, text="Doble clic en una palabra para corregirla. Puedes seleccionar varias (Ctrl/Mayús) "
+                            "para borrarlas o cambiarles el color. «auto» = el programa decide si va en color.",
+                  style="Muted.TLabel", wraplength=720).pack(anchor="w", padx=12, pady=(2, 8))
+        fr = ttk.Frame(dlg, style="Panel.TFrame")
+        fr.pack(fill="both", expand=True, padx=12)
+        tv = ttk.Treeview(fr, columns=("t", "w", "c"), show="headings", selectmode="extended")
+        for c_, t_, w_ in (("t", "Momento", 110), ("w", "Palabra", 380), ("c", "Color", 160)):
+            tv.heading(c_, text=t_)
+            tv.column(c_, width=w_, anchor="w" if c_ == "w" else "center", stretch=c_ == "w")
+        tv.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(fr, orient="vertical", command=tv.yview)
+        sb.pack(side="right", fill="y")
+        tv.configure(yscrollcommand=sb.set)
+        names = {"y": "amarillo", "p": "morado", "none": "sin color"}
+
+        def color_txt(w):
+            hl = w.get("hl")
+            if hl in names:
+                return names[hl]
+            return "auto ✓" if subtitles.auto_highlight(w["text"]) else "auto"
+
+        def fill(keep=None):
+            tv.delete(*tv.get_children())
+            for i, w in enumerate(ws):
+                tv.insert("", "end", iid=str(i), values=(core.fmt_ts(w["start"]), w["text"], color_txt(w)))
+            if keep:
+                ok_ = [k for k in keep if tv.exists(k)]
+                if ok_:
+                    tv.selection_set(ok_)
+                    tv.see(ok_[0])
+
+        ed = ttk.Frame(dlg, style="Panel.TFrame")
+        ed.pack(fill="x", padx=12, pady=(8, 0))
+        ttk.Label(ed, text="Texto:").pack(side="left")
+        v_txt = tk.StringVar()
+        ent = ttk.Entry(ed, textvariable=v_txt, width=40)
+        ent.pack(side="left", padx=6)
+
+        def sel():
+            return sorted((int(i) for i in tv.selection()))
+
+        def load(_e=None):
+            s_ = sel()
+            if s_:
+                v_txt.set(ws[s_[0]]["text"])
+                ent.focus_set()
+                ent.select_range(0, "end")
+
+        def apply_text(_e=None):
+            s_ = sel()
+            if not s_:
+                return
+            t = v_txt.get().strip()
+            if not t:
+                delete()
+                return
+            ws[s_[0]]["text"] = t
+            fill([str(s_[0])])
+
+        def delete():
+            s_ = sel()
+            if not s_:
+                return
+            for i in reversed(s_):
+                del ws[i]
+            fill([str(min(s_[0], len(ws) - 1))] if ws else None)
+
+        def set_color(hl):
+            s_ = sel()
+            for i in s_:
+                if hl == "auto":
+                    ws[i].pop("hl", None)
+                else:
+                    ws[i]["hl"] = hl
+            fill([str(i) for i in s_])
+
+        ttk.Button(ed, text="Cambiar", command=apply_text).pack(side="left")
+        ttk.Button(ed, text="Borrar", command=delete).pack(side="left", padx=6)
+        cl = ttk.Frame(dlg, style="Panel.TFrame")
+        cl.pack(fill="x", padx=12, pady=(6, 0))
+        ttk.Label(cl, text="Color:").pack(side="left")
+        ttk.Button(cl, text="Amarillo", command=lambda: set_color("y")).pack(side="left", padx=4)
+        ttk.Button(cl, text="Morado", command=lambda: set_color("p")).pack(side="left", padx=4)
+        ttk.Button(cl, text="Sin color", command=lambda: set_color("none")).pack(side="left", padx=4)
+        ttk.Button(cl, text="Automático", command=lambda: set_color("auto")).pack(side="left", padx=4)
+        tv.bind("<Double-1>", load)
+        tv.bind("<Delete>", lambda e: delete())
+        ent.bind("<Return>", apply_text)
+        done = {"v": False}
+
+        def finish(res):
+            if done["v"]:
+                return
+            done["v"] = True
+            dlg.destroy()
+            callback(res)
+
+        bf = ttk.Frame(dlg, style="Panel.TFrame")
+        bf.pack(fill="x", padx=12, pady=12)
+        ttk.Button(bf, text="Continuar con estos subtítulos", style="Accent.TButton",
+                   command=lambda: finish(ws or None)).pack(side="right")
+        ttk.Button(bf, text="Quitar todos los subtítulos",
+                   command=lambda: finish(None)).pack(side="right", padx=6)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: finish(ws or None))
+        fill()
+        # para la prueba automática
+        dlg._api = {"tv": tv, "words": ws, "set_color": set_color, "delete": delete, "text": v_txt,
+                    "apply": apply_text, "finish": finish}
+        return dlg
+
+    # ------------------------------------------------------------ revisión rápida de la sincro
+    REVIEW_BEFORE_S = 1.0
+    REVIEW_AFTER_S = 1.5
+
+    def review_sync(self):
+        """Antes/después del killfeed en kills tuyas de cada partida marcada: de un vistazo se ve
+        si la partida está bien sincronizada (la línea nueva aparece en «después»)."""
+        if self.busy:
+            return
+        if not self.vod_info:
+            messagebox.showinfo(APP_NAME, "Primero elige o descarga el VOD.")
+            return
+        try:
+            vs = self.vod_start_utc()
+        except ValueError as e:
+            messagebox.showerror(APP_NAME, str(e))
+            return
+        ms = sorted((self.matches[i] for i in self.checked if i in self.matches), key=lambda m: m.started_at)
+        if not ms:
+            messagebox.showinfo(APP_NAME, "Marca las partidas que quieres revisar (☐ → ☑).")
+            return
+        st, dfn = self.settings(), self.delay_fn_for_vod()
+        vod, dur = self.v_vod.get(), self.vod_info["duration"]
+        crop = sync.REGIONS["killfeed"][1]
+        tmp = tempfile.mkdtemp(prefix="vortexsclips_rev_")
+        jobs, rows = [], []
+        for m in ms:
+            mine = sorted((k for k in m.kills if k.killer == m.my_puuid), key=lambda k: k.t_match)
+            pick = mine[:1] + ([mine[len(mine) // 2]] if len(mine) > 2 else [])
+            base = core.match_base_s(m, vs, st, self.calib, dfn)
+            ks = []
+            for j, k in enumerate(pick):
+                t = base + k.t_match / 1000
+                if t < 0 or (dur and t > dur):
+                    continue
+                a = os.path.join(tmp, f"{m.match_id[:8]}_{j}_a.png")
+                b = os.path.join(tmp, f"{m.match_id[:8]}_{j}_b.png")
+                jobs += [(a, t - self.REVIEW_BEFORE_S), (b, t + self.REVIEW_AFTER_S)]
+                ks.append((k, t, a, b))
+            rows.append((m, ks))
+        if not jobs:
+            messagebox.showinfo(APP_NAME, "En las partidas marcadas no hay kills tuyas dentro del VOD.")
+            return
+        self.set_step(None, "Preparando la revisión…")
+        cb = self.progress_cb()
+
+        def work():
+            from concurrent.futures import ThreadPoolExecutor
+            lock, cnt = threading.Lock(), [0]
+
+            def one(job):
+                png, at = job
+                try:
+                    core.grab_crop(vod, at, png, crop, 300)
+                except Exception:
+                    pass
+                with lock:
+                    cnt[0] += 1
+                    d = cnt[0]
+                cb(d / len(jobs), f"Revisión: fotograma {d} de {len(jobs)}")
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                list(ex.map(one, jobs))
+            return rows
+
+        def done(rows_):
+            self.set_step(None, "Revisión lista")
+            self._show_review(rows_, tmp)
+        self.run_bg(work, done, "No se pudo preparar la revisión")
+
+    def _show_review(self, rows, tmp):
+        import shutil
+        win = tk.Toplevel(self)
+        win.title("Revisar sincronización")
+        win.configure(bg=PANEL)
+        win.geometry("1380x780")
+        win.transient(self)
+        ttk.Label(win, text="En cada kill tuya: «antes» (1 s antes) y «después» (1,5 s después). Si la partida está "
+                            "bien, en «después» aparece una línea nueva en el killfeed que en «antes» no está.",
+                  style="H.TLabel", wraplength=1320).pack(anchor="w", padx=12, pady=(10, 2))
+        ttk.Label(win, text="Si las dos imágenes son iguales, o la kill ya sale en «antes», esa partida está desfasada: "
+                            "pulsa «Sincronizar a mano…» en su fila.",
+                  style="Muted.TLabel", wraplength=1320).pack(anchor="w", padx=12, pady=(0, 8))
+        outer = ttk.Frame(win, style="Panel.TFrame")
+        outer.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        cv = tk.Canvas(outer, bg=PANEL, highlightthickness=0)
+        sb = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
+        inner = ttk.Frame(cv, style="Panel.TFrame")
+        inner.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.create_window((0, 0), window=inner, anchor="nw")
+        cv.configure(yscrollcommand=sb.set)
+        cv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        win.bind("<MouseWheel>", lambda e: cv.yview_scroll(int(-e.delta / 120), "units"))
+        win.bind("<Button-4>", lambda e: cv.yview_scroll(-1, "units"))
+        win.bind("<Button-5>", lambda e: cv.yview_scroll(1, "units"))
+        imgs = []
+
+        def manual(mid):
+            if mid in self.matches:
+                self.tv_m.selection_set(mid)
+                self.tv_m.see(mid)
+                self.calibrate()
+
+        for m, ks in rows:
+            c = self.calib.get(m.match_id) or {}
+            if c.get("auto") and c.get("approx"):
+                stt, col = "Auto ≈ (aprox.) — revisa", YELLOW
+            elif c.get("auto"):
+                stt, col = f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)", "#7ee081"
+            elif c.get("first_kill_vod_s") is not None:
+                stt, col = "Manual ✔", "#7ee081"
+            else:
+                stt, col = "Sin sincronizar (por hora)", "#ff7a7a"
+            row = ttk.Frame(inner, style="Panel.TFrame")
+            row.pack(fill="x", pady=6)
+            info = ttk.Frame(row, style="Panel.TFrame", width=230)
+            info.pack(side="left", fill="y", padx=(0, 10))
+            ttk.Label(info, text=f"{m.map_name} · {m.agent}", style="H.TLabel").pack(anchor="w")
+            ttk.Label(info, text=f"{m.started_at.astimezone():%d/%m %H:%M} · {m.score}",
+                      style="Muted.TLabel").pack(anchor="w")
+            tk.Label(info, text=stt, bg=PANEL, fg=col, font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(2, 4))
+            ttk.Button(info, text="Sincronizar a mano…",
+                       command=lambda mid=m.match_id: manual(mid)).pack(anchor="w")
+            if not ks:
+                ttk.Label(row, text="No hay kills tuyas dentro del VOD en esta partida.",
+                          style="Muted.TLabel").pack(side="left")
+            for i, (k, t, a, b) in enumerate(ks):
+                box = ttk.Frame(row, style="Panel.TFrame")
+                box.pack(side="left", padx=8)
+                ttk.Label(box, text=f"Kill {i + 1} · ronda {k.round + 1} · {core.fmt_ts(t)}",
+                          style="Muted.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+                for col_, (png, cap) in enumerate(((a, "antes"), (b, "después"))):
+                    try:
+                        im = tk.PhotoImage(file=png)
+                        imgs.append(im)
+                        tk.Label(box, image=im, bg=BG, bd=0).grid(row=1, column=col_, padx=2)
+                    except Exception:
+                        tk.Label(box, text="(sin imagen)", bg=BG, fg=MUTED, width=36, height=6).grid(
+                            row=1, column=col_, padx=2)
+                    ttk.Label(box, text=cap, style="Muted.TLabel").grid(row=2, column=col_)
+        win._imgs = imgs
+
+        def close():
+            shutil.rmtree(tmp, ignore_errors=True)
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", close)
+        win._close = close
+        return win
 
     # ------------------------------------------------------------ cámara (vertical)
     def _cam_text(self):
@@ -1559,6 +1853,8 @@ class App(tk.Tk):
 
         vertical, singles, cam = self.v_vertical.get(), self.v_singles.get(), self.cam
         subs = vertical and self.v_subs.get()
+        sub_hl = self.v_subhl.get()
+        sub_edit = subs and self.v_subedit.get() and not self.unattended()
         warnings = []
 
         def sub(title):
@@ -1579,17 +1875,31 @@ class App(tk.Tk):
                         if "Cancelado" in str(e):
                             raise
                         warnings.append(f"Subtítulos: {e}")
+                    if words and sub_edit:
+                        sub("Revisa los subtítulos en la ventana que se ha abierto…")
+                        cb(None, "Esperando a que revises los subtítulos")
+                        ev, box = threading.Event(), {}
+
+                        def got(res):
+                            box["r"] = res
+                            ev.set()
+                        self.after(0, lambda: self.edit_subtitles(words, got))
+                        while not ev.wait(0.3):
+                            if self.stop_flag:
+                                raise RuntimeError("Cancelado.")
+                        words = box.get("r")
                 if vertical:
                     sub("Generando la versión vertical (TikTok)…")
                     v = base + " (vertical).mp4"
                     core.make_vertical(out, v, cam, enc, lambda f, t: cb(f, "Versión vertical 9:16…"), stop,
-                                       words=words)
+                                       words=words, highlight=sub_hl)
                     made.append(v)
                 if singles:
                     sub("Sacando un clip por ronda…")
                     folder = base + " - clips sueltos"
                     core.export_singles(out, clips, folder, vertical_cam=cam, vertical=vertical,
-                                        encoder=enc, progress=cb, should_stop=stop, words=words)
+                                        encoder=enc, progress=cb, should_stop=stop, words=words,
+                                        highlight=sub_hl)
                     made.append(folder)
                 return made
             finally:
@@ -1719,7 +2029,7 @@ def selftest(out_path):
         log(os.path.isfile(vid), "vídeo de prueba")
         log(True, f"codificador: {core.best_encoder()}")
         words = [{"start": 0.5, "end": 0.9, "text": "vale"}, {"start": 1.0, "end": 1.4, "text": "mira"},
-                 {"start": 1.5, "end": 2.0, "text": "esto"}]
+                 {"start": 1.5, "end": 2.0, "text": "esto"}, {"start": 2.1, "end": 2.6, "text": "ACE!"}]
         cam = {"x": 0.7, "y": 0.6, "w": 0.25, "h": 0.3}
         vout = os.path.join(tmp, "v.mp4")
         core.make_vertical(vid, vout, cam, "auto", words=words)
@@ -1756,8 +2066,51 @@ def selftest(out_path):
         r = sync.sync_match(svod, m, true_off - 37.5, total_)
         log(r.ok and abs(r.offset_s - true_off - 0.4) <= 0.5,
             f"sincronización por cartel de fin de ronda (error {r.offset_s - true_off - 0.4:+.2f} s, ok={r.ok})")
+        # varias partidas a la vez + caché (al repetir no se vuelve a decodificar el vídeo)
+        import copy
+        sync.prune_cache(0)
+        m2 = copy.deepcopy(m)
+        m2.match_id = "t2"
+        its = [(m, true_off - 37.5), (m2, true_off - 30.0)]
+        a_ = time.time()
+        res1 = sync.sync_many(svod, its, total_, 2)
+        t1_ = time.time() - a_
+        a_ = time.time()
+        res2 = sync.sync_many(svod, its, total_, 2)
+        t2_ = time.time() - a_
+        allr = list(res1.values()) + list(res2.values())
+        log(len(allr) == 4 and all(x.ok and abs(x.offset_s - true_off - 0.4) <= 0.5 for x in allr),
+            f"sincronización en paralelo (2 partidas a la vez: {t1_:.1f} s; repetida desde caché: {t2_:.1f} s)")
+        log(t2_ < t1_, "la caché acelera la repetición")
+        log(core.kills_folder(3) == "3K" and core.kills_folder(4) == "4K" and core.kills_folder(5) == "ACE",
+            "carpetas 3K / 4K / ACE")
+        st2 = core.CutSettings(mode="kills", merge_gap_s=6.0, kill_pre_s=1.0, kill_post_s=1.0)
+        mk = core.Match("k", "Prueba", datetime.now(timezone.utc), 0, "Jett", "me", "13-0")
+        rk = core.Round(0, start_match_ms=0)
+        mk.rounds = [rk]
+        mk.kills = [core.Kill(0, t_ * 1000, t_ * 1000, "me", "b") for t_ in (10, 15, 27)]
+        log(len(core._kill_segments(mk, rk, 100.0, st2, 0)) == 2, "juntar kills seguidas")
         app = App()
         log(True, "ventana creada")
+        # editor de subtítulos
+        got = []
+        dlg = app.edit_subtitles(words, got.append)
+        api = dlg._api
+        api["tv"].selection_set(["0"])
+        api["set_color"]("p")
+        api["tv"].selection_set(["1"])
+        api["delete"]()
+        api["finish"](api["words"])
+        log(bool(got) and got[0] and got[0][0].get("hl") == "p" and len(got[0]) == 3, "editor de subtítulos")
+        # revisión rápida de la sincro
+        rtmp = tempfile.mkdtemp(prefix="vc_rev_")
+        a_png, b_png = os.path.join(rtmp, "a.png"), os.path.join(rtmp, "b.png")
+        core.grab_crop(vid, 1.0, a_png, sync.REGIONS["killfeed"][1], 300)
+        core.grab_crop(vid, 2.0, b_png, sync.REGIONS["killfeed"][1], 300)
+        mm = core.Match("rv", "Prueba", datetime.now(timezone.utc), 0, "Jett", "me", "13-0")
+        win = app._show_review([(mm, [(core.Kill(0, 1000, 1000, "me", "b"), 1.5, a_png, b_png)])], rtmp)
+        log(len(win._imgs) == 2, "ventana de revisión de la sincro")
+        win._close()
         app.v_vod.set(vid)
         app.nb4.select(app.tab_prev)
         app.player.open(1.0, 4.0)

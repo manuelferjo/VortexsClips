@@ -148,6 +148,91 @@ def parse_whisper_json(data: dict) -> list[dict]:
 
 
 # ------------------------------------------------------------------ ASS
+# Colores del canal en formato ASS (&HBBGGRR&)
+ASS_YELLOW = "&H1FD2FF&"     # #FFD21F
+ASS_PURPLE = "&HFFA6C7&"     # #C7A6FF
+ASS_WHITE = "&HFFFFFF&"
+# palabras que suelen merecer color en un clip de VALORANT
+HYPE = {
+    "ace", "kill", "kills", "headshot", "head", "clutch", "one", "tap", "onetap", "spray", "flick", "wallbang",
+    "brutal", "bestia", "increíble", "increible", "locura", "madre", "mía", "mia", "dios", "vamos", "venga",
+    "toma", "tomaa", "ahí", "ahi", "boom", "pum", "gg", "ez", "easy", "fácil", "facil", "limpio", "limpia",
+    "uno", "dos", "tres", "cuatro", "cinco", "último", "ultimo", "operator", "op", "sheriff", "vandal",
+    "phantom", "jett", "reyna", "phoenix", "sova", "chamber", "hush", "raze", "neon", "yoru", "omen",
+    "victoria", "ganamos", "ganado", "perdón", "perdon", "qué", "flipa", "flipando", "bro", "tío", "tio",
+}
+
+
+def auto_highlight(raw: str) -> bool:
+    """¿Esta palabra merece ir en color? (exclamaciones, números, 3K/4K, palabras de jugada…)"""
+    t = re.sub(r"[.,;:¡!¿?…\"'()]", "", raw).strip().lower()
+    if not t:
+        return False
+    if "!" in raw or "¡" in raw:
+        return True
+    if re.fullmatch(r"\d+k?|[345]k", t):
+        return True
+    if t in HYPE:
+        return True
+    letters = re.sub(r"[^a-záéíóúñü]", "", t)
+    return len(letters) >= 9
+
+
+def chunk_words_rich(words: list[dict], max_words: int = 3, max_chars: int = 16, max_gap: float = 0.6,
+                     highlight: bool = True):
+    """
+    Como chunk_words pero conservando cada palabra y su color: [(inicio, fin, [(texto, color|None)])].
+    Cada palabra puede traer 'hl': 'y' (amarillo), 'p' (morado), 'none' (sin color) o nada (automático).
+    Como mucho una palabra con color por frase, alternando amarillo y morado.
+    """
+    chunks, cur = [], []
+    for w in words:
+        t = re.sub(r"\s+", " ", w["text"]).strip()
+        if not t:
+            continue
+        if cur:
+            joined = " ".join(x["text"] for x in cur) + " " + t
+            gap = w["start"] - cur[-1]["end"]
+            if len(cur) >= max_words or len(joined) > max_chars or gap > max_gap:
+                chunks.append(cur)
+                cur = []
+        cur.append({**w, "text": t})
+        if re.search(r"[.!?…]$", t):
+            chunks.append(cur)
+            cur = []
+    if cur:
+        chunks.append(cur)
+    out, alt = [], 0
+    for c in chunks:
+        a, b = c[0]["start"], max(c[-1]["end"], c[0]["start"] + 0.35)
+        items, used = [], False
+        for x in c:
+            clean = re.sub(r"[.,;:¡!¿?…\"]", "", x["text"].lower()).strip()
+            if not clean:
+                continue
+            hl = x.get("hl")
+            col = None
+            if hl == "y":
+                col = ASS_YELLOW
+            elif hl == "p":
+                col = ASS_PURPLE
+            elif hl in (None, "", "auto") and highlight and not used and auto_highlight(x["text"]):
+                col = ASS_YELLOW if alt % 2 == 0 else ASS_PURPLE
+                alt += 1
+            if col:
+                used = True
+            items.append((clean, col))
+        if items:
+            out.append((a, b, items))
+    fixed = []
+    for i, (a, b, it) in enumerate(out):
+        if i + 1 < len(out):
+            b = min(b, out[i + 1][0])
+        if b - a > 0.05:
+            fixed.append((a, b, it))
+    return fixed
+
+
 def chunk_words(words: list[dict], max_words: int = 3, max_chars: int = 16, max_gap: float = 0.6):
     """Agrupa palabras en frases cortas de 1 a 3 palabras (ritmo TikTok)."""
     chunks, cur = [], []
@@ -192,7 +277,8 @@ def _ts(sec: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def build_ass(words: list[dict], y_center: int, path: str, offset: float = 0.0, duration: float | None = None):
+def build_ass(words: list[dict], y_center: int, path: str, offset: float = 0.0, duration: float | None = None,
+              highlight: bool = True):
     """Escribe el .ass para un vídeo vertical 1080x1920. offset/duration para recortar a un clip."""
     sel = []
     for w in words:
@@ -200,7 +286,7 @@ def build_ass(words: list[dict], y_center: int, path: str, offset: float = 0.0, 
         if b <= 0 or (duration is not None and a >= duration):
             continue
         sel.append({**w, "start": max(0.0, a), "end": b if duration is None else min(duration, b)})
-    lines = chunk_words(sel)
+    lines = chunk_words_rich(sel, highlight=highlight)
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -217,8 +303,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     with open(path, "w", encoding="utf-8") as f:
         f.write(head)
-        for a, b, t in lines:
-            t = t.replace("{", "(").replace("}", ")")
+        for a, b, items in lines:
+            parts = []
+            for word, col in items:
+                word = word.replace("{", "(").replace("}", ")")
+                parts.append(f"{{\\c{col}}}{word}{{\\c{ASS_WHITE}}}" if col else word)
+            t = " ".join(parts)
             # pequeño "pop" al aparecer, como en los TikToks
             f.write(f"Dialogue: 0,{_ts(a)},{_ts(b)},TikTok,,0,0,0,,"
                     f"{{\\pos(540,{y_center})\\fscx85\\fscy85\\t(0,90,\\fscx100\\fscy100)}}{t}\n")

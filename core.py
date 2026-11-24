@@ -327,6 +327,7 @@ class CutSettings:
     mode: str = "round"           # "round" = ronda completa · "kills" = solo las kills
     kill_pre_s: float = 2.5       # modo kills: segundos antes de cada kill
     kill_post_s: float = 1.5      # modo kills: segundos después de cada kill
+    merge_gap_s: float = 4.0      # modo kills: si entre dos kills hay menos de esto, no se corta
     residual_s: float = 0.0       # con registro de delay de Vortexs Live: corrección fija aprendida
     unsynced_extra_pre_s: float = 6.0   # modo kills: margen extra si la partida NO está sincronizada
     unsynced_extra_post_s: float = 4.0
@@ -375,12 +376,14 @@ def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
     pre = settings.kill_pre_s + (0 if synced else settings.unsynced_extra_pre_s)
     post = settings.kill_post_s + (0 if synced else settings.unsynced_extra_post_s)
     segs: list[list[float]] = []
+    last = None
     for t in ts:
         a, b = t - pre, t + post
-        if segs and a <= segs[-1][1] + 0.05:
+        if segs and (a <= segs[-1][1] + 0.05 or (last is not None and t - last <= settings.merge_gap_s)):
             segs[-1][1] = max(segs[-1][1], b)
         else:
             segs.append([a, b])
+        last = t
     out = []
     for a, b in segs:
         a = max(0.0, a)
@@ -391,17 +394,24 @@ def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
     return out
 
 
+def match_base_s(m: Match, vod_start_utc: datetime, settings: CutSettings, calib: dict | None = None,
+                 delay_fn=None) -> float:
+    """Segundo del VOD del instante 0 de la partida, tal y como se usa para cortar."""
+    calib = calib or {}
+    c = calib.get(m.match_id) or {}
+    base = match_offset_s(m, vod_start_utc, calib)
+    if not is_synced(calib, m.match_id):
+        base += delay_offset(m, settings, delay_fn)
+    return base + float(c.get("extra_s", 0.0))
+
+
 def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: float,
                 settings: CutSettings, calib: dict | None = None, delay_fn=None) -> list[Clip]:
     calib = calib or {}
     clips: list[Clip] = []
     for m in matches:
-        c = calib.get(m.match_id) or {}
         uses_calib = is_synced(calib, m.match_id)
-        base = match_offset_s(m, vod_start_utc, calib)
-        if not uses_calib:
-            base += delay_offset(m, settings, delay_fn)
-        base += float(c.get("extra_s", 0.0))
+        base = match_base_s(m, vod_start_utc, settings, calib, delay_fn)
         for r in m.highlight_rounds(settings.min_kills):
             if r.start_match_ms is None:
                 continue
@@ -809,8 +819,9 @@ def _run_ffmpeg(cmd: list[str], total_s: float, progress=None, should_stop=None,
 
 def make_vertical(src: str, out: str, cam: dict | None, encoder: str = "x264",
                   progress=None, should_stop=None, start: float | None = None,
-                  dur: float | None = None, words: list | None = None) -> str:
-    """words: palabras de la transcripción (tiempos del vídeo src) para los subtítulos."""
+                  dur: float | None = None, words: list | None = None, highlight: bool = True) -> str:
+    """words: palabras de la transcripción (tiempos del vídeo src) para los subtítulos.
+    highlight: algunas palabras en los colores del canal."""
     ffmpeg = find_tool("ffmpeg")
     info = probe_vod(src)
     total = dur or float(info["duration"])
@@ -821,7 +832,7 @@ def make_vertical(src: str, out: str, cam: dict | None, encoder: str = "x264",
             import subtitles
             y = cam_bottom_y(cam, info.get("width") or 1920, info.get("height") or 1080)
             if subtitles.build_ass(words, y, os.path.join(tmp, "subs.ass"),
-                                   offset=start or 0.0, duration=total):
+                                   offset=start or 0.0, duration=total, highlight=highlight):
                 ass = "subs.ass"
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
         if start is not None:
@@ -849,7 +860,8 @@ def kills_folder(kills: int) -> str:
 
 
 def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=None, vertical=False,
-                   encoder: str = "x264", progress=None, should_stop=None, words=None) -> list[str]:
+                   encoder: str = "x264", progress=None, should_stop=None, words=None,
+                   highlight: bool = True) -> list[str]:
     """Un archivo por ronda, sacado del vídeo ya montado (rápido y con el mismo audio/vídeo)."""
     ffmpeg = find_tool("ffmpeg")
     os.makedirs(folder, exist_ok=True)
@@ -877,12 +889,25 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
         outs.append(h)
         if vertical:
             v = os.path.join(sub, name + " (vertical).mp4")
-            make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d, words=words)
+            make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d, words=words,
+                          highlight=highlight)
             outs.append(v)
         t += d
     if progress:
         progress(1.0, "Clips sueltos listos")
     return outs
+
+
+def grab_crop(vod: str, at: float, out_png: str, crop: str, width: int = 300) -> str:
+    """Un fotograma recortado (p.ej. el killfeed) para revisar la sincronización."""
+    ffmpeg = find_tool("ffmpeg")
+    vf = (crop + "," if crop else "") + f"scale={width}:-2"
+    r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0.0, at):.2f}", "-i", vod,
+                        "-frames:v", "1", "-vf", vf, out_png],
+                       capture_output=True, text=True, **_no_window())
+    if r.returncode != 0 or not os.path.isfile(out_png):
+        raise RuntimeError("No se pudo sacar un fotograma del VOD:\n" + r.stderr[-300:])
+    return out_png
 
 
 def grab_frame(vod: str, at: float, out_png: str, width: int = 960) -> str:

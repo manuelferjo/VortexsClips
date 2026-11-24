@@ -122,7 +122,7 @@ PAIR_LAG = (5.5, 8.0)
 
 
 def _analyze_once(frames, t0: float, expected: float, events: list, search_s: float = SEARCH_S,
-                  pair=None):
+                  pair=None, step: bool = False):
     """
     frames: array (n, GW*GH) uint8 de UNA zona. Para cada celda se mide cuánto cambia su brillo
     entre fotogramas (normalizado: picos sobre lo normal de esa celda) y se suma en los momentos
@@ -132,7 +132,15 @@ def _analyze_once(frames, t0: float, expected: float, events: list, search_s: fl
     F = frames.astype(np.float32)
     n = F.shape[0]
     D = np.zeros_like(F)
-    D[1:] = np.abs(F[1:] - F[:-1])
+    if step:
+        # cambio que SE QUEDA (marcador): media del segundo siguiente contra la del anterior;
+        # un parpadeo de un fotograma casi no cuenta
+        w = FPS
+        c = np.cumsum(np.vstack([np.zeros((1, F.shape[1]), np.float32), F]), axis=0)
+        k = np.arange(w, n - w + 1)
+        D[k] = np.abs((c[k + w] - c[k]) - (c[k] - c[k - w])) / w
+    else:
+        D[1:] = np.abs(F[1:] - F[:-1])
     med = np.median(D, axis=0)
     mad = np.median(np.abs(D - med), axis=0) + 0.5
     Z = np.clip((D - med) / (mad * 3), 0, 8)
@@ -207,14 +215,15 @@ def analyze(frames, t0: float, expected: float, events: list, search_s: float = 
 
 
 def _validated(frames, t0, expected, events, search_s, pair, mode):
-    full = _analyze_once(frames, t0, expected, events, search_s, pair)
+    step = mode == "marcador"
+    full = _analyze_once(frames, t0, expected, events, search_s, pair, step)
     full["mode"] = mode
     if len(events) < 10:
         full["ok"] = False
         full["halves"] = None
         return full
-    a = _analyze_once(frames, t0, expected, events[0::2], search_s, pair)
-    b = _analyze_once(frames, t0, expected, events[1::2], search_s, pair)
+    a = _analyze_once(frames, t0, expected, events[0::2], search_s, pair, step)
+    b = _analyze_once(frames, t0, expected, events[1::2], search_s, pair, step)
     agree = abs(a["shift"] - full["shift"]) <= 1.0 and abs(b["shift"] - full["shift"]) <= 1.0
     full["halves"] = [a["shift"], b["shift"]]
     edge = abs(full["shift"]) >= search_s - 2          # pico pegado al borde: artefacto
@@ -225,6 +234,10 @@ def _validated(frames, t0, expected, events, search_s, pair, mode):
     elif mode == "cartel":
         # cartel solo (sin segundo texto): real z≈40 y ratio≈6,5; falsos z≤12 y ratio≤1,4
         ok = (z >= 20 and ratio >= 2.5) or (agree and z >= 14 and ratio >= 1.8)
+    elif mode == "marcador":
+        # marcador del HUD: aún sin medir con tu emisión -> solo vale solo si es muy claro;
+        # si no, cuenta como voto para el acuerdo con otro método
+        ok = agree and z >= 13 and ratio >= 2.2
     else:
         # killfeed: con mucho movimiento detrás, un patrón falso llegó a z 12 y ratio 2,3
         ok = agree and z >= 13 and ratio >= 2.5
@@ -253,6 +266,222 @@ def _read_region(vod, t0, dur, crop, should_stop, gw=GW, gh=GH):
     return np.frombuffer(raw[: n * gw * gh], dtype=np.uint8).reshape(n, gw * gh)
 
 
+# ---------------------------------------------------------------- lectura en una pasada + caché
+# El marcador del HUD (arriba al centro): cambia justo al acabar cada ronda y no depende del overlay
+MARCADOR = ("crop=iw*0.36:ih*0.075:iw*0.32:ih*0.0", 36, 6)
+# Todas las zonas se sacan de UNA sola decodificación del vídeo (antes era una por zona)
+TILES = [
+    ("cartel", BANNER[0], BANNER[1], BANNER[2]),
+    ("killfeed", REGIONS["killfeed"][1], REGIONS["killfeed"][2], REGIONS["killfeed"][3]),
+    ("aviso", REGIONS["aviso"][1], REGIONS["aviso"][2], REGIONS["aviso"][3]),
+    ("marcador", MARCADOR[0], MARCADOR[1], MARCADOR[2]),
+    ("completa", "", 32, 18),
+]
+TILE_H = max(t[3] for t in TILES)
+TILE_W = sum(t[2] for t in TILES)
+CACHE_VER = 1
+CACHE_PAD_S = 60.0          # se lee un poco de más para que al repetir se reaproveche
+CACHE_KEEP_VODS = 3
+CACHE_MAX_BYTES = 4 * 1024 ** 3
+
+
+def cache_root() -> str:
+    d = os.path.join(core.data_dir(), "cache_sync")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _vod_cache_dir(vod: str) -> str:
+    import hashlib
+    try:
+        st = os.stat(vod)
+        ident = f"{os.path.abspath(vod).lower()}|{st.st_size}|{int(st.st_mtime)}|v{CACHE_VER}|{TILE_W}x{TILE_H}|{FPS}"
+    except OSError:
+        ident = f"{os.path.abspath(vod).lower()}|v{CACHE_VER}"
+    d = os.path.join(cache_root(), hashlib.sha1(ident.encode("utf-8")).hexdigest()[:16])
+    os.makedirs(d, exist_ok=True)
+    try:
+        with open(os.path.join(d, "vod.txt"), "w", encoding="utf-8") as f:
+            f.write(vod + "\n")
+        os.utime(d, None)
+    except OSError:
+        pass
+    return d
+
+
+def prune_cache(keep_vods: int = CACHE_KEEP_VODS, max_bytes: int = CACHE_MAX_BYTES) -> None:
+    """Deja solo la caché de los últimos VODs usados y sin pasarse de tamaño."""
+    import shutil
+    try:
+        root = cache_root()
+        dirs = [os.path.join(root, x) for x in os.listdir(root) if os.path.isdir(os.path.join(root, x))]
+    except OSError:
+        return
+    dirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+    def size(p):
+        tot = 0
+        for f in os.listdir(p):
+            try:
+                tot += os.path.getsize(os.path.join(p, f))
+            except OSError:
+                pass
+        return tot
+    total = 0
+    for i, d in enumerate(dirs):
+        total += size(d)
+        if i >= keep_vods or total > max_bytes:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _frames_all(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None) -> bytes:
+    """Una sola pasada de ffmpeg: cada zona se recorta y reduce y se pegan una al lado de otra."""
+    ffmpeg = core.find_tool("ffmpeg")
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
+    if hwaccel:
+        cmd += ["-hwaccel", "auto"]
+    n = len(TILES)
+    chains = [f"[0:v]fps={FPS},split={n}" + "".join(f"[s{i}]" for i in range(n))]
+    for i, (_, crop, gw, gh) in enumerate(TILES):
+        chains.append(f"[s{i}]{crop + ',' if crop else ''}scale={gw * 4}:{gh * 4}:flags=area,"
+                      f"scale={gw}:{gh}:flags=area,format=gray,pad={gw}:{TILE_H}:0:0[t{i}]")
+    chains.append("".join(f"[t{i}]" for i in range(n)) + f"hstack=inputs={n},format=gray[out]")
+    cmd += ["-ss", f"{max(0.0, start):.3f}", "-t", f"{dur:.3f}", "-i", vod, "-an",
+            "-filter_complex", ";".join(chains), "-map", "[out]",
+            "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **core._no_window())
+    chunks = []
+    try:
+        while True:
+            if should_stop and should_stop():
+                p.kill()
+                raise RuntimeError("Cancelado.")
+            b = p.stdout.read(TILE_W * TILE_H * 64)
+            if not b:
+                break
+            chunks.append(b)
+    finally:
+        if p.poll() is None:
+            p.wait()
+    return b"".join(chunks)
+
+
+def _read_all(vod: str, start: float, dur: float, should_stop=None, vod_duration: float = 0.0):
+    """
+    Devuelve (u0, frames) con frames de forma (n, TILE_H, TILE_W): el fotograma k es el
+    segundo u0 + k/FPS del VOD. Lo ya leído se guarda en caché: repetir la sincronización
+    de un VOD no vuelve a decodificar el vídeo.
+    """
+    import math
+    import numpy as np
+    fsz = TILE_W * TILE_H
+    u0 = math.floor(max(0.0, start) * FPS) / FPS
+    need = int(math.ceil((start + dur - u0) * FPS))
+    cdir = _vod_cache_dir(vod)
+    # 1) ¿ya está en caché?
+    try:
+        names = [x for x in os.listdir(cdir) if x.endswith(".npz")]
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            s_ms, n_ = (int(v) for v in name[:-4].split("_"))
+        except ValueError:
+            continue
+        s = s_ms / 1000.0
+        i0 = int(round((u0 - s) * FPS))
+        if i0 < 0 or i0 + need > n_ + 1:
+            continue
+        try:
+            with np.load(os.path.join(cdir, name)) as z:
+                arr = z["f"]
+        except Exception:
+            continue
+        part = arr[i0:i0 + need]
+        if len(part) >= 40:
+            return s + i0 / FPS, part
+    # 2) leer del vídeo (con margen) y guardar
+    r0 = max(0.0, u0 - CACHE_PAD_S)
+    r0 = math.floor(r0 * FPS) / FPS
+    r1 = start + dur + CACHE_PAD_S
+    if vod_duration:
+        r1 = min(vod_duration, r1)
+    raw = b""
+    for hw in (True, False):
+        try:
+            raw = _frames_all(vod, r0, r1 - r0, hw, should_stop)
+        except RuntimeError as e:
+            if "Cancelado" in str(e):
+                raise
+            raw = b""
+        if len(raw) >= fsz * 40:
+            break
+    n = len(raw) // fsz
+    if n < 40:
+        return u0, None
+    arr = np.frombuffer(raw[: n * fsz], dtype=np.uint8).reshape(n, TILE_H, TILE_W)
+    try:
+        tmp = os.path.join(cdir, f"tmp_{os.getpid()}_{id(arr)}.npz")
+        np.savez_compressed(tmp, f=arr)
+        os.replace(tmp, os.path.join(cdir, f"{int(round(r0 * 1000))}_{n}.npz"))
+    except OSError:
+        pass
+    i0 = int(round((u0 - r0) * FPS))
+    return r0 + i0 / FPS, arr[i0:i0 + need]
+
+
+def _tile(arr, u0: float, name: str, a: float, b: float):
+    """Saca una zona de la lectura conjunta, entre los segundos a y b del VOD -> (frames, t0)."""
+    import numpy as np
+    x0 = 0
+    for nm, _, gw, gh in TILES:
+        if nm == name:
+            break
+        x0 += gw
+    else:
+        return None, a
+    gw, gh = next((t[2], t[3]) for t in TILES if t[0] == name)
+    n = len(arr)
+    i0 = max(0, int(round((a - u0) * FPS)))
+    i1 = min(n, int(round((b - u0) * FPS)))
+    if i1 - i0 < 40:
+        return None, a
+    fr = np.ascontiguousarray(arr[i0:i1, :gh, x0:x0 + gw]).reshape(i1 - i0, gw * gh)
+    return fr, u0 + i0 / FPS
+
+
+def _halves_ok(r, tol=1.0) -> bool:
+    h = r.get("halves")
+    return bool(h) and all(abs(x - r["shift"]) <= tol for x in h)
+
+
+def _agreement(results: list):
+    """
+    Dos métodos independientes (cartel, marcador, killfeed, aviso) que señalan el mismo segundo:
+    un pico falso de uno casi nunca coincide con un pico falso de otro.
+    """
+    cands = [r for r in results if r.get("zpeak", 0) >= 4.5 and r.get("ratio", 0) >= 1.15
+             and abs(r["shift"]) < SEARCH_S - 2]
+    best = None
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            a, b = cands[i], cands[j]
+            if a["family"] == b["family"] or abs(a["shift"] - b["shift"]) > 1.0:
+                continue
+            if not (_halves_ok(a) or _halves_ok(b)):
+                continue
+            sc = a["zpeak"] + b["zpeak"]
+            if best is None or sc > best[0]:
+                best = (sc, a, b)
+    if best is None:
+        return None
+    _, a, b = best
+    shift = (a["shift"] * a["zpeak"] + b["shift"] * b["zpeak"]) / (a["zpeak"] + b["zpeak"])
+    return {"set": f"acuerdo({a['set']}+{b['set']})", "ok": True, "conf": 0.6, "shift": float(shift),
+            "agree": 0, "prominence": 0.0, "ratio": min(a["ratio"], b["ratio"]),
+            "zpeak": min(a["zpeak"], b["zpeak"]), "halves": None, "family": "acuerdo"}
+
+
 def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_duration: float,
                progress=None, should_stop=None) -> SyncResult:
     try:
@@ -272,63 +501,142 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
         t1 = min(vod_duration, t1)
     if t1 - t0 < 30:
         return SyncResult(expected_offset_s, 0, 0, False, "la partida no está en el VOD")
-    results, saved = [], {}
-    b0, ends = 0.0, []
-
-    # 1) cartel WON/LOST: grande y opaco, una señal fuerte por ronda en toda la partida
     ends = sorted(r.end_match_ms / 1000.0 for r in match.rounds if r.end_match_ms)
-    if len(ends) >= MIN_ENDS:
-        if progress:
-            progress(None, f"Leyendo la partida entera de {match.map_name} (carteles de fin de ronda)…")
+    use_ends = len(ends) >= MIN_ENDS
+    b0 = b1 = 0.0
+    if use_ends:
         b0 = max(0.0, expected_offset_s + ends[0] - SEARCH_S - 5)
         b1 = expected_offset_s + ends[-1] + SEARCH_S + 8
         if vod_duration:
             b1 = min(vod_duration, b1)
-        crop, gw, gh = BANNER
-        frames = _read_region(vod, b0, b1 - b0, crop, should_stop, gw, gh)
-        if frames is not None:
-            saved["cartel"] = frames
-            r = analyze(frames, b0, expected_offset_s, ends, kind="cartel")
-            r["set"] = "cartel(" + r.get("mode", "") + ")"
+    u_a = min(t0, b0) if use_ends else t0
+    u_b = max(t1, b1) if use_ends else t1
+    if progress:
+        progress(None, f"Leyendo {match.map_name} del vídeo (cartel, marcador y killfeed a la vez)…")
+    u0, arr = _read_all(vod, u_a, u_b - u_a, should_stop, vod_duration)
+    if arr is None:
+        return SyncResult(expected_offset_s, 0, 0, False, "no se pudo leer el vídeo")
+    if progress:
+        progress(None, f"Buscando el patrón de {match.map_name}…")
+    results, saved = [], {}
+    b0e = kf_t0 = None
+    # 1) final de ronda: cartel WON/LOST (pareja de textos o solo) y marcador del HUD
+    if use_ends:
+        fr, b0e = _tile(arr, u0, "cartel", b0, b1)
+        if fr is not None:
+            saved["cartel"] = fr
+            for pair, mode in ((PAIR_LAG, "pareja"), (None, "cartel")):
+                r = _validated(fr, b0e, expected_offset_s, ends, SEARCH_S, pair, mode)
+                r["set"], r["family"] = f"cartel({mode})", "cartel"
+                results.append(r)
+        fr, bm = _tile(arr, u0, "marcador", b0, b1)
+        if fr is not None:
+            saved["marcador"] = fr
+            r = _validated(fr, bm, expected_offset_s, ends, SEARCH_S, None, "marcador")
+            r["set"], r["family"] = "marcador", "marcador"
             results.append(r)
-            if r["ok"]:
-                _log(match, expected_offset_s, results)
-                return SyncResult(expected_offset_s + r["shift"], r["shift"], r["conf"], True, "", "",
-                                  None)
-    for region, (kind, crop, gw, gh) in REGIONS.items():
+    # 2) kills: killfeed (todas) y aviso de kill (las tuyas)
+    for region, (kind, _crop, _gw, _gh) in REGIONS.items():
         ev = allk if kind == "todas" else mine
         if len(ev) < 5:
             continue
-        if progress:
-            progress(None, f"Analizando el {region} de {match.map_name}…")
-        frames = _read_region(vod, t0, t1 - t0, crop, should_stop, gw, gh)
-        if frames is None:
+        fr, te = _tile(arr, u0, region, t0, t1)
+        if fr is None:
             continue
-        saved[region] = frames
-        r = analyze(frames, t0, expected_offset_s, ev)
-        r["set"] = region
+        saved[region] = fr
+        if region == "killfeed":
+            kf_t0 = te
+        r = analyze(fr, te, expected_offset_s, ev)
+        r["set"], r["family"] = region, region
         results.append(r)
-        if r["ok"] and r["conf"] >= 0.5:
-            break                                   # claro: no hace falta mirar más
     if not results:
         return SyncResult(expected_offset_s, 0, 0, False, "no se pudo leer el vídeo")
-    results.sort(key=lambda r: (r["ok"], r["conf"]), reverse=True)
+    # 3) decisión: el cartel manda; si no, el mejor método claro; si no, dos métodos que coincidan
+    best = None
+    oks = [r for r in results if r["ok"]]
+    if oks:
+        oks.sort(key=lambda r: (r["family"] == "cartel", r["conf"]), reverse=True)
+        best = oks[0]
+    else:
+        best = _agreement(results)
+        if best is not None:
+            results.append(best)
+    if best is not None:
+        _log(match, expected_offset_s, results)
+        return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], True, "", "", None)
+    results.sort(key=lambda r: r["conf"], reverse=True)
     best = results[0]
-    rep = ""
-    if not best["ok"]:
-        full = _read_region(vod, t0, t1 - t0, "", should_stop, 32, 18)
-        if full is not None:
-            saved["completa"] = full
-        rep = save_report(saved, t0, expected_offset_s, allk, mine, match, results)
+    fr, _ = _tile(arr, u0, "completa", t0, t1)
+    if fr is not None:
+        saved["completa"] = fr
+    rep = save_report(saved, kf_t0 if kf_t0 is not None else t0, expected_offset_s, allk, mine, match, results)
     _log(match, expected_offset_s, results)
     data = {"expected": expected_offset_s}
     if "killfeed" in saved:
-        data.update({"frames": saved["killfeed"], "t0": t0, "events": allk})
+        data.update({"frames": saved["killfeed"], "t0": kf_t0, "events": allk})
     if "cartel" in saved:
-        data.update({"cartel": saved["cartel"], "b0": b0, "ends": ends})
+        data.update({"cartel": saved["cartel"], "b0": b0e, "ends": ends})
     data["cands"] = [r["shift"] for r in results]
-    return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], best["ok"],
-                      "" if best["ok"] else "no he encontrado un patrón claro de kills", rep, data)
+    return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], False,
+                      "no he encontrado un patrón claro de kills", rep, data)
+
+
+def sync_many(vod: str, items: list, vod_duration: float, workers: int = 2, progress=None,
+              should_stop=None) -> dict:
+    """
+    items: [(match, expected_offset_s)]. Sincroniza varias partidas a la vez (cada una es un
+    ffmpeg leyendo su trozo del VOD). progress(frac, texto). Devuelve {match_id: SyncResult}.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    prune_cache()
+    n = len(items)
+    if not n:
+        return {}
+    workers = max(1, min(n, int(workers or 1)))
+    lock = threading.Lock()
+    state = {"done": 0, "err": False}
+
+    def stop():
+        return bool(should_stop and should_stop()) or state["err"]
+
+    def one(item):
+        m, exp = item
+
+        def prog(_f, t):
+            if progress:
+                with lock:
+                    d = state["done"]
+                progress(d / n, f"{d} de {n} listas ({workers} a la vez) · {m.map_name} "
+                                f"{m.started_at.astimezone():%H:%M}: {t}")
+        try:
+            r = sync_match(vod, m, exp, vod_duration, prog, stop)
+        except Exception:
+            state["err"] = True
+            raise
+        with lock:
+            state["done"] += 1
+            d = state["done"]
+        if progress:
+            progress(d / n, f"{d} de {n} partidas leídas")
+        return r
+
+    if progress:
+        progress(0, f"Sincronizando {n} partidas ({workers} a la vez)…")
+    res, errs = {}, []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [(m.match_id, ex.submit(one, (m, e))) for m, e in items]
+        for mid, fu in futs:
+            try:
+                res[mid] = fu.result()
+            except Exception as e:
+                errs.append(e)
+    if should_stop and should_stop():
+        raise RuntimeError("Cancelado.")
+    real = [e for e in errs if "Cancelado" not in str(e)]
+    if real:
+        raise real[0]
+    return res
 
 
 # ---------------------------------------------------------------- consenso entre partidas
