@@ -175,7 +175,7 @@ class App(tk.Tk):
         for w in ("TCheckbutton", "TRadiobutton"):
             s.configure(w, background=PANEL, foreground=TEXT, indicatorbackground=FIELD,
                         indicatorforeground=DARK, indicatorrelief="flat", indicatormargin=(0, 0, 8, 0),
-                        upperbordercolor=BORDER, lowerbordercolor=BORDER, padding=(0, 2))
+                        upperbordercolor="#6a6178", lowerbordercolor="#6a6178", padding=(0, 2))
             s.map(w, background=[("active", PANEL)], foreground=[("active", YELLOW)],
                   indicatorbackground=[("selected", YELLOW), ("active", HOVER)])
         # botones
@@ -433,12 +433,11 @@ class App(tk.Tk):
                   style="Muted.TLabel").grid(row=7, column=2, columnspan=3, sticky="w", pady=(6, 0))
         ttk.Entry(t_cut, textvariable=self.v_delay, width=8).grid(row=7, column=1, sticky="w", padx=6, pady=(6, 0))
         self.lbl_delaylog = ttk.Label(t_cut, text="", style="Muted.TLabel")
-        self.lbl_delaylog.grid(row=8, column=0, columnspan=4, sticky="w", pady=(2, 0))
-        ttk.Button(t_cut, text="Elegir registro…", command=self.pick_delay_log).grid(
-            row=8, column=4, sticky="e", pady=(2, 0))
+        self.lbl_delaylog.grid(row=8, column=0, columnspan=5, sticky="w", pady=(2, 0))
         mf_ = ttk.Frame(t_cut, style="Panel.TFrame")
         mf_.grid(row=9, column=0, columnspan=5, sticky="we", pady=(4, 0))
-        ttk.Button(mf_, text="Copiar mi registro a…", command=self.pick_mirror).pack(side="left")
+        ttk.Button(mf_, text="Elegir registro…", command=self.pick_delay_log).pack(side="left")
+        ttk.Button(mf_, text="Copiar mi registro a…", command=self.pick_mirror).pack(side="left", padx=6)
         self.lbl_mirror = ttk.Label(mf_, text="", style="Muted.TLabel")
         self.lbl_mirror.pack(side="left", padx=8)
 
@@ -501,7 +500,7 @@ class App(tk.Tk):
         self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse", height=5)
         for c, t, w in zip(cols, ("", "Fecha", "Mapa", "Agente", "Resultado", "Rondas", "¿En el VOD?", "Sincro"),
                            (34, 130, 80, 80, 70, 60, 90, 120)):
-            self.tv_m.heading(c, text=t)
+            self.tv_m.heading(c, text=t, anchor="w" if c == "date" else "center")
             self.tv_m.column(c, width=w, anchor="center" if c != "date" else "w", stretch=c in ("date", "sync"))
         self.tv_m.grid(row=1, column=0, sticky="nsew")
         sb = ttk.Scrollbar(p3, orient="vertical", command=self.tv_m.yview)
@@ -1648,10 +1647,20 @@ class App(tk.Tk):
                 return names[hl]
             return "auto ✓" if subtitles.auto_highlight(w["text"]) else "auto"
 
+        tv.tag_configure("alt", background=ROW_ALT)
+        tv.tag_configure("y", foreground=YELLOW)
+        tv.tag_configure("p", foreground=PURPLE)
+        tv.tag_configure("none", foreground=MUTED)
+
         def fill(keep=None):
             tv.delete(*tv.get_children())
             for i, w in enumerate(ws):
-                tv.insert("", "end", iid=str(i), values=(core.fmt_ts(w["start"]), w["text"], color_txt(w)))
+                hl = w.get("hl")
+                tg = [hl] if hl in ("y", "p", "none") else []
+                if i % 2:
+                    tg.append("alt")
+                tv.insert("", "end", iid=str(i), tags=tuple(tg),
+                          values=(core.fmt_ts(w["start"]), w["text"], color_txt(w)))
             if keep:
                 ok_ = [k for k in keep if tv.exists(k)]
                 if ok_:
@@ -1790,7 +1799,7 @@ class App(tk.Tk):
             def one(job):
                 png, at = job
                 try:
-                    core.grab_crop(vod, at, png, crop, 300)
+                    core.grab_crop(vod, at, png, crop, 260)
                 except Exception:
                     pass
                 with lock:
@@ -1856,12 +1865,14 @@ class App(tk.Tk):
                 stt, col = "Sin sincronizar (por hora)", SYNC_COLORS["s_hora"]
             row = ttk.Frame(inner, style="Panel.TFrame")
             row.pack(fill="x", pady=6)
-            info = ttk.Frame(row, style="Panel.TFrame", width=230)
+            info = ttk.Frame(row, style="Panel.TFrame", width=250, height=150)
             info.pack(side="left", fill="y", padx=(0, 10))
+            info.pack_propagate(False)
             ttk.Label(info, text=f"{m.map_name} · {m.agent}", style="H.TLabel").pack(anchor="w")
             ttk.Label(info, text=f"{m.started_at.astimezone():%d/%m %H:%M} · {m.score}",
                       style="Muted.TLabel").pack(anchor="w")
-            tk.Label(info, text=stt, bg=PANEL, fg=col, font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(2, 4))
+            tk.Label(info, text=stt, bg=PANEL, fg=col, font=("Segoe UI Semibold", 9), wraplength=240,
+                     justify="left").pack(anchor="w", pady=(2, 6))
             ttk.Button(info, text="Sincronizar a mano…",
                        command=lambda mid=m.match_id: manual(mid)).pack(anchor="w")
             if not ks:
@@ -2517,10 +2528,10 @@ def demo_screenshot(out_png):
             for k in range(2):
                 pa, pb = os.path.join(tmpd, f"{j}{k}a.png"), os.path.join(tmpd, f"{j}{k}b.png")
                 for pth, lines in ((pa, 2), (pb, 3)):
-                    im = Image.new("RGB", (300, 96), (30, 34, 40))
+                    im = Image.new("RGB", (260, 84), (30, 34, 40))
                     d = ImageDraw.Draw(im)
                     for ln in range(lines):
-                        d.rectangle((60, 8 + ln * 28, 292, 28 + ln * 28), fill=(70, 70, 78) if ln < 2 else (190, 60, 60))
+                        d.rectangle((52, 6 + ln * 25, 254, 24 + ln * 25), fill=(70, 70, 78) if ln < 2 else (190, 60, 60))
                     im.save(pth)
                 ks.append((core.Kill(k, 1000, 1000, "me", "b"), 15000 + 300 * j + 60 * k, pa, pb))
             rows.append((app.matches[mid], ks))
