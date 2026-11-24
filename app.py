@@ -100,6 +100,7 @@ class App(tk.Tk):
         self.after(1500, lambda: self.check_update(silent=True))
         self.load_delay()
         self.after(800, self.detect_encoder)
+        self.after(1200, self.restore_last_vod)
         if self.v_watch.get():
             self.after(30_000, self.watch_tick)
             self.lbl_watch.configure(text="Vigilando… (primera comprobación en 30 s)")
@@ -818,6 +819,27 @@ class App(tk.Tk):
             self.v_start.set(info["start_guess"].astimezone().strftime("%d/%m/%Y %H:%M:%S"))
         self.set_progress(1, "VOD cargado. Revisa la hora de inicio y pulsa «Marcar las que están en el VOD».")
         self.auto_check()
+        # recordar el VOD para la próxima vez que se abra el programa
+        self.cfg["last_vod"] = {"path": p, "start": self.v_start.get()}
+        self.persist()
+
+    def restore_last_vod(self):
+        """Al abrir: vuelve a cargar el último VOD (y sus partidas, si hay clave de la API)."""
+        last = self.cfg.get("last_vod") or {}
+        p = last.get("path")
+        if not p or not os.path.isfile(p) or self.vod_info:
+            return
+        start = last.get("start", "")
+
+        def done(info):
+            self.v_start.set(start)
+            self.set_vod(p, info, None)
+            if start:
+                self.v_start.set(start)
+            if self.v_key.get().strip() and not self.matches:
+                self.load_matches()
+        self.set_progress(None, "Abriendo el último VOD…")
+        self.run_bg(lambda: core.probe_vod(p), done, "No se pudo abrir el último VOD")
 
     # ------------------------------------------------------------ gráfica
     def detect_encoder(self):
