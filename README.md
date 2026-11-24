@@ -52,7 +52,7 @@ Si ese VOD ya estaba descargado, no lo vuelve a bajar. Si pegaste varios, los pr
 | **Solo las kills** | Desde unos segundos antes de tu primera kill hasta la última, cortando los tiempos muertos entre ellas. Eliges los **segundos antes** y **después** de cada kill; si dos kills están más cerca, se juntan en un solo trozo. |
 | **La ronda completa** | Toda la ronda, desde que bajan las barreras (o desde la compra, si desmarcas «Saltar fase de compra»), más el margen que elijas. |
 | **Sincronizar solo cada partida** | Busca en el killfeed del VOD el patrón exacto de las kills de cada partida y la deja cuadrada al segundo. |
-| **Delay / desfase** | Segundos que se suman a la hora si no hay sincronización. Si existe el registro de delay de Vortexs Live, se usa ese automáticamente. |
+| **Desfase** | Unos **115 s**: lo que tarda la selección de agente y la carga desde la hora que da Riot. **Se ajusta solo** cuando varias partidas se sincronizan bien con el cartel. Si Vortexs Live registró el delay del directo, ese delay se suma solo; si no hay registro y pusiste delay, súmalo tú. |
 
 ### Pestaña Salida
 

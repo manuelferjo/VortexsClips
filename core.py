@@ -333,11 +333,15 @@ class CutSettings:
 
 
 def delay_offset(m: "Match", settings: CutSettings, delay_fn=None) -> float:
-    """Lo que hay que sumar a la hora para un partido sin sincronizar."""
+    """
+    Lo que hay que sumar a la hora de Riot para una partida sin sincronizar:
+    desfase base (selección de agente + carga, ~115 s) + el delay del directo si Vortexs Live
+    lo dejó registrado. Sin registro, el campo «Desfase» debe incluir también el delay.
+    """
     if delay_fn is not None:
         d = delay_fn(m.started_at)
         if d is not None:
-            return d + settings.residual_s
+            return settings.global_adjust_s + d
     return settings.global_adjust_s
 
 

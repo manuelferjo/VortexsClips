@@ -302,7 +302,9 @@ class App(tk.Tk):
         ttk.Separator(t_cut).grid(row=5, column=0, columnspan=5, sticky="we", pady=8)
         ttk.Checkbutton(t_cut, text="Sincronizar solo cada partida (busca el killfeed en el VOD)",
                         variable=self.v_autosync).grid(row=6, column=0, columnspan=5, sticky="w")
-        ttk.Label(t_cut, text="Delay / desfase (s)").grid(row=7, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(t_cut, text="Desfase (s)").grid(row=7, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(t_cut, text="≈115 s: selección de agente + carga. Se ajusta solo al sincronizar.",
+                  style="Muted.TLabel").grid(row=7, column=2, columnspan=3, sticky="w", pady=(6, 0))
         ttk.Entry(t_cut, textvariable=self.v_delay, width=8).grid(row=7, column=1, sticky="w", padx=6, pady=(6, 0))
         self.lbl_delaylog = ttk.Label(t_cut, text="", style="Muted.TLabel")
         self.lbl_delaylog.grid(row=8, column=0, columnspan=5, sticky="w", pady=(2, 0))
@@ -517,10 +519,10 @@ class App(tk.Tk):
             rows = []
         self.delay_fn = core.make_delay_fn(rows)
         if rows:
-            self.lbl_delaylog.configure(text=f"✔ Registro de delay de Vortexs Live encontrado ({len(rows)} cambios). "
-                                             "Se usa en vez del número de arriba.")
+            self.lbl_delaylog.configure(text=f"✔ Registro de delay de Vortexs Live encontrado ({len(rows)} cambios): "
+                                             "el delay de cada momento se suma al desfase solo.")
         else:
-            self.lbl_delaylog.configure(text="Sin registro de delay de Vortexs Live: se usa el número de arriba.")
+            self.lbl_delaylog.configure(text="Sin registro de delay de Vortexs Live: si pusiste delay, súmalo al desfase.")
 
     def delay_fn_for_vod(self):
         return getattr(self, "delay_fn", None)
@@ -767,7 +769,9 @@ class App(tk.Tk):
             # cuánto estaba desplazada según la hora -> ofrecer aplicarlo a todas
             try:
                 by_time = core.match_offset_s(m, self.vod_start_utc(), {})
-                diff = (t - first / 1000) - by_time
+                dfn_ = self.delay_fn_for_vod()
+                d_ = dfn_(m.started_at) if dfn_ is not None else None
+                diff = (t - first / 1000) - by_time - (d_ or 0.0)     # desfase base (sin el delay)
             except ValueError:
                 diff = None
             if diff is not None and abs(diff - self.settings().global_adjust_s) > 1.5:
@@ -1157,11 +1161,11 @@ class App(tk.Tk):
             approx = []
             learned = []
             for mid, r in res.items():
-                if r.ok and dfn is not None and mid in self.matches:
+                # aprender el desfase base solo de las partidas que se han encontrado solas con claridad
+                if r.ok and not r.approx and r.confidence >= 0.7 and mid in self.matches:
                     m_ = self.matches[mid]
-                    d_ = dfn(m_.started_at)
-                    if d_ is not None:
-                        learned.append(r.offset_s - core.match_offset_s(m_, vs, {}) - d_)
+                    d_ = dfn(m_.started_at) if dfn is not None else None
+                    learned.append(r.offset_s - core.match_offset_s(m_, vs, {}) - (d_ or 0.0))
                 if r.ok:
                     self.calib[mid] = {"offset_s": r.offset_s, "auto": True,
                                        "conf": round(r.confidence, 2), "approx": r.approx}
@@ -1176,9 +1180,10 @@ class App(tk.Tk):
                     m_ = self.matches.get(mid)
                     if m_:
                         failed.append(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}")
-            if learned:
+            if len(learned) >= 2:
                 learned.sort()
-                self.cfg["residual_s"] = round(learned[len(learned) // 2], 2)
+                base = learned[len(learned) // 2]
+                self.v_delay.set(f"{base:.1f}")      # el campo se ajusta solo para la próxima vez
             self.persist()
             self.auto_check()
             self.set_progress(1, f"Sincronizadas solas: {good}" + (f" · sin patrón claro: {bad} "
