@@ -7,6 +7,9 @@ on:
     branches: [ui]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   captura:
     runs-on: windows-latest
@@ -26,7 +29,15 @@ jobs:
           python -m pip install --upgrade pip numpy pillow
           python app.py --demo-screenshot captura.png
           if (!(Test-Path captura.png)) { throw "No hay captura" }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: captura
-          path: captura.png
+      - name: Guardar la captura en la rama «capturas»
+        shell: pwsh
+        run: |
+          Copy-Item captura.png $env:RUNNER_TEMP\captura.png
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan capturas
+          git rm -rf --cached . | Out-Null
+          Copy-Item $env:RUNNER_TEMP\captura.png captura.png -Force
+          git add -f captura.png
+          git commit -m "captura ${{ github.sha }}"
+          git push -f origin capturas
