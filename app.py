@@ -1553,12 +1553,10 @@ def selftest(out_path):
             t, y = true_off + k, 30 + (i % 5) * 26
             boxes.append(f"drawbox=x=880:y={y}:w=380:h=22:color=0x202020@0.9:t=fill:enable='between(t,{t:.2f},{t + 5:.2f})'")
             boxes.append(f"drawbox=x={960 + (i * 37) % 150}:y={y + 4}:w=70:h=14:color=red:t=fill:enable='between(t,{t:.2f},{t + 5:.2f})'")
-        fpath = os.path.join(tmp, "f.txt")
-        with open(fpath, "w") as f:
-            f.write("[0:v]" + ",".join(boxes) + "[v]")
         svod = os.path.join(tmp, "s.mp4")
         subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-                        "testsrc2=size=1280x720:rate=15", "-filter_complex_script", fpath, "-map", "[v]",
+                        "testsrc2=size=1280x720:rate=15", "-filter_complex", "[0:v]" + ",".join(boxes) + "[v]",
+                        "-map", "[v]",
                         "-t", "260", "-c:v", "libx264", "-preset", "ultrafast", svod], check=True, **core._no_window())
         m = core.Match("t", "Prueba", datetime.now(timezone.utc), 0, "Jett", "me", "13-0")
         m.kills = [core.Kill(0, int(k * 1000), 0, "me" if i % 3 == 0 else "a", "b") for i, k in enumerate(kills)]
