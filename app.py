@@ -664,16 +664,19 @@ class App(tk.Tk):
         if self.busy:
             return
         self.busy = True
+        self.keep_awake(True)
 
         def target():
             try:
                 res = work()
-                self.after(0, lambda: (setattr(self, "busy", False), done(res)))
+                self.after(0, lambda: (setattr(self, "busy", False), done(res),
+                                       self.after(1500, lambda: self.keep_awake(self.busy or self.flow_active))))
             except Exception as e:
                 msg = str(e)
 
                 def fail():
                     self.busy = False
+                    self.after(1500, lambda: self.keep_awake(self.busy or self.flow_active))
                     self.set_progress(0, "Error: " + msg.splitlines()[0][:150] if msg else "Error.")
                     self.set_step(None, "Se ha parado por un error")
                     if self.flow_active:
@@ -1048,7 +1051,19 @@ class App(tk.Tk):
             self.persist()
 
     # ------------------------------------------------------------ Twitch
+    def keep_awake(self, on: bool):
+        """Mientras trabaja, pide a Windows que no se suspenda (la pantalla sí puede apagarse o bloquearse)."""
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+        except Exception:
+            pass
+
     def set_running(self, running):
+        self.keep_awake(running or self.flow_active)
         self.btn_render.configure(state="disabled" if running else "normal")
         self.btn_dl.configure(state="disabled" if running else "normal")
         self.btn_cancel.configure(state="normal" if running else "disabled")
@@ -1102,6 +1117,7 @@ class App(tk.Tk):
 
     def flow_done(self, msg=""):
         self.flow_active, self.current_url = False, None
+        self.after(500, lambda: self.keep_awake(self.busy or self.flow_active))
         if msg:
             self.status(msg)
         self.update_queue_label()
