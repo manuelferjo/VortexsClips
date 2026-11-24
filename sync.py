@@ -326,6 +326,7 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
         data.update({"frames": saved["killfeed"], "t0": t0, "events": allk})
     if "cartel" in saved:
         data.update({"cartel": saved["cartel"], "b0": b0, "ends": ends})
+    data["cands"] = [r["shift"] for r in results]
     return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], best["ok"],
                       "" if best["ok"] else "no he encontrado un patrón claro de kills", rep, data)
 
@@ -386,40 +387,59 @@ def consensus(results: dict, log_name: str = "") -> dict:
     out = dict(results)
     for mid, r in bad.items():
         d = r.data
-        # a) cartel (pareja de textos) en ±20 s alrededor del desfase común
+        # centros donde buscar: el desfase común y los picos propios de esta partida que
+        # cayeron lejos del común (p.ej. una pausa en el directo que la desplaza varios segundos).
+        centers = [g]
+        for cs in d.get("cands", []):
+            if abs(cs - g) > 3 and all(abs(cs - x) > 2 for x in centers):
+                centers.append(float(cs))
+        del centers[4:]
+        # a) cartel (pareja de textos) en ±20 s alrededor de cada centro; se queda el más claro
+        pick = None
         if "cartel" in d and len(d["ends"]) >= MIN_ENDS:
-            loc = _validated(d["cartel"], d["b0"], d["expected"] + g, d["ends"], LOCAL_S, PAIR_LAG, "pareja")
-            loc_ok = (loc["halves"] is not None and abs(loc["halves"][0] - loc["shift"]) <= 1.0
-                      and abs(loc["halves"][1] - loc["shift"]) <= 1.0 and loc["zpeak"] >= 2.8
-                      and loc["ratio"] >= 1.35 and abs(loc["shift"]) < LOCAL_S - 1)
-            if loc_ok:
-                shift = g + loc["shift"]
-                out[mid] = SyncResult(d["expected"] + shift, shift, 0.65, True, "", r.report, None, False)
-                _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {shift:+.2f}s afinada con el cartel "
-                          f"(z {loc['zpeak']:.1f} ratio {loc['ratio']:.2f})")
-                continue
+            for ctr in centers:
+                loc = _validated(d["cartel"], d["b0"], d["expected"] + ctr, d["ends"], LOCAL_S, PAIR_LAG, "pareja")
+                loc_ok = (loc["halves"] is not None and abs(loc["halves"][0] - loc["shift"]) <= 1.0
+                          and abs(loc["halves"][1] - loc["shift"]) <= 1.0 and loc["zpeak"] >= 2.8
+                          and loc["ratio"] >= 1.35 and abs(loc["shift"]) < LOCAL_S - 1)
+                if loc_ok and (pick is None or loc["zpeak"] > pick[3]):
+                    pick = (ctr + loc["shift"], loc["ratio"], loc["halves"], loc["zpeak"])
+        if pick is not None:
+            shift = pick[0]
+            out[mid] = SyncResult(d["expected"] + shift, shift, 0.65, True, "", r.report, None, False)
+            _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {shift:+.2f}s afinada con el cartel "
+                      f"(z {pick[3]:.1f} ratio {pick[1]:.2f})")
+            continue
         if "frames" not in d:
             out[mid] = SyncResult(d["expected"] + g, g, 0.35, True, "", r.report, None, True)
             _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {g:+.2f}s aprox (desfase común)")
             continue
-        # b) killfeed en ±20 s
+        # b) killfeed en ±20 s alrededor de cada centro; se exige que las dos mitades coincidan
         S = _prep(d["frames"])
-        loc = np.arange(g - LOCAL_S, g + LOCAL_S + 1e-6, 1 / FPS)
-        sc = _scores(S, d["t0"], d["expected"], d["events"], loc)
-        prom = sc.max(0) / (sc.mean(0) + 1e-6)
-        top = np.argsort(prom)[-max(TOP_CELLS, sc.shape[1] // 20):]
-        c = sc[:, top].sum(1)
-        b = int(np.argmax(c))
-        sa = _scores(S, d["t0"], d["expected"], d["events"][0::2], loc)[:, top].sum(1)
-        sb = _scores(S, d["t0"], d["expected"], d["events"][1::2], loc)[:, top].sum(1)
-        agree = abs(loc[int(np.argmax(sa))] - loc[b]) <= 1.5 and abs(loc[int(np.argmax(sb))] - loc[b]) <= 1.5
-        if agree:
-            shift, conf, approx = float(loc[b]), 0.55, False
+        pick = None
+        for ctr in centers:
+            loc = np.arange(ctr - LOCAL_S, ctr + LOCAL_S + 1e-6, 1 / FPS)
+            sc = _scores(S, d["t0"], d["expected"], d["events"], loc)
+            prom = sc.max(0) / (sc.mean(0) + 1e-6)
+            top = np.argsort(prom)[-max(TOP_CELLS, sc.shape[1] // 20):]
+            c = sc[:, top].sum(1)
+            b = int(np.argmax(c))
+            sa = _scores(S, d["t0"], d["expected"], d["events"][0::2], loc)[:, top].sum(1)
+            sb = _scores(S, d["t0"], d["expected"], d["events"][1::2], loc)[:, top].sum(1)
+            agree = abs(loc[int(np.argmax(sa))] - loc[b]) <= 1.5 and abs(loc[int(np.argmax(sb))] - loc[b]) <= 1.5
+            if not agree:
+                continue
+            fr = np.abs(loc - loc[b]) > 8
+            zz = (c[b] - c[fr].mean()) / (c[fr].std() + 1e-6) if fr.any() else 0.0
+            if pick is None or zz > pick[1]:
+                pick = (float(loc[b]), float(zz))
+        if pick is not None:
+            shift, conf, approx = pick[0], 0.55, False
         else:
             shift, conf, approx = g, 0.35, True
         out[mid] = SyncResult(d["expected"] + shift, shift, conf, True, "", r.report, None, approx)
         _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {shift:+.2f}s "
-                  f"{'afinada' if agree else 'aprox (desfase común)'}")
+                  f"{'afinada' if not approx else 'aprox (desfase común)'}")
     return out
 
 

@@ -841,6 +841,13 @@ def _safe(name: str) -> str:
     return "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
 
 
+def kills_folder(kills: int) -> str:
+    """Carpeta según las kills de la ronda: 3K, 4K o ACE (5 o más)."""
+    if kills >= 5:
+        return "ACE"
+    return f"{kills}K"
+
+
 def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=None, vertical=False,
                    encoder: str = "x264", progress=None, should_stop=None, words=None) -> list[str]:
     """Un archivo por ronda, sacado del vídeo ya montado (rápido y con el mismo audio/vídeo)."""
@@ -858,7 +865,9 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
     n = len(groups)
     for i, (c, d) in enumerate(groups):
         name = _safe(f"{i + 1:02d} - {c.label.replace(' · ', ' ')}")
-        h = os.path.join(folder, name + ".mp4")
+        sub = os.path.join(folder, kills_folder(c.round.my_kills))
+        os.makedirs(sub, exist_ok=True)
+        h = os.path.join(sub, name + ".mp4")
         if progress:
             progress(i / n, f"Clip suelto {i + 1} de {n}: {c.label}")
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
@@ -867,7 +876,7 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
         _run_ffmpeg(cmd, d, None, should_stop)
         outs.append(h)
         if vertical:
-            v = os.path.join(folder, name + " (vertical).mp4")
+            v = os.path.join(sub, name + " (vertical).mp4")
             make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d, words=words)
             outs.append(v)
         t += d
