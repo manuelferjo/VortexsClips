@@ -136,13 +136,82 @@ class Clip:
 
 # ---------------------------------------------------------------- API
 class ApiError(Exception):
-    pass
+    def __init__(self, msg, code=None):
+        super().__init__(msg)
+        self.code = code          # None = sin conexión
 
 
-def _get(path: str, api_key: str, params: dict | None = None) -> dict:
+# Las respuestas de la API se guardan en disco: una partida no cambia nunca, así que se lee
+# de ahí sin gastar peticiones; y si la API se cae o limita, se usa lo último guardado.
+API_STATUS = {"from_cache": False}
+API_CACHE_MAX = 400
+
+
+def _api_cache_path(url: str) -> str:
+    import hashlib
+    d = os.path.join(data_dir(), "api_cache")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, hashlib.sha1(url.encode("utf-8")).hexdigest()[:20] + ".json")
+
+
+def _api_cache_read(url: str):
+    try:
+        with open(_api_cache_path(url), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _api_cache_write(url: str, data) -> None:
+    try:
+        p = _api_cache_path(url)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, p)
+        d = os.path.dirname(p)
+        files = sorted((os.path.join(d, x) for x in os.listdir(d) if x.endswith(".json")), key=os.path.getmtime)
+        for old in files[:-API_CACHE_MAX]:
+            os.remove(old)
+    except OSError:
+        pass
+
+
+def _get(path: str, api_key: str, params: dict | None = None, cache: str = "fallback") -> dict:
+    """cache: 'first' (lo guardado primero: partidas, que no cambian) o 'fallback' (solo si falla la API)."""
     url = API_BASE + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
+    if cache == "first":
+        hit = _api_cache_read(url)
+        if hit is not None:
+            return hit
+    import time as _time
+    data, err = None, None
+    for attempt in range(3):
+        try:
+            data, err = _get_net(url, api_key), None
+            break
+        except ApiError as e:
+            err = e
+            # límite de peticiones, fallo del servidor o sin conexión: esperar y reintentar
+            if (e.code == 429 or e.code is None or e.code >= 500) and attempt < 2:
+                _time.sleep(3 * (attempt + 1))
+                continue
+            break
+    if err is not None:
+        # clave mala / no existe: error de verdad. Si no, usar lo último guardado
+        if err.code not in (401, 403, 404):
+            hit = _api_cache_read(url)
+            if hit is not None:
+                API_STATUS["from_cache"] = True
+                return hit
+        raise err
+    _api_cache_write(url, data)
+    return data
+
+
+def _get_net(url: str, api_key: str) -> dict:
     req = urllib.request.Request(url, headers={
         "Authorization": api_key.strip(),
         "User-Agent": "VortexsClips/1.0",
@@ -163,9 +232,9 @@ def _get(path: str, api_key: str, params: dict | None = None) -> dict:
             404: "No se ha encontrado la cuenta o la partida.",
             429: "Demasiadas peticiones seguidas. Espera un minuto y vuelve a probar.",
         }.get(e.code, f"Error {e.code} de la API.")
-        raise ApiError(f"{msg}\n{body[:300]}") from None
-    except urllib.error.URLError as e:
-        raise ApiError(f"No se pudo conectar con la API: {e.reason}") from None
+        raise ApiError(f"{msg}\n{body[:300]}", e.code) from None
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        raise ApiError(f"No se pudo conectar con la API: {getattr(e, 'reason', e)}", None) from None
 
 
 def split_riot_id(riot_id: str) -> tuple[str, str]:
@@ -192,7 +261,7 @@ def fetch_match(match_id_or_url: str, api_key: str, region: str = "eu") -> dict:
     m = UUID_RE.search(match_id_or_url)
     if not m:
         raise ValueError("No encuentro el id de la partida en ese texto/enlace.")
-    data = _get(f"/valorant/v4/match/{region}/{m.group(0)}", api_key)
+    data = _get(f"/valorant/v4/match/{region}/{m.group(0)}", api_key, cache="first")
     return data.get("data") or {}
 
 
@@ -730,7 +799,51 @@ def _venc(encoder: str) -> list[str]:
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", *cap, "-profile:v", "high"]
 
 
-BATCH = 20   # rondas por pasada de ffmpeg
+BATCH = 8    # rondas por tanda de ffmpeg (cada tanda terminada se guarda: si se corta, se sigue)
+
+
+def _dur_ok(path: str, expected: float, tol: float = 1.0) -> bool:
+    """¿Existe ese vídeo y dura lo que debe? (para reaprovechar lo ya generado)"""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) < 1024:
+            return False
+        return abs(probe_vod(path)["duration"] - expected) <= tol
+    except Exception:
+        return False
+
+
+def _sig_file(path: str) -> str:
+    import hashlib
+    d = os.path.join(data_dir(), "firmas")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, hashlib.sha1(os.path.abspath(path).lower().encode("utf-8")).hexdigest()[:20] + ".txt")
+
+
+def _sig_get(path: str) -> str:
+    try:
+        with open(_sig_file(path), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _sig_set(path: str, sig: str) -> None:
+    try:
+        with open(_sig_file(path), "w", encoding="utf-8") as f:
+            f.write(sig)
+    except OSError:
+        pass
+
+
+def _hash(*parts) -> str:
+    import hashlib
+    return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def estimate_bytes(vod_path: str, seconds: float) -> int:
+    """Tamaño aproximado de un vídeo de esa duración con la calidad del directo."""
+    kbps = source_video_kbps(vod_path) or 8000
+    return int((min(kbps * 1.25, max(kbps, 6000)) + 192) * 1000 / 8 * seconds)
 
 
 def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, total_s,
@@ -810,16 +923,40 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
         if progress:
             progress(frac, f"Generando vídeo… {frac * 100:.0f}%  ({len(clips)} rondas)")
 
+    sig = _hash(os.path.abspath(vod_path), [(round(c.vod_start, 3), round(c.vod_end, 3)) for c in clips],
+                venc, bool(font), audio)
+    if _sig_get(out_path) == sig and _dur_ok(out_path, total_s, 1.5):
+        # ya estaba generado con las mismas rondas y ajustes (p.ej. se cortó después)
+        if progress:
+            progress(1.0, "El vídeo ya estaba generado: lo reaprovecho")
+        write_markers(clips, os.path.splitext(out_path)[0] + "_marcas.txt")
+        return out_path
+    _sig_set(out_path, "")
     if len(batches) == 1:
-        _render_batch(ffmpeg, vod_path, clips, out_path, venc, font, audio, 0, total_s, prog, should_stop)
+        tmp_out = os.path.splitext(out_path)[0] + ".generando.mp4"
+        _render_batch(ffmpeg, vod_path, clips, tmp_out, venc, font, audio, 0, total_s, prog, should_stop)
+        os.replace(tmp_out, out_path)
     else:
-        tmp = tempfile.mkdtemp(prefix="vortexsclips_")
+        import hashlib
+        # carpeta fija junto al vídeo: las tandas ya hechas se reaprovechan si se corta
+        tmp = os.path.splitext(out_path)[0] + " (partes en curso)"
+        os.makedirs(tmp, exist_ok=True)
+        ok_ = False
         try:
             parts, done = [], 0.0
             for bi, b in enumerate(batches):
-                part = os.path.join(tmp, f"part_{bi:03d}.mp4")
-                _render_batch(ffmpeg, vod_path, b, part, venc, font, audio, done, total_s, prog, should_stop)
-                done += sum(c.vod_end - c.vod_start for c in b)
+                key = "|".join(f"{c.vod_start:.3f}-{c.vod_end:.3f}" for c in b) + f"|{venc}|{bool(font)}|{audio}"
+                h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+                part = os.path.join(tmp, f"part_{bi:03d}_{h}.mp4")
+                bdur = sum(c.vod_end - c.vod_start for c in b)
+                if _dur_ok(part, bdur):
+                    if progress:
+                        progress((done + bdur) / total_s, f"Tanda {bi + 1} de {len(batches)} ya estaba hecha")
+                else:
+                    tpart = part[:-4] + ".tmp.mp4"
+                    _render_batch(ffmpeg, vod_path, b, tpart, venc, font, audio, done, total_s, prog, should_stop)
+                    os.replace(tpart, part)
+                done += bdur
                 parts.append(part)
             if progress:
                 progress(1.0, "Uniendo todo en un solo vídeo…")
@@ -833,9 +970,12 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
                                capture_output=True, text=True, **_no_window())
             if r.returncode != 0:
                 raise RuntimeError("ffmpeg falló al unir:\n" + r.stderr[-800:])
+            ok_ = True
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            if ok_:
+                shutil.rmtree(tmp, ignore_errors=True)
 
+    _sig_set(out_path, sig)
     write_markers(clips, os.path.splitext(out_path)[0] + "_marcas.txt")
     return out_path
 
@@ -1017,6 +1157,11 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
     outs, t = [], 0.0
     n = len(groups)
     rank = []
+    # huella de lo que se genera: si coincide con la de antes, los clips ya hechos se reaprovechan
+    ssig = _hash(_sig_get(src), [(round(c.vod_start, 3), round(c.vod_end, 3)) for c in clips], vertical,
+                 vertical_cam, words, highlight, _venc(encoder))
+    same = bool(_sig_get(src)) and _sig_get(folder) == ssig
+    _sig_set(folder, ssig)
     for i, (c, d) in enumerate(groups):
         name = _safe(f"{i + 1:02d} - {c.label.replace(' · ', ' ')}")
         sub = os.path.join(folder, clip_folder(c.round))
@@ -1024,16 +1169,22 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
         h = os.path.join(sub, name + ".mp4")
         if progress:
             progress(i / n, f"Clip suelto {i + 1} de {n}: {c.label}")
-        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
-               "-i", src, "-map", "0:v:0", "-map", "0:a?", *_venc(encoder),
-               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", h]
-        _run_ffmpeg(cmd, d, None, should_stop)
+        def reuse(p):
+            return same and _dur_ok(p, d, 0.6)
+        if not reuse(h):
+            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
+                   "-i", src, "-map", "0:v:0", "-map", "0:a?", *_venc(encoder),
+                   "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", h + ".tmp.mp4"]
+            _run_ffmpeg(cmd, d, None, should_stop)
+            os.replace(h + ".tmp.mp4", h)
         outs.append(h)
         best = h
         if vertical:
             v = os.path.join(sub, name + " (vertical).mp4")
-            make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d, words=words,
-                          highlight=highlight)
+            if not reuse(v):
+                make_vertical(src, v + ".tmp.mp4", vertical_cam, encoder, None, should_stop, start=t, dur=d,
+                              words=words, highlight=highlight)
+                os.replace(v + ".tmp.mp4", v)
             outs.append(v)
             best = v
         try:

@@ -129,7 +129,12 @@ def vod_info(url: str) -> dict:
     ts = j.get("timestamp")
     best = max((f for f in j.get("formats") or [] if f.get("height")),
                key=lambda f: (f.get("height") or 0, f.get("fps") or 0), default={})
+    dur = j.get("duration") or 0
+    size = best.get("filesize") or best.get("filesize_approx")
+    if not size and best.get("tbr") and dur:
+        size = best["tbr"] * 1000 / 8 * dur
     return {
+        "size_est": int(size) if size else 0,
         "id": j.get("id"),
         "title": j.get("title") or "",
         "duration": j.get("duration") or 0,
@@ -178,18 +183,65 @@ def find_existing(out_dir: str, info: dict) -> str | None:
     return None
 
 
+def partial_bytes(out_dir: str, base: str) -> int:
+    """Lo ya descargado de ese VOD (trozos .part de una descarga anterior)."""
+    tot = 0
+    try:
+        for n in os.listdir(out_dir):
+            if n.startswith(base) and (".part" in n or n.endswith((".ytdl", ".temp"))):
+                try:
+                    tot += os.path.getsize(os.path.join(out_dir, n))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return tot
+
+
+def check_space(out_dir: str, need_bytes: int, what: str) -> str:
+    """
+    Error si no cabe; aviso (texto) si cabe pero va justo. need_bytes ya descontado lo que hay.
+    """
+    import shutil
+    try:
+        free = shutil.disk_usage(out_dir).free
+    except OSError:
+        return ""
+    if need_bytes <= 0:
+        return ""
+    if free < need_bytes * 1.05 + 512 * 1024 ** 2:
+        raise RuntimeError(f"No hay espacio en el disco para {what}: hacen falta unos {fmt_size(need_bytes)} "
+                           f"y quedan {fmt_size(free)} libres en {out_dir}.\n"
+                           "Libera espacio o elige otra carpeta (pestaña Salida → Carpeta…).")
+    return ""
+
+
 def download(url: str, out_dir: str, progress=None, should_stop=None, info: dict | None = None) -> str:
-    """Descarga el VOD en la mejor calidad (normalmente 1080p60 'Source') y devuelve la ruta."""
+    """Descarga el VOD en la mejor calidad (normalmente 1080p60 'Source') y devuelve la ruta.
+    Si se corta la conexión, reintenta y sigue por donde iba."""
     exe = ensure_ytdlp(progress)
     os.makedirs(out_dir, exist_ok=True)
     info = info or vod_info(url)
     base = base_name(info)
     target = os.path.join(out_dir, base + ".mp4")
+    # un .mp4 con ese nombre que no está completo (si lo estuviera, find_existing lo habría usado):
+    # se aparta para que los reintentos sigan desde los .part sin pisar ni saltarse nada
+    if os.path.isfile(target):
+        try:
+            os.replace(target, target + ".incompleto")
+        except OSError:
+            pass
+    est = int(info.get("size_est") or 0)
+    if est:
+        # al final yt-dlp rehace el MP4 (copia): hace falta sitio para casi otra copia
+        check_space(out_dir, est * 2 - partial_bytes(out_dir, base), "descargar el VOD")
     ffmpeg = core.find_tool("ffmpeg")
     cmd = [exe, *_net_opts(), "--encoding", "utf-8", "--no-playlist", "--newline", "--progress",
-           "--continue", "--force-overwrites" if os.path.isfile(target) else "--no-overwrites",
+           "--continue", "--no-overwrites",
            "-f", "b/bv*+ba", "-S", "res,fps,br", "--merge-output-format", "mp4",
            "--remux-video", "mp4", "-N", "8",
+           "--retries", "30", "--fragment-retries", "60", "--retry-sleep", "fragment:exp=1:30",
+           "--socket-timeout", "30",
            "-o", os.path.join(out_dir, base + ".%(ext)s"),
            "--progress-template",
            "download:PROG %(progress.downloaded_bytes)s %(progress.total_bytes)s "
@@ -201,6 +253,38 @@ def download(url: str, out_dir: str, progress=None, should_stop=None, info: dict
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
     if progress:
         progress(None, "Conectando con Twitch…")
+    tail, last_prog, rc = [], "", 1
+    for attempt in range(6):
+        tail, last_prog, rc = _run_ytdlp(cmd, env, progress, should_stop)
+        if rc == 0:
+            break
+        msg = "\n".join(tail).lower()
+        fatal = any(x in msg for x in ("subscriber", "sub-only", "401", "404", "does not exist", "no space",
+                                         "espacio", "certificate_verify_failed"))
+        if fatal or attempt == 5:
+            break
+        wait = 10 * (attempt + 1)
+        for k in range(wait):
+            if should_stop and should_stop():
+                raise RuntimeError("Descarga cancelada. Si vuelves a darle, sigue por donde iba.")
+            if progress:
+                progress(None, f"Se cortó la descarga. Reintento {attempt + 1} de 5 en {wait - k} s "
+                               "(seguirá por donde iba)…")
+            time.sleep(1)
+    # localizar el archivo final por su nombre fijo, sin depender de lo que imprima yt-dlp
+    found = None
+    for ext in (".mp4", ".mkv", ".ts"):
+        cand = os.path.join(out_dir, base + ext)
+        if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+            found = cand
+            break
+    if rc == 0 and found:
+        return found
+    detail = "\n".join(tail) or f"(sin mensaje; código {rc}; último progreso: {last_prog or 'ninguno'})"
+    raise RuntimeError(_explain(detail))
+
+
+def _run_ytdlp(cmd, env, progress, should_stop):
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                          encoding="utf-8", errors="replace", bufsize=1, env=env, **core._no_window())
     tail, last_prog = [], ""
@@ -225,17 +309,7 @@ def download(url: str, out_dir: str, progress=None, should_stop=None, info: dict
     finally:
         if p.poll() is None:
             p.kill()
-    # localizar el archivo final por su nombre fijo, sin depender de lo que imprima yt-dlp
-    found = None
-    for ext in (".mp4", ".mkv", ".ts"):
-        cand = os.path.join(out_dir, base + ext)
-        if os.path.isfile(cand) and os.path.getsize(cand) > 0:
-            found = cand
-            break
-    if p.returncode == 0 and found:
-        return found
-    detail = "\n".join(tail) or f"(sin mensaje; código {p.returncode}; último progreso: {last_prog or 'ninguno'})"
-    raise RuntimeError(_explain(detail))
+    return tail, last_prog, p.returncode
 
 
 # ---------------------------------------------------------------- vigilar el canal

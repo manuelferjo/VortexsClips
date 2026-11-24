@@ -48,6 +48,8 @@ SYNC_COLORS = {"s_ok": "#7ee081", "s_approx": YELLOW, "s_hora": "#ff9f43", "s_fa
 
 
 def sync_tag(c: dict) -> str:
+    if c.get("check") == "dudosa":
+        return "s_approx"
     if c.get("auto") and c.get("approx"):
         return "s_approx"
     if c.get("auto") and float(c.get("conf") or 0) < 0.5:
@@ -755,6 +757,7 @@ class App(tk.Tk):
         cb = self.progress_cb()
 
         def work():
+            core.API_STATUS["from_cache"] = False
             out, pos = [], start
             for page in range(12 if target else 1):          # hasta 120 partidas hacia atrás
                 if target:
@@ -784,6 +787,8 @@ class App(tk.Tk):
             self.auto_check()
             n_in = len(self.checked)
             extra = f" · {n_in} en el VOD" if self.vod_info else ""
+            if core.API_STATUS.get("from_cache"):
+                extra += " · ⚠ la API no respondía: uso las partidas guardadas (pueden faltar las más nuevas)"
             self.set_progress(1, f"{len(self.matches)} partidas cargadas{extra}.")
         self.run_bg(work, done, "No se pudieron cargar las partidas")
 
@@ -818,7 +823,8 @@ class App(tk.Tk):
             else:
                 inv, invt = None, "—"
             c = self.calib.get(m.match_id) or {}
-            sync_txt = ("Auto ≈ (aprox.)" if c.get("auto") and c.get("approx") else
+            sync_txt = ("⚠ Dudosa (revísala)" if c.get("check") == "dudosa" else
+                        "Auto ≈ (aprox.)" if c.get("auto") and c.get("approx") else
                         f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)" if c.get("auto") else
                         "Manual ✔" if c.get("first_kill_vod_s") is not None else
                         "✖ No se encontró" if c.get("failed") else "Por hora")
@@ -932,6 +938,7 @@ class App(tk.Tk):
                 return
             self.calib[m.match_id] = {"first_kill_vod_s": t}
             dlg.destroy()
+            self.learn_in_background(m, t - first / 1000)
             # cuánto estaba desplazada según la hora -> ofrecer aplicarlo a todas
             try:
                 by_time = core.match_offset_s(m, self.vod_start_utc(), {})
@@ -955,6 +962,23 @@ class App(tk.Tk):
         ttk.Button(bf, text="Buscar en el VOD", style="Purple.TButton", command=look).pack(side="left")
         ttk.Button(bf, text="Guardar", style="Accent.TButton", command=ok).pack(side="left", padx=6)
         dlg.bind("<Return>", lambda ev: ok())
+
+    def learn_in_background(self, m, offset_s):
+        """Tras sincronizar a mano: aprender (sin bloquear) qué vio cada método en el sitio correcto."""
+        vod = self.v_vod.get()
+        dur = (self.vod_info or {}).get("duration") or 0
+        if not vod or not os.path.isfile(vod):
+            return
+
+        def target():
+            try:
+                rows = sync.learn_from_manual(vod, m, offset_s, dur)
+                good = sum(1 for r in rows if r["true"])
+                self.after(0, lambda: self.status(f"Aprendido de tu sincronización de {m.map_name}: "
+                                                  f"{good} método(s) lo veían bien. Se ajustará solo."))
+            except Exception:
+                pass
+        threading.Thread(target=target, daemon=True).start()
 
     def clear_calib(self):
         m = self.selected_match()
@@ -1350,8 +1374,27 @@ class App(tk.Tk):
                         refs[mid] = sync.SyncResult(off, off - exp, float(c["conf"]), True)
                 if len(res) + len(refs) > 1 and any(not r.ok for r in res.values()):
                     cb(1, "Afinando con el desfase común de todas las partidas…")
-                    res = sync.consensus({**refs, **res}, os.path.basename(vod))
+                    times = {mid: self.matches[mid].started_at.timestamp()
+                             for mid in list(refs) + list(res) if mid in self.matches}
+                    res = sync.consensus({**refs, **res}, os.path.basename(vod), times)
                     res = {mid: r for mid, r in res.items() if mid not in refs}
+                # comprobación independiente de cada partida colocada (rápida: usa lo ya leído)
+                oks = [(mid, r) for mid, r in res.items() if r.ok and mid in self.matches]
+                if oks:
+                    from concurrent.futures import ThreadPoolExecutor
+                    cb(1, f"Comprobando las {len(oks)} partidas colocadas…")
+
+                    def chk(item):
+                        mid, r = item
+                        try:
+                            r.check = sync.verify_match(vod, self.matches[mid], r.offset_s, dur,
+                                                        lambda: self.stop_flag)
+                        except Exception as e:
+                            if "Cancelado" in str(e):
+                                raise
+                            r.check = {"state": "?"}
+                    with ThreadPoolExecutor(max_workers=self.sync_workers()) as ex:
+                        list(ex.map(chk, oks))
                 return res
             finally:
                 self.after(0, lambda: self.set_running(False))
@@ -1362,6 +1405,7 @@ class App(tk.Tk):
             failed = []
             approx = []
             learned = []
+            doubtful = []
             for mid, r in res.items():
                 # aprender el desfase base solo de las partidas que se han encontrado solas con claridad
                 if r.ok and not r.approx and r.confidence >= 0.7 and mid in self.matches:
@@ -1371,6 +1415,14 @@ class App(tk.Tk):
                 if r.ok:
                     self.calib[mid] = {"offset_s": r.offset_s, "auto": True,
                                        "conf": round(r.confidence, 2), "approx": r.approx}
+                    ck = getattr(r, "check", None) or {}
+                    if ck.get("state"):
+                        self.calib[mid]["check"] = ck["state"]
+                    if ck.get("state") == "dudosa":
+                        self.calib[mid]["check_shift"] = round(float(ck.get("shift", 0)), 2)
+                        m_ = self.matches.get(mid)
+                        if m_:
+                            doubtful.append(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}")
                     if r.approx:
                         m_ = self.matches.get(mid)
                         if m_:
@@ -1392,7 +1444,12 @@ class App(tk.Tk):
             self.auto_check()
             self.set_progress(1, f"Sincronizadas solas: {good}" + (f" · sin patrón claro: {bad} "
                               "(se quedan con la hora + delay; puedes sincronizarlas a mano)" if bad else ""))
-            if approx and not failed:
+            if doubtful:
+                self.sync_warning = (f"La comprobación automática ve raras {len(doubtful)} partida(s) "
+                                     f"({', '.join(doubtful[:6])}{'…' if len(doubtful) > 6 else ''}): el killfeed "
+                                     "no cambia donde deberían estar tus kills. Míralas con «Revisar sincro» o "
+                                     "sincronízalas a mano.")
+            elif approx and not failed:
                 self.sync_warning = (f"{len(approx)} partida(s) se han ajustado con el desfase común del directo "
                                      f"({', '.join(approx[:6])}{'…' if len(approx) > 6 else ''}), sin pico propio "
                                      "claro. Revisa alguna ronda suya con «Ver ronda».")
@@ -1409,7 +1466,7 @@ class App(tk.Tk):
                 self.set_step(None, "Sincronización terminada")
                 if self.clips:
                     self.compute()
-                if failed or approx:
+                if failed or approx or doubtful:
                     self.show_warnings([self.sync_warning], ask_report=bool(failed))
         self.run_bg(work, done, "No se pudo sincronizar")
 
@@ -1668,7 +1725,9 @@ class App(tk.Tk):
 
         for m, ks in rows:
             c = self.calib.get(m.match_id) or {}
-            if c.get("auto") and c.get("approx"):
+            if c.get("check") == "dudosa":
+                stt, col = f"⚠ Dudosa: parece {c.get('check_shift', 0):+.1f} s desplazada", YELLOW
+            elif c.get("auto") and c.get("approx"):
                 stt, col = "Auto ≈ (aprox.) — revisa", YELLOW
             elif c.get("auto"):
                 stt, col = f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)", "#7ee081"
@@ -1911,6 +1970,10 @@ class App(tk.Tk):
         def work():
             try:
                 stop = lambda: self.stop_flag
+                # ¿cabe? vídeo + vertical + clips sueltos (y sus verticales)
+                copies = 1 + (1 if vertical else 0) + ((2 if vertical else 1) if singles else 0)
+                twitch.check_space(os.path.dirname(os.path.abspath(out)) or ".",
+                                   core.estimate_bytes(vod, total_s) * copies, "generar los vídeos")
                 core.render(vod, clips, out, encoder=enc, show_label=False, progress=prog, should_stop=stop)
                 made = [out]
                 base = os.path.splitext(out)[0]
@@ -1959,6 +2022,11 @@ class App(tk.Tk):
             self.status(path)
             if getattr(self, "sync_warning", ""):
                 warnings.insert(0, self.sync_warning)
+            dud = sorted({c.match.map_name for c in clips
+                          if (self.calib.get(c.match.match_id) or {}).get("check") == "dudosa"})
+            if dud and not getattr(self, "sync_warning", ""):
+                warnings.insert(0, f"Ojo: estas partidas salieron dudosas en la comprobación y sus clips pueden "
+                                   f"estar desfasados: {', '.join(dud)}.")
             if warnings:
                 self.status(path + "   ⚠ " + " · ".join(warnings)[:200])
             if self.unattended():
@@ -2160,6 +2228,38 @@ def selftest(out_path):
                             encoder="auto", ranking=rk_)
         log(len(rk_) == 2 and rk_[0][1].startswith("4K") and os.path.isfile(os.path.join(sfold, "ranking.txt"))
             and len(os.listdir(os.path.join(sfold, "TOP"))) == 2, "nota de jugadas, ranking y carpeta TOP")
+        # fiabilidad: API guardada, espacio en disco, retomar generación, cortes del directo, aprendizaje
+        real_net = core._get_net
+        try:
+            core._get_net = lambda u, k: {"data": [1]}
+            core._get("/selftest", "k")
+            core._get_net = lambda u, k: (_ for _ in ()).throw(core.ApiError("sin red", None))
+            real_sleep = time.sleep
+            time.sleep = lambda s_: None
+            try:
+                log(core._get("/selftest", "k") == {"data": [1]}, "sin conexión usa las partidas guardadas")
+            finally:
+                time.sleep = real_sleep
+        finally:
+            core._get_net = real_net
+        try:
+            twitch.check_space(tmp, 10 ** 16, "prueba")
+            log(False, "aviso de espacio en disco")
+        except RuntimeError:
+            log(True, "aviso de espacio en disco")
+        rclips = [core.Clip(m, m.rounds[0], 0.5, 2.5), core.Clip(m, m.rounds[1], 3.0, 5.0)]
+        rout = os.path.join(tmp, "r.mp4")
+        core.render(vid, rclips, rout, encoder="auto")
+        msgs_ = []
+        core.render(vid, rclips, rout, encoder="auto", progress=lambda f_, t_: msgs_.append(t_))
+        log(any("ya estaba generado" in x for x in msgs_), "retomar: no se rehace lo ya generado")
+        SR = sync.SyncResult
+        gd = {"a": SR(1, 0.0, .8, True), "b": SR(1, 0.5, .8, True), "c": SR(1, 26.0, .8, True)}
+        log(len(sync.stream_jumps(gd, {"a": 0, "b": 100, "c": 300})) == 1, "detectar cortes del directo")
+        smp = [{"mode": "killfeed", "true": True, "halves_ok": True, "z": 9.0, "ratio": 1.9}] * 4 + \
+              [{"mode": "killfeed", "true": False, "halves_ok": False, "z": 8.5, "ratio": 1.6}]
+        th = sync.compute_thresholds(smp).get("killfeed")
+        log(bool(th) and th[0] > 8.5 and th[0] < 13, f"aprender umbrales de tus correcciones ({th})")
         app = App()
         log(True, "ventana creada")
         # editor de subtítulos

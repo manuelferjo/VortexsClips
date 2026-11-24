@@ -228,19 +228,20 @@ def _validated(frames, t0, expected, events, search_s, pair, mode):
     full["halves"] = [a["shift"], b["shift"]]
     edge = abs(full["shift"]) >= search_s - 2          # pico pegado al borde: artefacto
     z, ratio = full["zpeak"], full["ratio"]
+    lz, lr = learned_thr(mode)
     if mode == "pareja":
         # medido con tu emisión real: z 6-7, ratio 1,40 y mitades de acuerdo; falsos z ≤4,2 y ratio ≤1,19
-        ok = agree and z >= 5.2 and ratio >= 1.28
+        ok = agree and z >= (lz or 5.2) and ratio >= (lr or 1.28)
     elif mode == "cartel":
         # cartel solo (sin segundo texto): real z≈40 y ratio≈6,5; falsos z≤12 y ratio≤1,4
         ok = (z >= 20 and ratio >= 2.5) or (agree and z >= 14 and ratio >= 1.8)
     elif mode == "marcador":
         # marcador del HUD: aún sin medir con tu emisión -> solo vale solo si es muy claro;
         # si no, cuenta como voto para el acuerdo con otro método
-        ok = agree and z >= 13 and ratio >= 2.2
+        ok = agree and z >= (lz or 13) and ratio >= (lr or 2.2)
     else:
         # killfeed: con mucho movimiento detrás, un patrón falso llegó a z 12 y ratio 2,3
-        ok = agree and z >= 13 and ratio >= 2.5
+        ok = agree and z >= (lz or 13) and ratio >= (lr or 2.5)
     full["ok"] = bool(ok and not edge)
     full["conf"] = 0.6 + 0.4 * full["conf"] if full["ok"] else min(full["conf"], 0.3)
     if full["ok"] and mode == "pareja":
@@ -546,7 +547,7 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
         saved[region] = fr
         if region == "killfeed":
             kf_t0 = te
-        r = analyze(fr, te, expected_offset_s, ev)
+        r = _validated(fr, te, expected_offset_s, ev, SEARCH_S, None, region)
         r["set"], r["family"] = region, region
         results.append(r)
     if not results:
@@ -563,7 +564,9 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
             results.append(best)
     if best is not None:
         _log(match, expected_offset_s, results)
-        return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], True, "", "", None)
+        out = SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], True, "", "", None)
+        out.methods = _summary(results)
+        return out
     results.sort(key=lambda r: r["conf"], reverse=True)
     best = results[0]
     fr, _ = _tile(arr, u0, "completa", t0, t1)
@@ -577,8 +580,10 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
     if "cartel" in saved:
         data.update({"cartel": saved["cartel"], "b0": b0e, "ends": ends})
     data["cands"] = [r["shift"] for r in results]
-    return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], False,
-                      "no he encontrado un patrón claro de kills", rep, data)
+    out = SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], False,
+                     "no he encontrado un patrón claro de kills", rep, data)
+    out.methods = _summary(results)
+    return out
 
 
 def sync_many(vod: str, items: list, vod_duration: float, workers: int = 2, progress=None,
@@ -639,18 +644,177 @@ def sync_many(vod: str, items: list, vod_duration: float, workers: int = 2, prog
     return res
 
 
+def verify_match(vod: str, match: core.Match, offset_s: float, vod_duration: float = 0.0,
+                 should_stop=None) -> dict:
+    """
+    Comprobación independiente de una partida ya colocada en offset_s: con TODAS las kills de la
+    partida, ¿el killfeed cambia justo ahí? Busca solo ±20 s alrededor (rápido: usa la caché).
+    Devuelve {"state": "ok" | "dudosa" | "?", "shift": s, "z": z}; con "dudosa", offset_s + shift
+    es dónde parece estar de verdad.
+    """
+    out = {"state": "?", "shift": 0.0, "z": 0.0}
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        return out
+    allk = sorted(k.t_match / 1000.0 for k in match.kills)
+    if len(allk) < 8:
+        return out
+    a = max(0.0, offset_s + allk[0] - 25)
+    b = offset_s + allk[-1] + 25
+    if vod_duration:
+        b = min(vod_duration, b)
+    if b - a < 30:
+        return out
+    u0, arr = _read_all(vod, a, b - a, should_stop, vod_duration)
+    if arr is None:
+        return out
+    fr, t0 = _tile(arr, u0, "killfeed", a, b)
+    if fr is None:
+        return out
+    r = _analyze_once(fr, t0, offset_s, allk, 20.0)
+    out.update(shift=float(r["shift"]), z=float(r["zpeak"]))
+    if abs(r["shift"]) <= 1.0 and r["zpeak"] >= 3.0:
+        out["state"] = "ok"
+    elif abs(r["shift"]) > 1.5 and r["zpeak"] >= 6.0 and r["ratio"] >= 1.3:
+        out["state"] = "dudosa"
+    _log_line(f"comprobación {match.map_name} {match.started_at.astimezone():%d/%m %H:%M}: {out['state']} "
+              f"(pico {r['shift']:+.2f} s, z {r['zpeak']:.1f}, ratio {r['ratio']:.2f})")
+    return out
+
+
+# ---------------------------------------------------------------- aprender de tus correcciones
+LEARN_MIN = 4                     # ejemplos buenos necesarios para ajustar un método
+LEARN_FLOOR = {"pareja": (3.5, 1.15), "killfeed": (7.0, 1.5), "marcador": (6.0, 1.4)}
+LEARN_DEFAULT = {"pareja": (5.2, 1.28), "killfeed": (13.0, 2.5), "marcador": (13.0, 2.2)}
+_LEARN_CACHE = {"mtime": None, "thr": {}}
+
+
+def _summary(results: list) -> list:
+    return [{"set": r.get("set"), "family": r.get("family"), "mode": r.get("mode"), "shift": float(r["shift"]),
+             "z": float(r.get("zpeak", 0)), "ratio": float(r.get("ratio", 0)), "halves_ok": _halves_ok(r)}
+            for r in results if r.get("family") != "acuerdo"]
+
+
+def learn_file() -> str:
+    return os.path.join(core.data_dir(), "aprendizaje_sincro.json")
+
+
+def _load_learn() -> list:
+    try:
+        with open(learn_file(), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def learned_thr(mode: str):
+    """(z, ratio) aprendidos de tus sincronizaciones a mano para ese método, o (None, None)."""
+    if mode not in LEARN_DEFAULT:
+        return None, None
+    try:
+        mt = os.path.getmtime(learn_file())
+    except OSError:
+        return None, None
+    if _LEARN_CACHE["mtime"] != mt:
+        _LEARN_CACHE["thr"] = compute_thresholds(_load_learn())
+        _LEARN_CACHE["mtime"] = mt
+    return _LEARN_CACHE["thr"].get(mode, (None, None))
+
+
+def compute_thresholds(samples: list) -> dict:
+    """
+    Con lo que vio cada método en el sitio correcto (picos buenos) y lejos de él (picos falsos):
+    umbral = por debajo de casi todos los buenos y por encima de todos los falsos.
+    Nunca más bajo que un mínimo de seguridad ni mucho más alto que el de fábrica.
+    """
+    thr = {}
+    for mode, (dz, dr) in LEARN_DEFAULT.items():
+        good = [x for x in samples if x.get("mode") == mode and x.get("true") and x.get("halves_ok")]
+        bad = [x for x in samples if x.get("mode") == mode and not x.get("true")]
+        if len(good) < LEARN_MIN:
+            continue
+        gz = sorted(x["z"] for x in good)
+        gr = sorted(x["ratio"] for x in good)
+        p20z, p20r = gz[int(len(gz) * 0.2)], gr[int(len(gr) * 0.2)]
+        fz = max((x["z"] for x in bad), default=0.0)
+        fr = max((x["ratio"] for x in bad), default=0.0)
+        fz_, fr_ = LEARN_FLOOR[mode]
+        z = min(dz * 1.5, max(fz_, 0.85 * p20z, 1.1 * fz))
+        r = min(dr * 1.5, max(fr_, 0.92 * p20r, 1.05 * fr))
+        thr[mode] = (round(z, 2), round(r, 3))
+    return thr
+
+
+def learn_from_manual(vod: str, match: core.Match, true_offset_s: float, vod_duration: float = 0.0,
+                      should_stop=None) -> list:
+    """
+    Tras una sincronización a mano: analiza la partida tomando tu momento como el bueno y apunta
+    qué vio cada método ahí (pico bueno) o lejos de ahí (pico falso). Devuelve lo apuntado.
+    """
+    r = sync_match(vod, match, true_offset_s, vod_duration, None, should_stop)
+    rows = []
+    for x in getattr(r, "methods", None) or []:
+        if not x.get("mode"):
+            continue
+        rows.append({"mode": x["mode"], "set": x["set"], "z": x["z"], "ratio": x["ratio"],
+                     "halves_ok": x["halves_ok"], "true": abs(x["shift"]) <= 1.0,
+                     "match": match.match_id, "when": time.strftime("%Y-%m-%d %H:%M")})
+    if rows:
+        data = [d for d in _load_learn() if d.get("match") != match.match_id] + rows
+        try:
+            tmp = learn_file() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data[-400:], f)
+            os.replace(tmp, learn_file())
+        except OSError:
+            pass
+        _log_line(f"aprendido de tu sincronización a mano en {match.map_name}: " +
+                  ", ".join(f"{x['set']} {'bien' if x['true'] else 'falso'} z {x['z']:.1f}" for x in rows))
+    return rows
+
+
 # ---------------------------------------------------------------- consenso entre partidas
 LOCAL_S = 20.0
 
 
-def consensus(results: dict, log_name: str = "") -> dict:
+JUMP_S = 6.0      # diferencia de desfase entre partidas seguidas que indica un corte del directo
+
+
+def _neighbors(mid, times: dict, good: dict):
+    """Partidas sincronizadas justo antes y justo después (en el tiempo) de mid."""
+    t = times.get(mid)
+    if t is None:
+        return None, None
+    prev = [(times[g], r) for g, r in good.items() if g in times and times[g] < t]
+    nxt = [(times[g], r) for g, r in good.items() if g in times and times[g] > t]
+    return (max(prev, key=lambda x: x[0])[1] if prev else None,
+            min(nxt, key=lambda x: x[0])[1] if nxt else None)
+
+
+def stream_jumps(good: dict, times: dict) -> list:
+    """Saltos del desfase entre partidas seguidas (reconexión del directo): [(antes, después, salto)]."""
+    seq = sorted((times[m], m, r.shift_s) for m, r in good.items() if m in times)
+    out = []
+    for (t1, m1, s1), (t2, m2, s2) in zip(seq, seq[1:]):
+        if abs(s2 - s1) > JUMP_S:
+            out.append((m1, m2, s2 - s1))
+    return out
+
+
+def consensus(results: dict, log_name: str = "", times: dict | None = None) -> dict:
     """
     results: {match_id: SyncResult} de un mismo VOD. Las partidas que no se sincronizaron solas
     se afinan alrededor del desfase común (las del mismo directo se parecen mucho: mismo delay y
     casi la misma espera de selección de agente / carga).
     """
     import numpy as np
-    good = [r for r in results.values() if r.ok]
+    times = times or {}
+    good_d = {mid: r for mid, r in results.items() if r.ok}
+    good = list(good_d.values())
+    jumps = stream_jumps(good_d, times)
+    for m1, m2, j in jumps:
+        _log_line(f"{log_name} posible corte del directo entre {m1[:8]} y {m2[:8]}: el desfase salta {j:+.1f} s")
     bad = {mid: r for mid, r in results.items() if not r.ok and r.data and
            ("frames" in r.data or "cartel" in r.data)}
     if not bad:
@@ -698,10 +862,18 @@ def consensus(results: dict, log_name: str = "") -> dict:
         # centros donde buscar: el desfase común y los picos propios de esta partida que
         # cayeron lejos del común (p.ej. una pausa en el directo que la desplaza varios segundos).
         centers = [g]
+        prev_r, next_r = _neighbors(mid, times, good_d)
+        for nb in (prev_r, next_r):
+            if nb is not None and all(abs(nb.shift_s - x) > 2 for x in centers):
+                centers.append(float(nb.shift_s))
+        # con un corte del directo, lo más fiable es la partida de al lado, no la media de todas
+        fallback = g
+        if jumps and (prev_r is not None or next_r is not None):
+            fallback = float((prev_r or next_r).shift_s)
         for cs in d.get("cands", []):
             if abs(cs - g) > 3 and all(abs(cs - x) > 2 for x in centers):
                 centers.append(float(cs))
-        del centers[4:]
+        del centers[6:]
         # a) cartel (pareja de textos) en ±20 s alrededor de cada centro; se queda el más claro
         pick = None
         if "cartel" in d and len(d["ends"]) >= MIN_ENDS:
@@ -719,8 +891,9 @@ def consensus(results: dict, log_name: str = "") -> dict:
                       f"(z {pick[3]:.1f} ratio {pick[1]:.2f})")
             continue
         if "frames" not in d:
-            out[mid] = SyncResult(d["expected"] + g, g, 0.35, True, "", r.report, None, True)
-            _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {g:+.2f}s aprox (desfase común)")
+            out[mid] = SyncResult(d["expected"] + fallback, fallback, 0.35, True, "", r.report, None, True)
+            _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {fallback:+.2f}s aprox "
+                      f"({'partida vecina, hubo un corte' if fallback != g else 'desfase común'})")
             continue
         # b) killfeed en ±20 s alrededor de cada centro; se exige que las dos mitades coincidan
         S = _prep(d["frames"])
@@ -744,7 +917,7 @@ def consensus(results: dict, log_name: str = "") -> dict:
         if pick is not None:
             shift, conf, approx = pick[0], 0.55, False
         else:
-            shift, conf, approx = g, 0.35, True
+            shift, conf, approx = fallback, 0.35, True
         out[mid] = SyncResult(d["expected"] + shift, shift, conf, True, "", r.report, None, approx)
         _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {shift:+.2f}s "
                   f"{'afinada' if not approx else 'aprox (desfase común)'}")
