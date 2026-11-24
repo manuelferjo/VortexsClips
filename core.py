@@ -51,6 +51,8 @@ class Round:
     plant_round_ms: int | None = None
     defuse_round_ms: int | None = None
     end_match_ms: int | None = None     # momento EXACTO del final (para el cartel WON/LOST)
+    clutch_vs: int = 0                  # te quedaste solo contra X enemigos vivos (0 = no)
+    clutch_from_ms: int | None = None   # momento (ms de partida) en que te quedaste solo
 
 
 @dataclass
@@ -64,13 +66,43 @@ class Match:
     score: str
     rounds: list[Round] = field(default_factory=list)
     kills: list[Kill] = field(default_factory=list)
+    allies: set = field(default_factory=set)     # puuids de tu equipo (contigo)
+    enemies: set = field(default_factory=set)
 
     def first_my_kill_ms(self) -> int | None:
         mine = [k.t_match for k in self.kills if k.killer == self.my_puuid]
         return min(mine) if mine else None
 
-    def highlight_rounds(self, min_kills: int) -> list[Round]:
-        return [r for r in self.rounds if r.my_kills >= min_kills]
+    def highlight_rounds(self, min_kills: int, clutch_min: int = 0) -> list[Round]:
+        """Rondas con min_kills o más kills tuyas, o clutches ganados de 1 contra clutch_min o más."""
+        return [r for r in self.rounds if r.my_kills >= min_kills or is_clutch(r, clutch_min)]
+
+
+def is_clutch(r: "Round", clutch_min: int) -> bool:
+    return bool(clutch_min) and bool(r.won) and r.clutch_vs >= clutch_min
+
+
+def compute_clutches(m: "Match") -> None:
+    """
+    Para cada ronda: si en algún momento eras el único vivo de tu equipo, cuántos enemigos
+    quedaban (1 contra X). Solo cuenta si la ronda la ganó tu equipo (lo comprueba is_clutch).
+    """
+    if not m.allies or not m.enemies or m.my_puuid not in m.allies:
+        return
+    by_round: dict[int, list[Kill]] = {}
+    for k in m.kills:
+        by_round.setdefault(k.round, []).append(k)
+    for r in m.rounds:
+        r.clutch_vs, r.clutch_from_ms = 0, None
+        alive_a, alive_e = set(m.allies), set(m.enemies)
+        for k in sorted(by_round.get(r.index, []), key=lambda x: x.t_match):
+            if k.victim in alive_a:
+                alive_a.discard(k.victim)
+            elif k.victim in alive_e:
+                alive_e.discard(k.victim)
+            if alive_a == {m.my_puuid} and alive_e:
+                r.clutch_vs, r.clutch_from_ms = len(alive_e), k.t_match
+                break
 
 
 @dataclass
@@ -87,10 +119,19 @@ class Clip:
         return (self.match.match_id, self.round.index)
 
     @property
+    def kind(self) -> str:
+        """'3K', '4K', 'ACE', '1v3', '4K 1v3'…"""
+        r = self.round
+        k = r.my_kills
+        kname = {3: "3K", 4: "4K", 5: "ACE"}.get(k, f"{k}K")
+        clutch = f"1v{r.clutch_vs}" if (r.won and r.clutch_vs >= 1) else ""
+        if clutch and k < 3:
+            return clutch
+        return f"{kname} {clutch}".strip()
+
+    @property
     def label(self) -> str:
-        k = self.round.my_kills
-        name = {3: "3K", 4: "4K", 5: "ACE"}.get(k, f"{k}K")
-        return f"{name} · {self.match.map_name} · Ronda {self.round.index + 1}"
+        return f"{self.kind} · {self.match.map_name} · Ronda {self.round.index + 1}"
 
 
 # ---------------------------------------------------------------- API
@@ -185,6 +226,12 @@ def parse_match(raw: dict, riot_id: str) -> Match:
         raise ValueError(f"{name}#{tag} no aparece en la partida {md.get('match_id') or md.get('matchid')}")
     my_puuid = me["puuid"]
     my_team = me.get("team_id") or me.get("team")
+    allies, enemies = set(), set()
+    for p in players:
+        t_ = p.get("team_id") or p.get("team")
+        if not p.get("puuid") or t_ is None or my_team is None:
+            continue
+        (allies if str(t_).lower() == str(my_team).lower() else enemies).add(p["puuid"])
     agent = (me.get("agent") or {}).get("name") if isinstance(me.get("agent"), dict) else me.get("character", "")
 
     map_name = md.get("map")
@@ -303,7 +350,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
             if st.get("player_puuid") == my_puuid and isinstance(st.get("kills"), int):
                 rounds[i].my_kills = st["kills"]
 
-    return Match(
+    m_ = Match(
         match_id=md.get("match_id") or md.get("matchid") or "",
         map_name=map_name or "?",
         started_at=_parse_dt(started),
@@ -313,7 +360,11 @@ def parse_match(raw: dict, riot_id: str) -> Match:
         score=score,
         rounds=rounds,
         kills=kills,
+        allies=allies,
+        enemies=enemies,
     )
+    compute_clutches(m_)
+    return m_
 
 
 # ---------------------------------------------------------------- tiempos
@@ -328,6 +379,8 @@ class CutSettings:
     kill_pre_s: float = 2.5       # modo kills: segundos antes de cada kill
     kill_post_s: float = 1.5      # modo kills: segundos después de cada kill
     merge_gap_s: float = 4.0      # modo kills: si entre dos kills hay menos de esto, no se corta
+    clutch_min: int = 2           # también clutches ganados de 1 contra X o más (0 = no)
+    clutch_pre_s: float = 3.0     # clutch en modo kills: segundos antes de quedarte solo
     residual_s: float = 0.0       # con registro de delay de Vortexs Live: corrección fija aprendida
     unsynced_extra_pre_s: float = 6.0   # modo kills: margen extra si la partida NO está sincronizada
     unsynced_extra_post_s: float = 4.0
@@ -405,6 +458,34 @@ def match_base_s(m: Match, vod_start_utc: datetime, settings: CutSettings, calib
     return base + float(c.get("extra_s", 0.0))
 
 
+def _with_clutch(m: Match, r: Round, base: float, settings: CutSettings, vod_duration_s: float,
+                 segs: list, synced: bool = True) -> list[tuple[float, float]]:
+    """Clutch en modo kills: desde que te quedas solo hasta que acaba la ronda, sin cortes
+    (los trozos de kills que caen dentro se funden con él)."""
+    pre = settings.clutch_pre_s + (0 if synced else settings.unsynced_extra_pre_s)
+    post = settings.kill_post_s + (0 if synced else settings.unsynced_extra_post_s)
+    a = base + r.clutch_from_ms / 1000 - pre
+    if r.end_match_ms:
+        end_ms = r.end_match_ms
+    else:
+        end_ms = r.start_match_ms + r.last_event_round_ms
+    b = base + end_ms / 1000 + post
+    out = []
+    for s_, e_ in sorted(list(segs) + [(a, b)]):
+        if out and s_ <= out[-1][1] + 0.05:
+            out[-1] = (out[-1][0], max(out[-1][1], e_))
+        else:
+            out.append((s_, e_))
+    res = []
+    for s_, e_ in out:
+        s_ = max(0.0, s_)
+        if vod_duration_s:
+            e_ = min(vod_duration_s, e_)
+        if e_ - s_ >= 0.5:
+            res.append((s_, e_))
+    return res
+
+
 def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: float,
                 settings: CutSettings, calib: dict | None = None, delay_fn=None) -> list[Clip]:
     calib = calib or {}
@@ -412,13 +493,16 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
     for m in matches:
         uses_calib = is_synced(calib, m.match_id)
         base = match_base_s(m, vod_start_utc, settings, calib, delay_fn)
-        for r in m.highlight_rounds(settings.min_kills):
+        for r in m.highlight_rounds(settings.min_kills, settings.clutch_min):
             if r.start_match_ms is None:
                 continue
             if settings.mode == "kills":
                 c_ = calib.get(m.match_id) or {}
                 precise = uses_calib and not c_.get("approx")
-                segs = _kill_segments(m, r, base, settings, vod_duration_s, synced=precise)
+                segs = _kill_segments(m, r, base, settings, vod_duration_s, synced=precise) \
+                    if r.my_kills >= settings.min_kills else []
+                if is_clutch(r, settings.clutch_min) and r.clutch_from_ms is not None:
+                    segs = _with_clutch(m, r, base, settings, vod_duration_s, segs, precise)
                 if segs and (segs[0][0] < (vod_duration_s or 1e12)) and segs[-1][1] > 0:
                     for i, (a, b) in enumerate(segs):
                         clips.append(Clip(m, r, a, b, i, len(segs)))
@@ -760,11 +844,12 @@ def write_markers(clips: list[Clip], path: str) -> None:
     """Lista de rondas con su minuto en el VOD original y en el vídeo final (para el editor)."""
     t = 0.0
     with open(path, "w", encoding="utf-8") as f:
-        f.write("VIDEO FINAL | VOD ORIGINAL | RONDA\n")
+        f.write("VIDEO FINAL | VOD ORIGINAL | RONDA | NOTA\n")
         for c in clips:
             part = f" [trozo {c.part + 1}/{c.parts}]" if c.parts > 1 else ""
+            sc, why = clip_score(c)
             f.write(f"{fmt_ts(t)} | {fmt_ts(c.vod_start)} - {fmt_ts(c.vod_end)} | "
-                    f"{c.label}{part} ({c.match.agent}, {c.match.score})\n")
+                    f"{c.label}{part} ({c.match.agent}, {c.match.score}) | {sc:g} ({', '.join(why)})\n")
             t += c.vod_end - c.vod_start
 
 
@@ -859,9 +944,65 @@ def kills_folder(kills: int) -> str:
     return f"{kills}K"
 
 
+def reaction_lu(src: str, start: float, dur: float) -> float | None:
+    """
+    Cuánto sube el volumen en el momento más fuerte del clip respecto a lo normal del clip
+    (en LU/dB): tus gritos, risas o el «¡vamos!». Es el audio del directo mezclado, así que
+    también cuentan los disparos: es una pista aproximada, no un detector de voz.
+    """
+    ffmpeg = find_tool("ffmpeg")
+    if not ffmpeg or dur < 3:
+        return None
+    r = subprocess.run([ffmpeg, "-hide_banner", "-nostats", "-loglevel", "error", "-ss", f"{max(0.0, start):.3f}",
+                        "-t", f"{dur:.3f}", "-i", src, "-vn", "-af",
+                        "ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M:file=-", "-f", "null", "-"],
+                       capture_output=True, text=True, **_no_window())
+    vals = sorted(v for v in (float(x) for x in re.findall(r"lavfi\.r128\.M=(-?[\d.]+)", r.stdout or ""))
+                  if v > -70)
+    if len(vals) < 20:
+        return None
+    return vals[int(len(vals) * 0.97)] - vals[len(vals) // 2]
+
+
+def clip_score(c: "Clip", react: float | None = None) -> tuple[float, list[str]]:
+    """Nota de una jugada para saber cuál subir primero, con los motivos."""
+    r, m = c.round, c.match
+    pts, why = 0.0, []
+    k = r.my_kills
+    kp = {3: 3.0, 4: 6.0}.get(k, 10.0 if k >= 5 else 0.0)
+    if kp:
+        pts += kp
+        why.append({3: "3K", 4: "4K"}.get(k, "ACE"))
+    if r.won and r.clutch_vs >= 1:
+        pts += 2.5 * r.clutch_vs
+        why.append(f"clutch 1v{r.clutch_vs}")
+    mine = sorted(x.t_match for x in m.kills if x.round == r.index and x.killer == m.my_puuid)
+    if len(mine) >= 3:
+        span = (mine[-1] - mine[0]) / 1000
+        b = max(0.0, 4.0 - span / 3)
+        if b >= 0.5:
+            pts += b
+            why.append(f"{len(mine)} kills en {span:.0f} s")
+    if react is not None:
+        rb = max(0.0, min(3.0, (react - 8) / 3))
+        if rb >= 0.3:
+            pts += rb
+            why.append(f"reacción (+{react:.0f} dB)")
+    if r.won:
+        pts += 0.5
+    return round(pts, 1), why
+
+
+def clip_folder(r: Round) -> str:
+    """3K / 4K / ACE por kills; si la ronda está por un clutch sin 3 kills, a la carpeta Clutch."""
+    if r.my_kills >= 3 or not (r.won and r.clutch_vs >= 1):
+        return kills_folder(r.my_kills)
+    return "Clutch"
+
+
 def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=None, vertical=False,
                    encoder: str = "x264", progress=None, should_stop=None, words=None,
-                   highlight: bool = True) -> list[str]:
+                   highlight: bool = True, ranking: list | None = None, top_n: int = 3) -> list[str]:
     """Un archivo por ronda, sacado del vídeo ya montado (rápido y con el mismo audio/vídeo)."""
     ffmpeg = find_tool("ffmpeg")
     os.makedirs(folder, exist_ok=True)
@@ -875,9 +1016,10 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
             groups.append((c, d))
     outs, t = [], 0.0
     n = len(groups)
+    rank = []
     for i, (c, d) in enumerate(groups):
         name = _safe(f"{i + 1:02d} - {c.label.replace(' · ', ' ')}")
-        sub = os.path.join(folder, kills_folder(c.round.my_kills))
+        sub = os.path.join(folder, clip_folder(c.round))
         os.makedirs(sub, exist_ok=True)
         h = os.path.join(sub, name + ".mp4")
         if progress:
@@ -887,12 +1029,41 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", h]
         _run_ffmpeg(cmd, d, None, should_stop)
         outs.append(h)
+        best = h
         if vertical:
             v = os.path.join(sub, name + " (vertical).mp4")
             make_vertical(src, v, vertical_cam, encoder, None, should_stop, start=t, dur=d, words=words,
                           highlight=highlight)
             outs.append(v)
+            best = v
+        try:
+            react = reaction_lu(src, t, d)
+        except Exception:
+            react = None
+        sc, why = clip_score(c, react)
+        rank.append((sc, c.label, best, why))
         t += d
+    if rank:
+        rank.sort(key=lambda x: -x[0])
+        try:
+            with open(os.path.join(folder, "ranking.txt"), "w", encoding="utf-8") as f:
+                f.write("NOTA | JUGADA | POR QUÉ | ARCHIVO\n")
+                for sc, lab, p, why in rank:
+                    f.write(f"{sc:g} | {lab} | {', '.join(why)} | {os.path.relpath(p, folder)}\n")
+            topd = os.path.join(folder, "TOP")
+            os.makedirs(topd, exist_ok=True)
+            for j, (sc, lab, p, why) in enumerate(rank[:top_n]):
+                dst = os.path.join(topd, f"{j + 1} - {os.path.basename(p)}")
+                if os.path.exists(dst):
+                    os.remove(dst)
+                try:
+                    os.link(p, dst)          # mismo archivo, sin ocupar más disco
+                except OSError:
+                    shutil.copy2(p, dst)
+        except OSError:
+            pass
+        if ranking is not None:
+            ranking.extend(rank)
     if progress:
         progress(1.0, "Clips sueltos listos")
     return outs

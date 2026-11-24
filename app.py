@@ -43,6 +43,22 @@ ENCODERS = {"Automático (tu gráfica si se puede)": "auto",
             "AMD (AMF)": "amf"}
 
 
+# colores de la tabla de partidas según cómo de fiable es su sincronización
+SYNC_COLORS = {"s_ok": "#7ee081", "s_approx": YELLOW, "s_hora": "#ff9f43", "s_fail": "#ff6b6b"}
+
+
+def sync_tag(c: dict) -> str:
+    if c.get("auto") and c.get("approx"):
+        return "s_approx"
+    if c.get("auto") and float(c.get("conf") or 0) < 0.5:
+        return "s_approx"
+    if c.get("auto") or c.get("first_kill_vod_s") is not None:
+        return "s_ok"
+    if c.get("failed"):
+        return "s_fail"
+    return "s_hora"
+
+
 def load_cfg():
     try:
         with open(CFG_FILE, encoding="utf-8") as f:
@@ -231,6 +247,8 @@ class App(tk.Tk):
         self.v_start = tk.StringVar()
         self.v_delay = tk.StringVar(value=str(cfg.get("delay", 0)))
         self.v_min = tk.IntVar(value=cfg.get("min_kills", 3))
+        self.v_clutch = tk.BooleanVar(value=cfg.get("clutch_on", True))
+        self.v_clutchn = tk.IntVar(value=cfg.get("clutch_min", 2))
         self.v_skipbuy = tk.BooleanVar(value=cfg.get("skip_buy", True))
         self.v_pre = tk.StringVar(value=str(cfg.get("pre", 3)))
         self.v_post = tk.StringVar(value=str(cfg.get("post", 4)))
@@ -286,6 +304,11 @@ class App(tk.Tk):
         # ---- pestaña Cortes
         ttk.Label(t_cut, text="Kills mínimas por ronda").grid(row=0, column=0, sticky="w")
         ttk.Spinbox(t_cut, from_=2, to=6, textvariable=self.v_min, width=4).grid(row=0, column=1, sticky="w", padx=6)
+        clf = ttk.Frame(t_cut, style="Panel.TFrame")
+        clf.grid(row=0, column=2, columnspan=3, sticky="w", padx=(14, 0))
+        ttk.Checkbutton(clf, text="y clutches ganados de 1 contra", variable=self.v_clutch).pack(side="left")
+        ttk.Spinbox(clf, from_=1, to=5, textvariable=self.v_clutchn, width=3).pack(side="left", padx=4)
+        ttk.Label(clf, text="o más").pack(side="left")
         ttk.Label(t_cut, text="Qué cortar").grid(row=1, column=0, sticky="w", pady=(8, 2))
         ttk.Radiobutton(t_cut, text="Solo las kills (de la primera a la última, con cortes entre ellas)",
                         value="kills", variable=self.v_mode).grid(row=1, column=1, columnspan=4, sticky="w", pady=(8, 2))
@@ -391,6 +414,8 @@ class App(tk.Tk):
         self.tv_m.bind("<Button-1>", self.on_match_click)
         self.tv_m.tag_configure("in", foreground=YELLOW)
         self.tv_m.tag_configure("out", foreground=MUTED)
+        for tag_, col_ in SYNC_COLORS.items():
+            self.tv_m.tag_configure(tag_, foreground=col_)
         mb = ttk.Frame(p3, style="Panel.TFrame")
         mb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
         ttk.Button(mb, text="Marcar las que están en el VOD", command=self.auto_check).pack(side="left")
@@ -399,6 +424,12 @@ class App(tk.Tk):
         ttk.Button(mb, text="Informes", command=self.open_reports).pack(side="right")
         ttk.Button(mb, text="Revisar sincro", command=self.review_sync).pack(side="right", padx=6)
         ttk.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
+        lg = ttk.Frame(p3, style="Panel.TFrame")
+        lg.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        for tag_, txt_ in (("s_ok", "segura"), ("s_approx", "aproximada (revísala)"),
+                           ("s_hora", "sin sincronizar"), ("s_fail", "no se encontró")):
+            tk.Label(lg, text="●", bg=PANEL, fg=SYNC_COLORS[tag_], font=("Segoe UI", 11)).pack(side="left")
+            tk.Label(lg, text=txt_ + "   ", bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
 
         # --- 4. rondas
         p4o = self._panel(mid, "4 · Rondas y vista previa")
@@ -528,7 +559,11 @@ class App(tk.Tk):
                 return float(str(v.get()).replace(",", "."))
             except Exception:
                 return d
-        return core.CutSettings(min_kills=int(self.v_min.get() or 3),
+        try:
+            cmin = int(self.v_clutchn.get() or 2) if self.v_clutch.get() else 0
+        except (tk.TclError, ValueError):
+            cmin = 2 if self.v_clutch.get() else 0
+        return core.CutSettings(min_kills=int(self.v_min.get() or 3), clutch_min=cmin,
                                 skip_buy_phase=self.v_skipbuy.get(),
                                 pre_roll_s=f(self.v_pre, 3), post_roll_s=f(self.v_post, 4),
                                 global_adjust_s=f(self.v_delay, 0),
@@ -658,6 +693,7 @@ class App(tk.Tk):
         self.cfg.update({"riot_id": self.v_riot.get(), "region": self.v_region.get(),
                          "api_key": self.v_key.get(), "delay": self.v_delay.get(),
                          "min_kills": int(self.v_min.get() or 3), "skip_buy": self.v_skipbuy.get(),
+                         "clutch_on": self.v_clutch.get(), "clutch_min": self.settings().clutch_min or 2,
                          "pre": self.v_pre.get(), "post": self.v_post.get(),
                          "encoder": ENCODERS[self.v_enc.get()],
                          "calib": self.calib, "out_dir": self.v_outdir.get(),
@@ -775,7 +811,7 @@ class App(tk.Tk):
             vs = None
         for m in sorted(self.matches.values(), key=lambda x: x.started_at, reverse=True):
             local = m.started_at.astimezone()
-            n = len(m.highlight_rounds(st.min_kills))
+            n = len(m.highlight_rounds(st.min_kills, st.clutch_min))
             if vs and self.vod_info:
                 inv = core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib, self.delay_fn_for_vod())
                 invt = "Sí" if inv else "No"
@@ -784,8 +820,15 @@ class App(tk.Tk):
             c = self.calib.get(m.match_id) or {}
             sync_txt = ("Auto ≈ (aprox.)" if c.get("auto") and c.get("approx") else
                         f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)" if c.get("auto") else
-                        "Manual ✔" if c.get("first_kill_vod_s") is not None else "Por hora")
-            self.tv_m.insert("", "end", iid=m.match_id, tags=(("in",) if inv else ("out",) if inv is False else ()),
+                        "Manual ✔" if c.get("first_kill_vod_s") is not None else
+                        "✖ No se encontró" if c.get("failed") else "Por hora")
+            if inv is False:
+                tags = ("out",)
+            elif inv is None:
+                tags = ()
+            else:
+                tags = (sync_tag(c),)
+            self.tv_m.insert("", "end", iid=m.match_id, tags=tags,
                              values=("☑" if m.match_id in self.checked else "☐",
                                      local.strftime("%d/%m %H:%M"), m.map_name, m.agent, m.score,
                                      n, invt, sync_txt))
@@ -1336,6 +1379,8 @@ class App(tk.Tk):
                     shifts.append(r.shift_s)
                 else:
                     bad += 1
+                    if not core.is_synced(self.calib, mid):
+                        self.calib[mid] = {"failed": True}
                     m_ = self.matches.get(mid)
                     if m_:
                         failed.append(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}")
@@ -1629,8 +1674,10 @@ class App(tk.Tk):
                 stt, col = f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)", "#7ee081"
             elif c.get("first_kill_vod_s") is not None:
                 stt, col = "Manual ✔", "#7ee081"
+            elif c.get("failed"):
+                stt, col = "✖ No se encontró (por hora)", SYNC_COLORS["s_fail"]
             else:
-                stt, col = "Sin sincronizar (por hora)", "#ff7a7a"
+                stt, col = "Sin sincronizar (por hora)", SYNC_COLORS["s_hora"]
             row = ttk.Frame(inner, style="Panel.TFrame")
             row.pack(fill="x", pady=6)
             info = ttk.Frame(row, style="Panel.TFrame", width=230)
@@ -1856,6 +1903,7 @@ class App(tk.Tk):
         sub_hl = self.v_subhl.get()
         sub_edit = subs and self.v_subedit.get() and not self.unattended()
         warnings = []
+        ranking = []
 
         def sub(title):
             self.after(0, lambda: self.lbl_step.configure(text=title))
@@ -1899,7 +1947,7 @@ class App(tk.Tk):
                     folder = base + " - clips sueltos"
                     core.export_singles(out, clips, folder, vertical_cam=cam, vertical=vertical,
                                         encoder=enc, progress=cb, should_stop=stop, words=words,
-                                        highlight=sub_hl)
+                                        highlight=sub_hl, ranking=ranking)
                     made.append(folder)
                 return made
             finally:
@@ -1920,7 +1968,11 @@ class App(tk.Tk):
             if vertical:
                 extra += "\n• Versión vertical 9:16"
             if singles:
-                extra += "\n• Carpeta con un clip por ronda"
+                extra += "\n• Clips por ronda en carpetas 3K / 4K / ACE / Clutch"
+            if ranking:
+                extra += "\n\nLas mejores para subir (copiadas en la carpeta TOP):"
+                for j, (sc, lab, _p, why) in enumerate(ranking[:3]):
+                    extra += f"\n  {j + 1}. {lab} — {', '.join(why) or 'nota ' + format(sc, 'g')}"
             if self.flow_active:
                 self.after(2000, lambda: self.flow_done(f"Listo: {os.path.basename(path)}"))
             if warnings:
@@ -2090,6 +2142,24 @@ def selftest(out_path):
         mk.rounds = [rk]
         mk.kills = [core.Kill(0, t_ * 1000, t_ * 1000, "me", "b") for t_ in (10, 15, 27)]
         log(len(core._kill_segments(mk, rk, 100.0, st2, 0)) == 2, "juntar kills seguidas")
+        # clutch 1 contra 3 ganado
+        mc = core.Match("c", "Prueba", datetime.now(timezone.utc), 0, "Jett", "me", "13-0")
+        mc.allies, mc.enemies = {"me", "a1", "a2", "a3", "a4"}, {"e1", "e2", "e3", "e4", "e5"}
+        rc = core.Round(0, start_match_ms=0, won=True)
+        mc.rounds = [rc]
+        mc.kills = [core.Kill(0, i * 1000, i * 1000, kk, vv) for i, (kk, vv) in enumerate(
+            [("e1", "a1"), ("a2", "e1"), ("a2", "e5"), ("e2", "a2"), ("e3", "a3"), ("e2", "a4"), ("me", "e2"),
+             ("me", "e3"), ("me", "e4")])]
+        core.compute_clutches(mc)
+        log(rc.clutch_vs == 3 and core.is_clutch(rc, 2) and core.clip_folder(rc) == "Clutch", "clutch 1v3 detectado")
+        # nota, ranking y carpeta TOP
+        m.rounds[0].my_kills, m.rounds[1].my_kills = 4, 3
+        sfold = os.path.join(tmp, "sueltos")
+        rk_ = []
+        core.export_singles(vid, [core.Clip(m, m.rounds[0], 0, 3), core.Clip(m, m.rounds[1], 3, 6)], sfold,
+                            encoder="auto", ranking=rk_)
+        log(len(rk_) == 2 and rk_[0][1].startswith("4K") and os.path.isfile(os.path.join(sfold, "ranking.txt"))
+            and len(os.listdir(os.path.join(sfold, "TOP"))) == 2, "nota de jugadas, ranking y carpeta TOP")
         app = App()
         log(True, "ventana creada")
         # editor de subtítulos
@@ -2111,6 +2181,13 @@ def selftest(out_path):
         win = app._show_review([(mm, [(core.Kill(0, 1000, 1000, "me", "b"), 1.5, a_png, b_png)])], rtmp)
         log(len(win._imgs) == 2, "ventana de revisión de la sincro")
         win._close()
+        log(sync_tag({"auto": True, "conf": 0.75}) == "s_ok" and sync_tag({"failed": True}) == "s_fail"
+            and sync_tag({"auto": True, "approx": True}) == "s_approx" and sync_tag({}) == "s_hora",
+            "colores de la tabla de partidas")
+        app.matches = {"c": mc}
+        app.calib = {"c": {"failed": True}}
+        app.refresh_matches()
+        log(app.tv_m.exists("c"), "tabla de partidas con colores")
         app.v_vod.set(vid)
         app.nb4.select(app.tab_prev)
         app.player.open(1.0, 4.0)
