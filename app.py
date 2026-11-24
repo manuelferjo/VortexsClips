@@ -656,7 +656,8 @@ class App(tk.Tk):
             else:
                 inv, invt = None, "—"
             c = self.calib.get(m.match_id) or {}
-            sync_txt = (f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)" if c.get("auto") else
+            sync_txt = ("Auto ≈ (aprox.)" if c.get("auto") and c.get("approx") else
+                        f"Auto ✔ ({int(c.get('conf', 0) * 100)}%)" if c.get("auto") else
                         "Manual ✔" if c.get("first_kill_vod_s") is not None else "Por hora")
             self.tv_m.insert("", "end", iid=m.match_id, tags=(("in",) if inv else ("out",) if inv is False else ()),
                              values=("☑" if m.match_id in self.checked else "☐",
@@ -1116,6 +1117,9 @@ class App(tk.Tk):
                     if not c:
                         exp += core.delay_offset(m, st, dfn)
                     res[m.match_id] = sync.sync_match(vod, m, exp, dur, None, lambda: self.stop_flag)
+                if len(res) > 1 and any(not r.ok for r in res.values()):
+                    cb(1, "Afinando con el desfase común de todas las partidas…")
+                    res = sync.consensus(res, os.path.basename(vod))
                 return res
             finally:
                 self.after(0, lambda: self.set_running(False))
@@ -1124,6 +1128,7 @@ class App(tk.Tk):
             good = bad = 0
             shifts = []
             failed = []
+            approx = []
             learned = []
             for mid, r in res.items():
                 if r.ok and dfn is not None and mid in self.matches:
@@ -1133,7 +1138,11 @@ class App(tk.Tk):
                         learned.append(r.offset_s - core.match_offset_s(m_, vs, {}) - d_)
                 if r.ok:
                     self.calib[mid] = {"offset_s": r.offset_s, "auto": True,
-                                       "conf": round(r.confidence, 2)}
+                                       "conf": round(r.confidence, 2), "approx": r.approx}
+                    if r.approx:
+                        m_ = self.matches.get(mid)
+                        if m_:
+                            approx.append(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}")
                     good += 1
                     shifts.append(r.shift_s)
                 else:
@@ -1148,7 +1157,11 @@ class App(tk.Tk):
             self.auto_check()
             self.set_progress(1, f"Sincronizadas solas: {good}" + (f" · sin patrón claro: {bad} "
                               "(se quedan con la hora + delay; puedes sincronizarlas a mano)" if bad else ""))
-            if failed:
+            if approx and not failed:
+                self.sync_warning = (f"{len(approx)} partida(s) se han ajustado con el desfase común del directo "
+                                     f"({', '.join(approx[:6])}{'…' if len(approx) > 6 else ''}), sin pico propio "
+                                     "claro. Revisa alguna ronda suya con «Ver ronda».")
+            elif failed:
                 self.sync_warning = (f"{len(failed)} partida(s) no se han podido sincronizar solas "
                                      f"({', '.join(failed[:6])}{'…' if len(failed) > 6 else ''}). "
                                      "Sus cortes pueden caer desplazados: revísalas con «Ver ronda» o "
@@ -1161,8 +1174,8 @@ class App(tk.Tk):
                 self.set_step(None, "Sincronización terminada")
                 if self.clips:
                     self.compute()
-                if failed:
-                    self.show_warnings([self.sync_warning], ask_report=True)
+                if failed or approx:
+                    self.show_warnings([self.sync_warning], ask_report=bool(failed))
         self.run_bg(work, done, "No se pudo sincronizar")
 
     # ------------------------------------------------------------ avisos

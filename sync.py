@@ -28,9 +28,10 @@ SEARCH_S = 120.0           # se busca ±2 min alrededor de lo esperado
 USE_MATCH_S = 420.0        # kills de los primeros ~7 min de partida (desde la primera)
 TOP_CELLS = 10
 # zonas de la imagen (fracciones): killfeed arriba a la derecha y aviso de kill abajo al centro
+# killfeed: caja exacta del HUD de VALORANT (medida sobre la emisión de Vortexs), con más detalle
 REGIONS = {
-    "killfeed": ("todas", "crop=iw*0.42:ih*0.40:iw*0.58:ih*0.02"),
-    "aviso": ("tuyas", "crop=iw*0.30:ih*0.30:iw*0.35:ih*0.55"),
+    "killfeed": ("todas", "crop=iw*0.31:ih*0.22:iw*0.685:ih*0.035", 32, 24),
+    "aviso": ("tuyas", "crop=iw*0.30:ih*0.30:iw*0.35:ih*0.55", 24, 12),
 }
 
 
@@ -42,6 +43,8 @@ class SyncResult:
     ok: bool
     reason: str = ""
     report: str = ""       # informe guardado si no salió claro
+    data: dict | None = None   # (para el consenso entre partidas) fotogramas del killfeed, t0, kills
+    approx: bool = False   # sincronizada con el desfase común (sin pico propio claro)
 
 
 def report_dir() -> str:
@@ -50,14 +53,15 @@ def report_dir() -> str:
     return d
 
 
-def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None, crop: str = "") -> bytes:
+def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None, crop: str = "",
+            gw: int = GW, gh: int = GH) -> bytes:
     ffmpeg = core.find_tool("ffmpeg")
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
     if hwaccel:
         cmd += ["-hwaccel", "auto"]
     cmd += ["-ss", f"{max(0.0, start):.3f}", "-t", f"{dur:.3f}", "-i", vod, "-an",
-            "-vf", f"fps={FPS},{crop + ',' if crop else ''}scale={GW * 4}:{GH * 4}:flags=area,"
-                   f"scale={GW}:{GH}:flags=area,format=gray",
+            "-vf", f"fps={FPS},{crop + ',' if crop else ''}scale={gw * 4}:{gh * 4}:flags=area,"
+                   f"scale={gw}:{gh}:flags=area,format=gray",
             "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **core._no_window())
     chunks = []
@@ -66,7 +70,7 @@ def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None,
             if should_stop and should_stop():
                 p.kill()
                 raise RuntimeError("Cancelado.")
-            b = p.stdout.read(GW * GH * 64)
+            b = p.stdout.read(gw * gh * 64)
             if not b:
                 break
             chunks.append(b)
@@ -74,6 +78,38 @@ def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None,
         if p.poll() is None:
             p.wait()
     return b"".join(chunks)
+
+
+def _prep(frames):
+    """Cambios normalizados por celda con tolerancia ±1 fotograma (+ fila final 'fuera')."""
+    import numpy as np
+    F = frames.astype(np.float32)
+    D = np.zeros_like(F)
+    D[1:] = np.abs(F[1:] - F[:-1])
+    med = np.median(D, axis=0)
+    mad = np.median(np.abs(D - med), axis=0) + 0.5
+    Z = np.clip((D - med) / (mad * 3), 0, 8)
+    S = Z.copy()
+    S[1:] = np.maximum(S[1:], Z[:-1])
+    S[:-1] = np.maximum(S[:-1], Z[1:])
+    return np.vstack([S, np.zeros((1, S.shape[1]), np.float32)])
+
+
+def _scores(S, t0, expected, events, offs):
+    """Media por celda del cambio en los momentos de las kills, para cada desplazamiento."""
+    import numpy as np
+    n = len(S) - 1
+    sc = np.zeros((len(offs), S.shape[1]), np.float32)
+    val = np.zeros(len(offs), np.float32)
+    for e in events:
+        idx = np.rint((expected + e + offs - t0) * FPS).astype(np.int64)
+        ins = (idx >= 0) & (idx < n)
+        val += ins
+        idx[~ins] = n
+        sc += S[idx]
+    sc /= np.maximum(val, 1)[:, None]
+    sc[val < max(5, 0.6 * len(events))] = 0
+    return sc
 
 
 def _analyze_once(frames, t0: float, expected: float, events: list, search_s: float = SEARCH_S):
@@ -107,7 +143,7 @@ def _analyze_once(frames, t0: float, expected: float, events: list, search_s: fl
     # celdas que siguen el patrón: su mejor nota destaca mucho sobre su media
     coarse = scores[::FPS]
     prom_cell = coarse.max(axis=0) / (coarse.mean(axis=0) + 1e-6)
-    top = np.argsort(prom_cell)[-TOP_CELLS:]
+    top = np.argsort(prom_cell)[-max(TOP_CELLS, S.shape[1] // 20):]
     combo = scores[:, top].sum(axis=1)
     best = int(np.argmax(combo))
     peak = float(combo[best])
@@ -155,22 +191,22 @@ def analyze(frames, t0: float, expected: float, events: list, search_s: float = 
     return full
 
 
-def _read_region(vod, t0, dur, crop, should_stop):
+def _read_region(vod, t0, dur, crop, should_stop, gw=GW, gh=GH):
     import numpy as np
     raw = b""
     for hw in (True, False):
         try:
-            raw = _frames(vod, t0, dur, hw, should_stop, crop)
+            raw = _frames(vod, t0, dur, hw, should_stop, crop, gw, gh)
         except RuntimeError as e:
             if "Cancelado" in str(e):
                 raise
             raw = b""
-        if len(raw) >= GW * GH * 40:
+        if len(raw) >= gw * gh * 40:
             break
-    n = len(raw) // (GW * GH)
+    n = len(raw) // (gw * gh)
     if n < 40:
         return None
-    return np.frombuffer(raw[: n * GW * GH], dtype=np.uint8).reshape(n, GW * GH)
+    return np.frombuffer(raw[: n * gw * gh], dtype=np.uint8).reshape(n, gw * gh)
 
 
 def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_duration: float,
@@ -193,13 +229,13 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
     if t1 - t0 < 30:
         return SyncResult(expected_offset_s, 0, 0, False, "la partida no está en el VOD")
     results, saved = [], {}
-    for region, (kind, crop) in REGIONS.items():
+    for region, (kind, crop, gw, gh) in REGIONS.items():
         ev = allk if kind == "todas" else mine
         if len(ev) < 5:
             continue
         if progress:
             progress(None, f"Analizando el {region} de {match.map_name}…")
-        frames = _read_region(vod, t0, t1 - t0, crop, should_stop)
+        frames = _read_region(vod, t0, t1 - t0, crop, should_stop, gw, gh)
         if frames is None:
             continue
         saved[region] = frames
@@ -216,8 +252,90 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
     if not best["ok"]:
         rep = save_report(saved, t0, expected_offset_s, allk, mine, match, results)
     _log(match, expected_offset_s, results)
+    data = None
+    if "killfeed" in saved:
+        data = {"frames": saved["killfeed"], "t0": t0, "expected": expected_offset_s, "events": allk}
     return SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], best["ok"],
-                      "" if best["ok"] else "no he encontrado un patrón claro de kills", rep)
+                      "" if best["ok"] else "no he encontrado un patrón claro de kills", rep, data)
+
+
+# ---------------------------------------------------------------- consenso entre partidas
+LOCAL_S = 20.0
+
+
+def consensus(results: dict, log_name: str = "") -> dict:
+    """
+    results: {match_id: SyncResult} de un mismo VOD. Las partidas que no se sincronizaron solas
+    se afinan alrededor del desfase común (las del mismo directo se parecen mucho: mismo delay y
+    casi la misma espera de selección de agente / carga).
+    """
+    import numpy as np
+    good = [r for r in results.values() if r.ok]
+    bad = {mid: r for mid, r in results.items() if not r.ok and r.data}
+    if not bad:
+        return results
+    g = None
+    how = ""
+    if good:
+        g = float(np.median([r.shift_s for r in good]))
+        how = f"mediana de {len(good)} partida(s) sincronizadas"
+    elif len(bad) >= 2:
+        # sumar la señal de todas las partidas (misma rejilla del killfeed)
+        offs = np.arange(-SEARCH_S, SEARCH_S + 1e-6, 1 / FPS)
+        preps = {mid: _prep(r.data["frames"]) for mid, r in bad.items()}
+
+        def total(part):
+            tot = None
+            for mid, r in bad.items():
+                ev = r.data["events"] if part is None else r.data["events"][part::2]
+                sc = _scores(preps[mid], r.data["t0"], r.data["expected"], ev, offs)
+                sc = (sc - sc.mean(0)) / (sc.std(0) + 1e-6)
+                tot = sc if tot is None else tot + sc
+            return tot
+        tot = total(None)
+        prom = tot.max(0)
+        top = np.argsort(prom)[-max(TOP_CELLS, tot.shape[1] // 20):]
+        c = tot[:, top].sum(1)
+        b = int(np.argmax(c))
+        far = np.abs(offs - offs[b]) > 12
+        z = (c[b] - c[far].mean()) / (c[far].std() + 1e-6)
+        ha = total(0)[:, top].sum(1)
+        hb = total(1)[:, top].sum(1)
+        if abs(offs[int(np.argmax(ha))] - offs[b]) <= 1 and abs(offs[int(np.argmax(hb))] - offs[b]) <= 1 and z >= 6:
+            g = float(offs[b])
+            how = f"señal sumada de {len(bad)} partidas (z {z:.1f})"
+    if g is None:
+        _log_line(f"{log_name} consenso: no hay desfase común claro")
+        return results
+    out = dict(results)
+    for mid, r in bad.items():
+        d = r.data
+        S = _prep(d["frames"])
+        loc = np.arange(g - LOCAL_S, g + LOCAL_S + 1e-6, 1 / FPS)
+        sc = _scores(S, d["t0"], d["expected"], d["events"], loc)
+        prom = sc.max(0) / (sc.mean(0) + 1e-6)
+        top = np.argsort(prom)[-max(TOP_CELLS, sc.shape[1] // 20):]
+        c = sc[:, top].sum(1)
+        b = int(np.argmax(c))
+        sa = _scores(S, d["t0"], d["expected"], d["events"][0::2], loc)[:, top].sum(1)
+        sb = _scores(S, d["t0"], d["expected"], d["events"][1::2], loc)[:, top].sum(1)
+        agree = abs(loc[int(np.argmax(sa))] - loc[b]) <= 1.5 and abs(loc[int(np.argmax(sb))] - loc[b]) <= 1.5
+        if agree:
+            shift, conf, approx = float(loc[b]), 0.55, False
+        else:
+            shift, conf, approx = g, 0.35, True
+        out[mid] = SyncResult(d["expected"] + shift, shift, conf, True, "", r.report, None, approx)
+        _log_line(f"{log_name} consenso ({how}): partida {mid[:8]} -> {shift:+.2f}s "
+                  f"{'afinada' if agree else 'aprox (desfase común)'}")
+    return out
+
+
+def _log_line(txt):
+    try:
+        with open(os.path.join(report_dir(), "sincronizacion.txt"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " | " + txt + "\n")
+    except OSError:
+        pass
 
 
 def save_report(saved, t0, expected, allk, mine, match, results) -> str:
@@ -227,7 +345,7 @@ def save_report(saved, t0, expected, allk, mine, match, results) -> str:
     path = os.path.join(report_dir(), name)
     meta = {"t0": t0, "expected": expected, "fps": FPS, "grid": [GW, GH], "map": match.map_name,
             "match_id": match.match_id, "results": results,
-            "regions": {k: v[1] for k, v in REGIONS.items()}}
+            "regions": {k: list(v[1:]) for k, v in REGIONS.items()}}
     arrays = {f"frames_{k}": v for k, v in saved.items()}
     np.savez_compressed(path, allk=np.array(allk), mine=np.array(mine),
                         meta=np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8), **arrays)
