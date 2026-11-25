@@ -16,6 +16,12 @@ lst = json.loads(subprocess.run(["yt-dlp", "--flat-playlist", "-J",
                                 capture_output=True, text=True).stdout or "{}")
 vods = [e for e in (lst.get("entries") or []) if e.get("id") and e["id"].lstrip("v") not in ref]
 vods = vods[int(sys.argv[3]) if len(sys.argv) > 3 else 0:][:int(sys.argv[2])]
+if len(sys.argv) > 4:
+    vods = []
+    for vid in sys.argv[4].split(","):
+        j = json.loads(subprocess.run(["yt-dlp", "-J", "--skip-download", f"https://www.twitch.tv/videos/{vid}"],
+                                      capture_output=True, text=True).stdout or "{}")
+        vods.append({"id": vid, "duration": j.get("duration")})
 print("canal", chan, "vods", [v.get("id") for v in vods], flush=True)
 report = []
 
