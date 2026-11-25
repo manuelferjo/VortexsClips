@@ -71,14 +71,24 @@ def own_marker(band, src_h: int = 1080):
     core_ = band[3:-3] if band.shape[0] > 10 else band
     teal, red, yel = _masks(core_)
     t_cols = teal.mean(axis=0) > 0.5
-    main = [s_ for s_ in _segs(t_cols) if s_[1] - s_[0] >= 1.2 * lh]
-    if not main:
+    # la franja del nombre suele ser la primera zona verde azulada ancha, pero algunos retratos
+    # (Sova, Neon, Fade…) tienen azules que también lo parecen y la adelantan: se prueba cada una
+    cands = [s_[0] for s_ in _segs(t_cols) if s_[1] - s_[0] >= 0.6 * lh]
+    if not cands:
         return None
-    xt = main[0][0]
-    # tu marcador es un bloque de amarillo PURO (≈240,244,9) casi de arriba abajo; en las líneas de
-    # compañeros ahí hay su retrato o fondo, nunca ese amarillo (medido: 13–16 columnas frente a 0)
     c = core_.astype(np.int16)
     pure = (c[..., 0] > 200) & (c[..., 1] > 200) & (c[..., 2] < 80)
+    for xt in cands:
+        r = _marker_at(core_, pure, yel, xt, lh)
+        if r is not None:
+            return r
+    return None
+
+
+def _marker_at(core_, pure, yel, xt, lh):
+    import numpy as np
+    # tu marcador es un bloque de amarillo PURO (≈240,244,9) casi de arriba abajo; en las líneas de
+    # compañeros ahí hay su retrato o fondo, nunca ese amarillo (medido: 13–16 columnas frente a 0)
     w0, w1 = max(0, int(xt - 5.4 * lh)), max(0, int(xt - 3.4 * lh))
     if w1 <= w0:
         return None
@@ -258,9 +268,20 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 continue
             seen.add(key)
             by_group.setdefault(c.group, []).append((tv, t0 + (tv - c.vod_start)))
+    # rondas del vídeo en las que no se encontró ninguna kill tuya (para el registro)
+    sin = []
+    for c, _t0 in spans:
+        if c.group in by_group or c.group in sin:
+            continue
+        sin.append(c.group)
+    pre_log = []
+    for g in sin:
+        c = next(c for c, _ in spans if c.group == g)
+        why = "la partida no está sincronizada" if c.base is None else "no hay kills tuyas dentro del corte"
+        pre_log.append(f"{core.fmt_ts(c.vod_start)}  ronda {c.round.index + 1}: sin línea ({why})")
     # justo debajo de la cámara y de los subtítulos (que van en su borde de abajo), pegadas a la derecha
     y_top = core.cam_bottom_y(cam, W, H) + 95 if cam else 700
-    out, log = [], []
+    out, log = [], list(pre_log)
     groups = list(by_group.items())
     for gi, (g, ks) in enumerate(groups):
         if should_stop and should_stop():
