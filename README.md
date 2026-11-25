@@ -149,6 +149,8 @@ Mientras trabaja, el PC no se suspende (la pantalla sí puede apagarse o bloquea
 
 ---
 
+**Top de la semana:** en la pestaña **Automático**, «Top de la semana cada lunes» junta las 10 mejores jugadas (por nota) de los directos de la semana pasada en un vídeo con cuenta atrás (#10 … #1), en horizontal y en vertical, con `publicar.txt` (título, capítulos y hashtags). «Hacer el top ahora…» lo hace al momento.
+
 ## 5. Qué sale al final (en la carpeta del VOD)
 
 | Archivo / carpeta | Qué es |

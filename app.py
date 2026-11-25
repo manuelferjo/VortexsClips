@@ -22,6 +22,7 @@ import time
 import sync
 import tempfile
 import updater
+import semana
 import ui
 
 ui.load_fonts()      # las fuentes de Vortexs Live, antes de crear ninguna ventana
@@ -131,6 +132,7 @@ class App(tk.Tk):
         self.after(1200, self.restore_last_vod)
         self.after(20000, self.purge_old_vods)
         self.after(30000, subtitles.prefetch_gpu_async)   # en PCs con NVIDIA: transcriptor rápido
+        self.after(90000, self.top_week_auto)
         self.after(1500, lambda: self.mirror_delay_log(True))
         if self.v_watch.get():
             self.after(30_000, self.watch_tick)
@@ -287,6 +289,7 @@ class App(tk.Tk):
         self.v_subedit = tk.BooleanVar(value=cfg.get("sub_edit", True))
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
         self.v_suboff = tk.StringVar(value=f"{float(cfg.get('sub_offset', 0.0)):.1f}")
+        self.v_topweek = tk.BooleanVar(value=cfg.get("top_week", True))
         self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
         self.v_autodel = tk.BooleanVar(value=cfg.get("auto_delete_vod", True))
         self.cam = cfg.get("cam")
@@ -418,8 +421,14 @@ class App(tk.Tk):
                                "genera todos los vídeos.\nEl programa tiene que estar abierto (aunque sea minimizado).",
                   style="Muted.TLabel").grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
         ttk.Separator(t_auto).grid(row=5, column=0, columnspan=4, sticky="we", pady=8)
+        tw_ = ttk.Frame(t_auto, style="Panel.TFrame")
+        tw_.grid(row=6, column=0, columnspan=4, sticky="w")
+        ui.Toggle(tw_, text="Top de la semana cada lunes (las 10 mejores jugadas, horizontal y vertical)",
+                  variable=self.v_topweek).pack(side="left")
+        ui.Button(tw_, text="Hacer el top ahora…", command=self.top_week_now).pack(side="left", padx=10)
+        ttk.Separator(t_auto).grid(row=7, column=0, columnspan=4, sticky="we", pady=8)
         sf = ttk.Frame(t_auto, style="Panel.TFrame")
-        sf.grid(row=6, column=0, columnspan=4, sticky="w")
+        sf.grid(row=8, column=0, columnspan=4, sticky="w")
         ttk.Label(sf, text="Usar en otro PC:").pack(side="left")
         ui.Button(sf, text="Exportar ajustes", command=self.export_settings).pack(side="left", padx=6)
         ui.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
@@ -744,7 +753,8 @@ class App(tk.Tk):
                          "kill_gap": self.v_kgap.get(),
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
-                         "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset()})
+                         "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset(),
+                         "top_week": self.v_topweek.get()})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -1470,6 +1480,77 @@ class App(tk.Tk):
         fill()
         dlg._api = {"add": add, "remove": remove, "a": va, "b": vb, "tv": tv}
         return dlg
+
+    # ------------------------------------------------------------ top de la semana
+    def top_week_auto(self):
+        """Cada lunes (o el primer día que se abra después): top de la semana pasada, si hay jugadas."""
+        self.after(3 * 3600 * 1000, self.top_week_auto)
+        if not self.v_topweek.get() or self.busy or self.flow_active:
+            return
+        mon, sun = semana.last_week()
+        key = semana.week_key(mon)
+        if key in (self.cfg.get("top_weeks_done") or []):
+            return
+        if len(semana.pick(mon, sun)) < 3:
+            return
+        self._make_top(mon, sun, auto=True)
+
+    def top_week_now(self):
+        if self.busy or self.flow_active:
+            messagebox.showinfo(APP_NAME, "Espera a que termine lo que está haciendo.")
+            return
+        from datetime import datetime as _dt, timedelta as _td
+        today = _dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        mon_l, sun_l = semana.last_week()
+        mon_t = today - _td(days=today.weekday())
+        n_this, n_last = len(semana.pick(mon_t, today)), len(semana.pick(mon_l, sun_l))
+        if n_this < 3 and n_last < 3:
+            messagebox.showinfo(APP_NAME, "Todavía no hay suficientes jugadas guardadas (hacen falta 3).\n\n"
+                                          "Se apuntan solas cada vez que se generan los clips sueltos de un directo.")
+            return
+        if n_this >= 3 and (n_last < 3 or messagebox.askyesno(
+                APP_NAME, f"¿Top de ESTA semana (hasta hoy, {n_this} jugadas)?\n\n"
+                          f"«No» = el de la semana pasada ({n_last} jugadas).")):
+            self._make_top(mon_t, today, auto=False)
+        else:
+            self._make_top(mon_l, sun_l, auto=False)
+
+    def _make_top(self, mon, sun, auto=False):
+        out_dir = self.v_outdir.get()
+        enc = ENCODERS[self.v_enc.get()]
+        chan = (self.v_channel.get() or "").strip().lstrip("@")
+        self.stop_flag = False
+        self.set_running(True)
+        self.set_step(4, f"Top de la semana ({mon:%d/%m} – {sun:%d/%m})…")
+        cb = self.progress_cb()
+
+        def work():
+            try:
+                return semana.make_week(out_dir, mon, sun, self.v_vertical.get(), enc, cb,
+                                        lambda: self.stop_flag, chan)
+            except Exception as e:
+                if not auto or "Cancelado" in str(e):
+                    raise
+                return str(e)                 # automático: sin ventanas de error, solo un aviso abajo
+            finally:
+                self.after(0, lambda: self.set_running(False))
+
+        def done(made):
+            if isinstance(made, str):
+                self.cfg.setdefault("top_weeks_done", []).append(semana.week_key(mon))
+                self.persist()
+                self.set_step(None, "Top de la semana: no se pudo")
+                self.status("⚠ Top de la semana: " + made[:150])
+                return
+            self.cfg.setdefault("top_weeks_done", []).append(semana.week_key(mon))
+            self.persist()
+            self.finish_steps("Top de la semana listo")
+            self.status(f"Top de la semana listo: {os.path.dirname(made[0])}")
+            if not auto and not self.unattended() and messagebox.askyesno(
+                    APP_NAME, f"¡Top de la semana listo!\n\n{os.path.dirname(made[0])}\n\n¿Abrir la carpeta?"):
+                if os.name == "nt":
+                    subprocess.Popen(["explorer", os.path.normpath(os.path.dirname(made[0]))])
+        self.run_bg(work, done, "No se pudo hacer el top de la semana")
 
     VOD_KEEP_DAYS = 5
 
@@ -2609,6 +2690,10 @@ class App(tk.Tk):
                                         highlight=sub_hl, ranking=ranking, vsrc=v, channel=chan,
                                         video_texts=vtx)
                     made.append(folder)
+                    try:                       # para el top de la semana
+                        semana.record(folder, self.vod_start_utc())
+                    except Exception:
+                        pass
                 proj = {"vod": vod, "clips": clips, "out": out, "vertical": v, "cam": cam, "words": words,
                         "highlight": sub_hl, "encoder": enc, "singles": folder}
                 self.save_project(proj)
@@ -2956,6 +3041,20 @@ def selftest(out_path):
         log(os.path.isfile(os.path.join(dfold, "publicar.txt")) and os.path.isfile(os.path.join(dfold, "publicar.json"))
             and any(f_.endswith(".txt") for _, _, fs_ in os.walk(dfold) for f_ in fs_ if f_ != "publicar.txt"),
             "títulos, descripción y hashtags por clip")
+        # top de la semana con esas jugadas
+        from datetime import timedelta as _td
+        mon_, sun_ = semana.last_week()
+        semana.record(dfold, mon_ + _td(days=1))
+        it_ = semana.pick(mon_, sun_)
+        if len(it_) >= 2:
+            th_ = semana.render_top(it_, os.path.join(tmp, "top_h.mp4"), False, "auto")
+            tv_ = semana.render_top(semana.pick(mon_, sun_, vertical=True), os.path.join(tmp, "top_v.mp4"), True,
+                                    "auto")
+            ih2, iv2 = core.probe_vod(th_), core.probe_vod(tv_)
+            log(ih2["width"] == 1920 and iv2["height"] == 1920 and ih2["duration"] > 3,
+                f"top de la semana ({len(it_)} jugadas, {ih2['duration']:.1f} s)")
+        else:
+            log(False, f"top de la semana: solo {len(it_)} jugadas en el historial")
         vsolo = os.path.join(tmp, "solo (vertical).mp4")
         core.render(vid, rclips, vsolo, encoder="auto", cam=cam, words=words[:2], vertical_only=True)
         log(core.probe_vod(vsolo)["height"] == 1920, "rehacer solo la vertical (subtítulos corregidos)")
