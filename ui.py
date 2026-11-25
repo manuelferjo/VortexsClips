@@ -363,6 +363,11 @@ class Card(ttk.Frame):
         self._last = (w, h)
         self._draw(w, h)
 
+    def _draw_glow(self, w, h):
+        self._gimg = _card_glow_image(self, w, h)
+        self._cv.create_image(0, 0, image=self._gimg, anchor="nw", tags="bgd")
+        self._cv.tag_lower("bgd")
+
     def _corner(self, which, color):
         r, bg, outer, bc = self._r, self._bg, self._outer, color
 
@@ -379,6 +384,12 @@ class Card(ttk.Frame):
         cv.delete("bgd")
         if w < 2 * r + 2 or h < 2 * r + 2:
             return
+        if self._glow:
+            try:
+                self._draw_glow(w, h)
+                return
+            except Exception:
+                pass
         cv.create_rectangle(r, 0, w - r, h, fill=self._bg, width=0, tags="bgd")
         cv.create_rectangle(0, r, w, h - r, fill=self._bg, width=0, tags="bgd")
         if self._glow:
@@ -404,6 +415,25 @@ class Card(ttk.Frame):
         for which, x, y in (("nw", 0, 0), ("ne", w - r, 0), ("sw", 0, h - r), ("se", w - r, h - r)):
             cv.create_image(x, y, image=self._corner(which, cols[which]), anchor="nw", tags="bgd")
         cv.tag_lower("bgd")
+
+
+def _card_glow_image(card, w, h):
+    """Tarjeta destacada de Vortexs Live: brillo violeta arriba a la izquierda, amarillo abajo a la
+    derecha (dentro de la tarjeta) y borde con el degradado de la marca."""
+    np = _np()
+    r = card._r
+    img = np.empty((h, w, 3), np.float32)
+    img[:] = _rgbf(card._outer)
+    body_ = np.empty((h, w, 3), np.float32)
+    body_[:] = _rgbf(card._bg)
+    body_ = glow_into(body_, -w * 0.3 + w * 0.45, -h * 0.6 + h * 0.55, w * 0.45, h * 0.55 * 1.6, VIOLET, 40 / 255)
+    body_ = glow_into(body_, w * 0.55 + w * 0.35, h * 0.35 + h * 0.5, w * 0.35, h * 0.5 * 1.6, YELLOW, 26 / 255)
+    outer = _rr_cov(w, h, 0.5, 0.5, w - 0.5, h - 0.5, r)
+    inner = _rr_cov(w, h, 1.7, 1.7, w - 1.7, h - 1.7, r - 1.2)
+    border = _grad(w, h, 0, w) * 0.55 + _rgbf(card._bg) * 0.45
+    img = _over(img, border, outer)
+    img = _over(img, body_, inner)
+    return _photo(img, card._cv)
 
 
 def keep_cards_in_sync(root):
@@ -853,3 +883,607 @@ def keep_scroll_in_sync(root):
     for s in list(_SCROLLS):
         s.sync()
     root.after(400, lambda: keep_scroll_in_sync(root))
+
+
+# ================================================================ estilo Vortexs Live (animado)
+# Un solo reloj para toda la ventana que solo funciona mientras algo se mueve; cada control lleva
+# sus transiciones (encima 0,14 s, pulsado 0,08 s, interruptor 0,18 s, pestañas 0,22 s) con la
+# misma curva suave que Vortexs Live.
+HOVER_SEC, PRESS_SEC = 0.14, 0.08
+
+
+def ease(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return t * t * (3 - 2 * t)
+
+
+def approach(v, target, step):
+    return min(target, v + step) if v < target else max(target, v - step)
+
+
+class _Clock:
+    items: set = set()
+    root = None
+    running = False
+    last = 0.0
+
+    @classmethod
+    def add(cls, w):
+        import time
+        cls.items.add(w)
+        if not cls.running:
+            cls.running = True
+            cls.last = time.time()
+            try:
+                w.after(15, cls.tick)
+            except tk.TclError:
+                cls.running = False
+
+    @classmethod
+    def tick(cls):
+        import time
+        now = time.time()
+        dt = min(0.05, now - cls.last)
+        cls.last = now
+        any_w = None
+        for w in list(cls.items):
+            try:
+                more = w._animate(dt)
+                w._draw()
+                any_w = w
+            except tk.TclError:
+                more = False
+            if not more:
+                cls.items.discard(w)
+        if cls.items and any_w is not None:
+            any_w.after(15, cls.tick)
+        else:
+            cls.running = False
+
+
+# ---------------------------------------------------------------- dibujo rápido con numpy
+def _np():
+    import numpy as np
+    return np
+
+
+def _rr_cov(w, h, x0, y0, x1, y1, r):
+    """Cobertura (0..1, con borde suave) de un rectángulo redondeado."""
+    np = _np()
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    xs += 0.5
+    ys += 0.5
+    cx = np.clip(xs, x0 + r, x1 - r)
+    cy = np.clip(ys, y0 + r, y1 - r)
+    d = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2) - r
+    return np.clip(0.5 - d, 0.0, 1.0)
+
+
+def _rgbf(c):
+    np = _np()
+    return np.array(_rgb(c), dtype=np.float32)
+
+
+def _grad(w, h, x0, x1):
+    """Degradado de la marca (morado -> amarillo) en horizontal, como (h, w, 3)."""
+    np = _np()
+    t = np.clip((np.arange(w, dtype=np.float32) + 0.5 - x0) / max(1.0, x1 - x0), 0, 1)
+    a, b = _rgbf(VIOLET), _rgbf(YELLOW)
+    row = a[None, :] + (b - a)[None, :] * t[:, None]
+    return np.broadcast_to(row[None, :, :], (h, w, 3))
+
+
+def _photo(img, master=None):
+    """(h, w, 3) float -> PhotoImage (PPM en memoria: rápido)."""
+    np = _np()
+    h, w = img.shape[:2]
+    data = np.clip(img + 0.5, 0, 255).astype(np.uint8).tobytes()
+    return tk.PhotoImage(master=master, data=f"P6 {w} {h} 255 ".encode() + data, format="PPM")
+
+
+def _over(base, color, alpha):
+    np = _np()
+    a = alpha[..., None] if alpha.ndim == 2 else alpha
+    return base * (1 - a) + color * a
+
+
+def _mix(c1, c2, t):
+    return _hex(_lerp(_rgb(c1), _rgb(c2), t))
+
+
+def glow_into(img, cx, cy, rx, ry, color, strength):
+    """Brillo difuminado (elipse que se desvanece) sobre img (h, w, 3)."""
+    np = _np()
+    h, w = img.shape[:2]
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    d = np.sqrt(((xs - cx) / max(1, rx)) ** 2 + ((ys - cy) / max(1, ry)) ** 2)
+    a = np.clip(1 - d, 0, 1) ** 1.6 * strength
+    return _over(img, _rgbf(color), a)
+
+
+# ---------------------------------------------------------------- botón
+KIND = {None: "ghost", "TButton": "ghost", "Accent.TButton": "primary", "Purple.TButton": "pill",
+        "Ghost.TButton": "link", "Danger.TButton": "danger"}
+
+
+class VButton(tk.Canvas):
+    """
+    Botón como los de Vortexs Live. kind: primary (degradado de la marca, halo violeta al pasar),
+    ghost (gris con borde que se aclara), pill (violeta, para la acción destacada), link (solo texto
+    violeta), danger (rojo). Al pasar el ratón cambia con transición; al pulsar se encoge un poco.
+    Se usa igual que ttk.Button: configure(text=, state=, command=), cget, invoke.
+    """
+    HALO = 6
+
+    def __init__(self, parent, text="", command=None, style=None, width=None, kind=None, font=None, **_kw):
+        try:
+            bg = ttk.Style(parent).lookup(parent.cget("style") or "TFrame", "background") or SURFACE
+        except Exception:
+            try:
+                bg = parent.cget("bg")
+            except Exception:
+                bg = SURFACE
+        self._bgc = bg
+        self.kind = kind or KIND.get(style, "ghost")
+        self._text, self._cmd, self._state = text, command, "normal"
+        self._wchars = width
+        if font is None:
+            font = display(12) if self.kind == "primary" else (body(9) if self.kind == "link" else semi(9))
+        self._font = font
+        self._hov = self._prs = 0.0
+        self._hover = self._press = False
+        self._cache = {}
+        m = self.HALO if self.kind == "primary" else 0
+        super().__init__(parent, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
+        self._m = m
+        for ev, fn in (("<Enter>", self._enter), ("<Leave>", self._leave),
+                       ("<ButtonPress-1>", self._down), ("<ButtonRelease-1>", self._up)):
+            self.bind(ev, fn)
+        self._size()
+        self._draw()
+
+    # tamaño según el texto
+    def _size(self):
+        fm = tkfont.Font(root=self, font=self._font)
+        if self.kind == "primary":
+            padx, h = 26, 42
+        elif self.kind == "link":
+            padx, h = 6, 28
+        else:
+            padx, h = 14, 32
+        tw = fm.measure(self._text)
+        if self._wchars:
+            tw = max(tw, fm.measure("0") * int(self._wchars))
+        self._w, self._h = tw + 2 * padx, h
+        super().configure(width=self._w + 2 * self._m, height=self._h + 2 * self._m)
+
+    def _face(self, hq, pq, dis):
+        """Imagen del botón para un punto de la transición (cacheada)."""
+        key = (self._w, self._h, self.kind, hq, pq, dis, self._bgc)
+        if key in self._cache:
+            return self._cache[key]
+        np = _np()
+        m, w, h = self._m, self._w, self._h
+        W, H = w + 2 * m, h + 2 * m
+        img = np.empty((H, W, 3), np.float32)
+        img[:] = _rgbf(self._bgc)
+        s = 1.5 * pq
+        x0, y0, x1, y1 = m + s + 0.5, m + s + 0.5, m + w - s - 0.5, m + h - s - 0.5
+        r = 12.0 if self.kind != "pill" else (y1 - y0) / 2
+        k = self.kind if not (dis and self.kind in ("danger",)) else "ghost"
+        if k == "primary":
+            if dis:
+                img = _over(img, _rgbf(ELEVATED), _rr_cov(W, H, x0, y0, x1, y1, r))
+                inner = _rr_cov(W, H, x0 + 1, y0 + 1, x1 - 1, y1 - 1, r - 1)
+                img = _over(img, _rgbf(BORDER), _rr_cov(W, H, x0, y0, x1, y1, r) - inner)
+            else:
+                for ring in (3, 2, 1):            # halo violeta de tres capas (aparece al pasar)
+                    if hq > 0:
+                        c = _rr_cov(W, H, x0 - 2 * ring, y0 - 2 * ring, x1 + 2 * ring, y1 + 2 * ring, r + 2 * ring)
+                        img = _over(img, _rgbf(VIOLET), c * (18 / 255) * hq)
+                img = _over(img, _grad(W, H, x0, x1), _rr_cov(W, H, x0, y0, x1, y1, r))
+        elif k == "link":
+            pass
+        else:
+            if k == "danger":
+                fill = _lerp(_lerp(_rgb(self._bgc), _rgb(RED), 18 / 255), _lerp(_rgb(self._bgc), _rgb(RED), 40 / 255), hq)
+                bord = _lerp(_rgb(self._bgc), _rgb(RED), (150 + 80 * hq) / 255)
+            elif k == "pill":
+                fill = _lerp(_lerp(_rgb(self._bgc), _rgb(VIOLET), 38 / 255), _lerp(_rgb(self._bgc), _rgb(VIOLET), 60 / 255), hq)
+                bord = _lerp(_rgb(self._bgc), _rgb(VIOLET), (200 if not dis else 90) / 255)
+            else:
+                fill = _lerp(_rgb(ELEVATED), (32, 32, 42), hq)
+                bord = _lerp(_rgb(BORDER), _rgb(BORDER_HI), hq)
+            outer = _rr_cov(W, H, x0, y0, x1, y1, r)
+            bw = 1.2 if k in ("pill", "danger") else 1.0
+            inner = _rr_cov(W, H, x0 + bw, y0 + bw, x1 - bw, y1 - bw, max(0.5, r - bw))
+            img = _over(img, np.array(bord, np.float32), outer)
+            img = _over(img, np.array(fill, np.float32), inner)
+        ph = _photo(img, self)
+        self._cache[key] = ph
+        return ph
+
+    def _text_color(self):
+        h = ease(self._hov)
+        dis = self._state == "disabled"
+        if self.kind == "primary":
+            return DIM if dis else "#0b0a10"
+        if self.kind == "link":
+            return DIM if dis else _mix(VIOLET, VIOLET_L, h)
+        if self.kind == "pill":
+            return _mix(VIOLET_L, BG, 0.4) if dis else VIOLET_L
+        if self.kind == "danger":
+            return DIM if dis else "#ff7882"
+        return DIM if dis else TEXT
+
+    def _draw(self):
+        self.delete("all")
+        dis = self._state == "disabled"
+        hq = round(ease(self._hov) * 6) / 6
+        pq = round(ease(self._prs) * 3) / 3
+        self._img = self._face(hq, pq, dis)
+        self.create_image(0, 0, image=self._img, anchor="nw")
+        cx = self._m + self._w / 2
+        if self.kind == "link":
+            cx = self._m + self._w - 6
+            self.create_text(cx, self._m + self._h / 2, text=self._text, font=self._font,
+                             fill=self._text_color(), anchor="e")
+        else:
+            self.create_text(cx, self._m + self._h / 2 + (0.5 if pq else 0), text=self._text, font=self._font,
+                             fill=self._text_color())
+        super().configure(cursor="arrow" if dis else "hand2")
+
+    def _animate(self, dt):
+        th = 1.0 if (self._hover and self._state != "disabled") else 0.0
+        tp = 1.0 if self._press else 0.0
+        self._hov = approach(self._hov, th, dt / HOVER_SEC)
+        self._prs = approach(self._prs, tp, dt / PRESS_SEC)
+        return self._hov != th or self._prs != tp
+
+    def _enter(self, _e):
+        self._hover = True
+        _Clock.add(self)
+
+    def _leave(self, _e):
+        self._hover = self._press = False
+        _Clock.add(self)
+
+    def _down(self, _e):
+        if self._state != "disabled":
+            self._press = True
+            _Clock.add(self)
+
+    def _up(self, e):
+        was = self._press
+        self._press = False
+        _Clock.add(self)
+        if was and self._state != "disabled" and 0 <= e.x <= self.winfo_width() and 0 <= e.y <= self.winfo_height():
+            if self._cmd:
+                self._cmd()
+
+    def invoke(self):
+        if self._state != "disabled" and self._cmd:
+            self._cmd()
+
+    def configure(self, cnf=None, **kw):
+        redraw = resize = False
+        if "state" in kw:
+            self._state = str(kw.pop("state"))
+            redraw = True
+        if "text" in kw:
+            self._text = kw.pop("text")
+            redraw = resize = True
+        if "command" in kw:
+            self._cmd = kw.pop("command")
+        if "style" in kw:
+            st = kw.pop("style")
+            self.kind = KIND.get(st, self.kind)
+            redraw = True
+        kw.pop("width", None)
+        r = super().configure(cnf, **kw) if (kw or cnf) else None
+        if resize:
+            self._size()
+        if redraw or resize:
+            self._draw()
+        return r
+
+    config = configure
+
+    def cget(self, key):
+        if key == "state":
+            return self._state
+        if key == "text":
+            return self._text
+        return super().cget(key)
+
+    def __setitem__(self, key, value):
+        self.configure(**{key: value})
+
+    def __getitem__(self, key):
+        return self.cget(key)
+
+
+def Button(parent, **kw):          # noqa: F811  (sustituye a la versión anterior)
+    """Todos los botones del programa, con el aspecto y las animaciones de Vortexs Live."""
+    return VButton(parent, **kw)
+
+
+# ---------------------------------------------------------------- interruptor animado
+class Toggle(tk.Frame):           # noqa: F811
+    """Interruptor de Vortexs Live: la bolita se desliza y el degradado aparece al encenderse (0,18 s)."""
+    W, H = 38, 22
+    SEC = 0.18
+
+    def __init__(self, parent, text="", variable=None, command=None, bg=SURFACE, **_kw):
+        super().__init__(parent, bg=bg)
+        self.var = variable if variable is not None else tk.BooleanVar(value=False)
+        self.command = command
+        self._bg = bg
+        lead = len(text) - len(text.lstrip(" "))
+        self.cv = tk.Canvas(self, width=self.W, height=self.H, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
+        self.cv.pack(side="left", padx=(lead * 4, 10), pady=1)
+        self.lbl = tk.Label(self, text=text.strip(), bg=bg, fg=TEXT, font=semi(9), cursor="hand2",
+                            anchor="w", justify="left")
+        self.lbl.pack(side="left")
+        self._on = 1.0 if self._val() else 0.0
+        self._hov = 0.0
+        self._hover = False
+        self._cache = {}
+        for w in (self.cv, self.lbl):
+            w.bind("<Button-1>", self._click)
+            w.bind("<Enter>", lambda e: self._set_hover(True))
+            w.bind("<Leave>", lambda e: self._set_hover(False))
+        try:
+            self.var.trace_add("write", lambda *a: _Clock.add(self))
+        except Exception:
+            pass
+        self._draw()
+
+    def _val(self):
+        try:
+            return bool(self.var.get())
+        except Exception:
+            return False
+
+    def _set_hover(self, v):
+        self._hover = v
+        self.lbl.configure(fg=VIOLET_L if v else TEXT)
+        _Clock.add(self)
+
+    def _face(self, tq, hq):
+        key = (tq, hq, self._bg)
+        if key in self._cache:
+            return self._cache[key]
+        np = _np()
+        W, H = self.W, self.H
+        img = np.empty((H, W, 3), np.float32)
+        img[:] = _rgbf(self._bg)
+        t = ease(tq)
+        track = _rr_cov(W, H, 0.5, 0.5, W - 0.5, H - 0.5, (H - 1) / 2)
+        off = np.array(_lerp((36, 36, 46), (44, 44, 56), hq), np.float32)
+        img = _over(img, off, track)
+        if t < 1:
+            inner = _rr_cov(W, H, 1.5, 1.5, W - 1.5, H - 1.5, (H - 3) / 2)
+            img = _over(img, _rgbf(BORDER_HI), (track - inner) * (1 - t))
+        if t > 0:
+            img = _over(img, _grad(W, H, 0, W), track * t)
+        knob = H - 6
+        left, right = 3.0, W - knob - 3.0
+        kx = left + (right - left) * t
+        kc = _rr_cov(W, H, kx, 3, kx + knob, 3 + knob, knob / 2)
+        img = _over(img, np.array(_lerp(_rgb(MUTED), (14, 14, 18), t), np.float32), kc)
+        ph = _photo(img, self)
+        self._cache[key] = ph
+        return ph
+
+    def _draw(self):
+        tq = round(self._on * 10) / 10
+        hq = round(ease(self._hov) * 4) / 4
+        self._img = self._face(tq, hq)
+        self.cv.delete("all")
+        self.cv.create_image(0, 0, image=self._img, anchor="nw")
+
+    def _animate(self, dt):
+        target = 1.0 if self._val() else 0.0
+        th = 1.0 if self._hover else 0.0
+        self._on = approach(self._on, target, dt / self.SEC)
+        self._hov = approach(self._hov, th, dt / HOVER_SEC)
+        return self._on != target or self._hov != th
+
+    def _click(self, _e=None):
+        if str(self.lbl.cget("state")) == "disabled":
+            return
+        self.var.set(not self._val())
+        _Clock.add(self)
+        if self.command:
+            self.command()
+
+    def configure(self, cnf=None, **kw):
+        if "text" in kw:
+            self.lbl.configure(text=kw.pop("text"))
+        if "state" in kw:
+            self.lbl.configure(state=kw.pop("state"), disabledforeground=DIM)
+        if kw or cnf:
+            return super().configure(cnf, **kw)
+
+    config = configure
+
+
+# ---------------------------------------------------------------- pestañas con resalte deslizante
+class Tabs(ttk.Frame):            # noqa: F811
+    """Como en Vortexs Live: barra redondeada, el resalte violeta se desliza de una pestaña a otra
+    (0,22 s) y el texto se ilumina según se acerca. Se usa como ttk.Notebook: add(frame, text=), select()."""
+    SEC = 0.22
+
+    def __init__(self, parent, bg=SURFACE, **_kw):
+        super().__init__(parent, style="Panel.TFrame")
+        self._bg = bg
+        self.bar = tk.Canvas(self, height=38, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
+        self.bar.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        self.pages, self.names, self.cur = [], [], None
+        self._from, self._t, self._hot = 0.0, 1.0, None
+        self._cache = {}
+        self.bar.bind("<Button-1>", self._click)
+        self.bar.bind("<Motion>", self._motion)
+        self.bar.bind("<Leave>", lambda e: self._set_hot(None))
+
+    def _cells(self):
+        f = semi(10)
+        fm = tkfont.Font(root=self, font=f)
+        x, out = 4, []
+        for n in self.names:
+            w = fm.measure(n) + 32
+            out.append((x, w))
+            x += w
+        return out, x + 4
+
+    def add(self, frame, text=""):
+        self.pages.append(frame)
+        self.names.append(text.strip())
+        frame.grid(row=1, column=0, sticky="nsew")
+        frame.grid_remove()
+        if self.cur is None:
+            self.cur = 0
+            frame.grid()
+            self._from, self._t = 0.0, 1.0
+        self._draw()
+
+    def index_of(self, target):
+        if isinstance(target, int):
+            return target
+        for i, p in enumerate(self.pages):
+            if str(p) == str(target):
+                return i
+        return 0
+
+    def _pos(self):
+        return self._from + ((self.cur or 0) - self._from) * ease(self._t)
+
+    def select(self, target=None):
+        if target is None:
+            return str(self.pages[self.cur]) if self.cur is not None else ""
+        i = self.index_of(target)
+        if self.cur is not None and i != self.cur:
+            self._from = self._pos()
+            self._t = 0.0
+            self.pages[self.cur].grid_remove()
+        self.cur = i
+        self.pages[i].grid()
+        _Clock.add(self)
+        self._draw()
+        self.event_generate("<<NotebookTabChanged>>")
+
+    def _at(self, x):
+        cells, _ = self._cells()
+        for i, (cx, cw) in enumerate(cells):
+            if x < cx + cw:
+                return i
+        return len(cells) - 1
+
+    def _click(self, e):
+        if self.names:
+            self.select(self._at(e.x))
+
+    def _motion(self, e):
+        self._set_hot(self._at(e.x))
+
+    def _set_hot(self, i):
+        if i != self._hot:
+            self._hot = i
+            self._draw()
+
+    def _animate(self, dt):
+        self._t = approach(self._t, 1.0, dt / self.SEC)
+        return self._t < 1.0
+
+    def _track(self, total, H):
+        key = ("track", total, H, self._bg)
+        if key not in self._cache:
+            np = _np()
+            img = np.empty((H, total, 3), np.float32)
+            img[:] = _rgbf(self._bg)
+            outer = _rr_cov(total, H, 0.5, 0.5, total - 0.5, H - 0.5, (H - 1) / 2)
+            inner = _rr_cov(total, H, 1.5, 1.5, total - 1.5, H - 1.5, (H - 3) / 2)
+            img = _over(img, _rgbf(BORDER), outer)
+            img = _over(img, np.array(_lerp(_rgb(self._bg), _rgb(SURFACE), 0.9), np.float32), inner)
+            self._cache[key] = _photo(img, self)
+        return self._cache[key]
+
+    def _pill(self, w, h):
+        w = max(8, int(w) // 2 * 2)
+        key = ("pill", w, h)
+        if key not in self._cache:
+            np = _np()
+            img = np.empty((h, w, 3), np.float32)
+            img[:] = _rgbf(SURFACE)
+            outer = _rr_cov(w, h, 0.5, 0.5, w - 0.5, h - 0.5, (h - 1) / 2)
+            inner = _rr_cov(w, h, 1.5, 1.5, w - 1.5, h - 1.5, (h - 3) / 2)
+            img = _over(img, np.array(_lerp(_rgb(SURFACE), _rgb(VIOLET), 120 / 255), np.float32), outer)
+            img = _over(img, np.array(_lerp(_rgb(SURFACE), _rgb(VIOLET), 34 / 255), np.float32), inner)
+            self._cache[key] = _photo(img, self)
+        return self._cache[key]
+
+    def _draw(self):
+        cv = self.bar
+        cv.delete("all")
+        if not self.names:
+            return
+        cells, total = self._cells()
+        H = 38
+        cv.configure(width=total)
+        cv.create_image(0, 0, image=self._track(total, H), anchor="nw")
+        pos = self._pos()
+        a = max(0, min(len(cells) - 1, int(pos)))
+        b = min(len(cells) - 1, a + 1)
+        f = pos - a
+        px = cells[a][0] + (cells[b][0] - cells[a][0]) * f
+        pw = cells[a][1] + (cells[b][1] - cells[a][1]) * f
+        self._pimg = self._pill(pw, H - 8)
+        cv.create_image(px, 4, image=self._pimg, anchor="nw")
+        fnt = semi(10)
+        for i, ((cx, cw), n) in enumerate(zip(cells, self.names)):
+            near = max(0.0, 1 - abs(pos - i))
+            base = TEXT if i == self._hot else MUTED
+            cv.create_text(cx + cw / 2, H / 2, text=n, font=fnt, fill=_mix(base, VIOLET_PALE, near))
+
+
+VIOLET_PALE = "#e3d5ff"
+
+
+# ---------------------------------------------------------------- cabecera con brillos
+class GlowHeader(tk.Canvas):
+    """Fondo de la cabecera con los brillos difuminados de Vortexs Live (violeta a la izquierda,
+    amarillo a la derecha). Lo de dentro se coloca encima con .inner (un Frame del color del fondo
+    no sirve: los widgets de Tk son opacos), así que el logo y los textos se dibujan en el lienzo."""
+
+    def __init__(self, parent, height=78):
+        super().__init__(parent, height=height, bg=BG, highlightthickness=0, bd=0)
+        self._h = height
+        self._last = None
+        self.bind("<Configure>", lambda e: self._redraw(e.width))
+        self.items = []
+
+    def _redraw(self, w):
+        if w < 50 or self._last == w:
+            return
+        self._last = w
+        np = _np()
+        h = self._h
+        img = np.empty((h, w, 3), np.float32)
+        img[:] = _rgbf(BG)
+        img = glow_into(img, w * 0.12, -h * 0.4, w * 0.45, h * 2.0, VIOLET, 48 / 255)
+        img = glow_into(img, w * 0.85, -h * 0.2, w * 0.40, h * 1.8, YELLOW, 26 / 255)
+        self._img = _photo(img, self)
+        self.delete("bgimg")
+        self.create_image(0, 0, image=self._img, anchor="nw", tags="bgimg")
+        self.tag_lower("bgimg")
+        # línea fina de abajo con el degradado de la marca, muy suave
+        self.delete("line")
+        steps = 60
+        for i in range(steps):
+            c = _hex(_lerp(_rgb(BG), grad_at(i / steps), 0.35))
+            self.create_line(w * i / steps, h - 1, w * (i + 1) / steps + 1, h - 1, fill=c, tags="line")
+        for fn in self.items:
+            fn(w)

@@ -188,23 +188,31 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ UI
     def _build(self):
-        head = ttk.Frame(self, style="Head.TFrame", padding=(22, 14, 22, 4))
+        head = ui.GlowHeader(self, height=80)
         head.pack(fill="x")
         self._logo = ui.logo_image(self, 44)
-        if self._logo:
-            tk.Label(head, image=self._logo, bg=BG, bd=0).pack(side="left", padx=(0, 14))
-        tb = ttk.Frame(head, style="Head.TFrame")
-        tb.pack(side="left")
-        tl = ttk.Frame(tb, style="Head.TFrame")
-        tl.pack(anchor="w")
-        ttk.Label(tl, text="Vortexs", style="Title.TLabel").pack(side="left")
-        ttk.Label(tl, text=" Clips", style="TitleY.TLabel").pack(side="left")
-        ttk.Label(tb, text=f"BY VORTEXS · V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
-                  style="Sub.TLabel").pack(anchor="w")
-        ui.Button(head, text="Buscar actualizaciones",
-                   command=lambda: self.check_update(silent=False)).pack(side="right")
+        upd = ui.Button(head, text="Buscar actualizaciones", command=lambda: self.check_update(silent=False))
+        upd.configure(bg=BG)
+        upd._bgc = BG
+        upd._cache.clear()
+        upd._draw()
         self.pill = ui.status_pill(head)
-        self.pill.pack(side="right", padx=12)
+
+        def place_head(w):
+            head.delete("fg")
+            x = 22
+            if self._logo:
+                head.create_image(x, 16, image=self._logo, anchor="nw", tags="fg")
+                x += 58
+            f1 = ui.display(22)
+            t1 = head.create_text(x, 14, text="Vortexs", font=f1, fill=TEXT, anchor="nw", tags="fg")
+            bx = head.bbox(t1)
+            head.create_text(bx[2] + 8, 14, text="Clips", font=f1, fill=YELLOW, anchor="nw", tags="fg")
+            head.create_text(x + 1, 52, text=f"BY VORTEXS · V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
+                             font=ui.mono(8), fill=ui.DIM, anchor="nw", tags="fg")
+            head.create_window(w - 22, 40, window=upd, anchor="e", tags="fg")
+            head.create_window(w - 22 - upd.winfo_reqwidth() - 12, 40, window=self.pill, anchor="e", tags="fg")
+        head.items.append(place_head)
 
         # todo lo de en medio va en una zona que se desplaza si la ventana es baja
         self.body = ui.ScrollArea(self)

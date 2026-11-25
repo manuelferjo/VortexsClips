@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import core
+import ui
 
 VW, VH, FPS = 640, 360, 24
 BG = "#0d0b10"
@@ -60,16 +61,16 @@ class Player(ttk.Frame):
         bar.pack(fill="x")
         self._bar = bar
         for txt, d in (("−1 min", -60), ("−10 s", -10)):
-            ttk.Button(bar, text=txt, width=7, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
-        self.btn_play = ttk.Button(bar, text="▶  Reproducir", width=14, style="Purple.TButton", command=self.toggle)
+            ui.Button(bar, text=txt, width=6, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
+        self.btn_play = ui.Button(bar, text="▶  Reproducir", width=14, style="Purple.TButton", command=self.toggle)
         self.btn_play.pack(side="left", padx=4)
         for txt, d in (("+10 s", 10), ("+1 min", 60)):
-            ttk.Button(bar, text=txt, width=7, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
+            ui.Button(bar, text=txt, width=6, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
         if on_pick:
-            ttk.Button(bar, text="✔ Usar este momento", style="Accent.TButton",
+            ui.Button(bar, text="✔ Usar este momento", style="Accent.TButton",
                        command=lambda: on_pick(self.pos)).pack(side="right")
         if on_expand:
-            ttk.Button(bar, text="Ampliar ↗", command=on_expand).pack(side="right")
+            ui.Button(bar, text="Ampliar ↗", command=on_expand).pack(side="right")
         self.lbl_range = ttk.Label(bar, text="", style="Muted.TLabel")
         self.lbl_range.pack(side="right", padx=8)
 
