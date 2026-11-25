@@ -87,23 +87,50 @@ def own_marker(band, src_h: int = 1080):
 
 def _marker_at(core_, pure, yel, xt, lh):
     import numpy as np
-    # tu marcador es un bloque de amarillo PURO (≈240,244,9) casi de arriba abajo; en las líneas de
-    # compañeros ahí hay su retrato o fondo, nunca ese amarillo (medido: 13–16 columnas frente a 0).
-    # Su distancia a la franja verde depende del agente (algunos retratos y el fondo del nombre no
-    # dan verde): entre ~1,5 y ~5,6 líneas de alto a la izquierda.
+    # tu marcador es un bloque amarillo casi de arriba abajo justo antes de tu retrato, con un núcleo
+    # de amarillo PURO (≈240,244,9). Según el agente el bloque es más ancho y puro (≈11 px de puro) o
+    # más estrecho con algo de degradado (Sova: ~18 px amarillos y 3–5 de puro). En las líneas de
+    # compañeros ahí hay su retrato o fondo, sin ese bloque. Su distancia a la franja verde también
+    # depende del agente: entre ~1,5 y ~5,6 líneas de alto a la izquierda.
     w0, w1 = max(0, int(xt - 5.6 * lh)), max(0, int(xt - 1.5 * lh))
     if w1 <= w0:
         return None
-    full = pure[:, w0:w1].mean(axis=0) >= 0.5
-    segs = [(w0 + a, w0 + b) for a, b in _segs(full) if 0.3 * lh <= b - a <= 1.3 * lh]
-    if not segs:
+    ycol = yel[:, w0:w1].mean(axis=0) >= 0.6
+    pcol = pure[:, w0:w1].mean(axis=0) >= 0.5
+    best = None
+    for a, b in _segs(ycol):
+        if not (0.35 * lh <= b - a <= 1.3 * lh):
+            continue
+        if int(pcol[a:b].sum()) < 3:
+            continue
+        best = (w0 + a, w0 + b)              # el más cercano al nombre
+    if best is None:
+        best = _chevron(pure, yel, w0, w1)
+    if best is None:
         return None
-    a, b = segs[-1]                          # el más cercano al nombre
-    # que el amarillo empiece donde empieza el marcador (a veces hay un borde algo menos puro)
+    a = best[0]
     ycols = yel.mean(axis=0) > 0.15
-    while a > 0 and ycols[a - 1] and (b - a) < 1.3 * lh:
+    while a > 0 and ycols[a - 1] and (best[1] - a) < 1.3 * lh:
         a -= 1
     return a
+
+
+def _chevron(pure, yel, w0, w1):
+    """Otra forma del marcador (p. ej. con Sova): una raya vertical de amarillo puro de 2–4 px de
+    alto completo con una punta de flecha amarilla a su alrededor (◀|), que cubre parte de la altura."""
+    pm = pure.mean(axis=0)
+    ym = yel.mean(axis=0)
+    n = len(pm)
+    best = None
+    for a, b in _segs(pm[w0:w1] >= 0.9):
+        a, b = w0 + a, w0 + b
+        if b - a > 4:
+            continue
+        right = ym[b:min(n, b + 14)]
+        left = ym[max(0, a - 8):a]
+        if int(((right > 0.1) & (right < 0.75)).sum()) >= 8 and int(((left > 0.03) & (left < 0.8)).sum()) >= 3:
+            best = (max(0, a - 8), b + 14)
+    return best
 
 
 def lines(img, src_h: int = 1080):
@@ -113,7 +140,7 @@ def lines(img, src_h: int = 1080):
     h, w = teal.shape
     lh = LINE_H_1080 * src_h / 1080.0
     bar = (teal | red)[:, int(w * 0.30):int(w * 0.98)]
-    on = bar.mean(axis=1) >= 0.22
+    on = bar.mean(axis=1) >= 0.15
     out, y = [], 0
     top = int(h * 0.20)                 # por encima: marcador y pastilla «Sin delay», nunca líneas
     while y < h:
