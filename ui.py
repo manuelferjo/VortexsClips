@@ -726,13 +726,13 @@ class GradBar(tk.Canvas):
         self.create_line(r, h - 1, w - r, h - 1, fill=BORDER, tags="bd")
         self._rcap = self.create_image(w - r - 1, 0, image=cap("r", INPUT, BORDER), anchor="nw", tags="bd")
         self._lcap_off = self.create_image(0, 0, image=cap("l", INPUT, BORDER), anchor="nw", tags="bd")
-        self._w = w
+        self._barw = w
         self._update()
 
     def _update(self):
-        if not hasattr(self, "_w"):
+        if not hasattr(self, "_barw"):
             return
-        w, h, r = self._w, self.H, self.H // 2
+        w, h, r = self._barw, self.H, self.H // 2
         if self._mode == "indeterminate":
             span = w * 0.25
             a = (w + span) * self._phase - span
