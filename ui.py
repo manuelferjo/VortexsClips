@@ -1015,7 +1015,8 @@ class VButton(tk.Canvas):
     """
     HALO = 6
 
-    def __init__(self, parent, text="", command=None, style=None, width=None, kind=None, font=None, **_kw):
+    def __init__(self, parent, text="", command=None, style=None, width=None, kind=None, font=None,
+                 compact=False, **_kw):
         try:
             bg = ttk.Style(parent).lookup(parent.cget("style") or "TFrame", "background") or SURFACE
         except Exception:
@@ -1027,13 +1028,16 @@ class VButton(tk.Canvas):
         self.kind = kind or KIND.get(style, "ghost")
         self._text, self._cmd, self._state = text, command, "normal"
         self._wchars = width
+        self._compact = compact
+        if font is None and compact:
+            font = semi(9)
         if font is None:
             font = display(12) if self.kind == "primary" else (body(9) if self.kind == "link" else semi(9))
         self._font = font
         self._hov = self._prs = 0.0
         self._hover = self._press = False
         self._cache = {}
-        m = self.HALO if self.kind == "primary" else 0
+        m = self.HALO if (self.kind == "primary" and not compact) else 0
         super().__init__(parent, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
         self._m = m
         for ev, fn in (("<Enter>", self._enter), ("<Leave>", self._leave),
@@ -1045,7 +1049,9 @@ class VButton(tk.Canvas):
     # tamaño según el texto
     def _size(self):
         fm = tkfont.Font(root=self, font=self._font)
-        if self.kind == "primary":
+        if self._compact:
+            padx, h = (12, 30) if self.kind != "link" else (6, 26)
+        elif self.kind == "primary":
             padx, h = 26, 42
         elif self.kind == "link":
             padx, h = 6, 28
@@ -1069,7 +1075,7 @@ class VButton(tk.Canvas):
         img[:] = _rgbf(self._bgc)
         s = 1.5 * pq
         x0, y0, x1, y1 = m + s + 0.5, m + s + 0.5, m + w - s - 0.5, m + h - s - 0.5
-        r = 12.0 if self.kind != "pill" else (y1 - y0) / 2
+        r = (9.0 if self._compact else 12.0) if self.kind != "pill" else (y1 - y0) / 2
         k = self.kind if not (dis and self.kind in ("danger",)) else "ghost"
         if k == "primary":
             if dis:

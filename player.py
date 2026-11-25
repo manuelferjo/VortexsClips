@@ -61,18 +61,19 @@ class Player(ttk.Frame):
         bar.pack(fill="x")
         self._bar = bar
         for txt, d in (("−1 min", -60), ("−10 s", -10)):
-            ui.Button(bar, text=txt, width=6, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
-        self.btn_play = ui.Button(bar, text="▶  Reproducir", width=14, style="Purple.TButton", command=self.toggle)
+            ui.Button(bar, text=txt, width=6, compact=True, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
+        self.btn_play = ui.Button(bar, text="▶  Reproducir", width=13, compact=True, style="Purple.TButton", command=self.toggle)
         self.btn_play.pack(side="left", padx=4)
         for txt, d in (("+10 s", 10), ("+1 min", 60)):
-            ui.Button(bar, text=txt, width=6, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
+            ui.Button(bar, text=txt, width=6, compact=True, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
         if on_pick:
-            ui.Button(bar, text="✔ Usar este momento", style="Accent.TButton",
-                       command=lambda: on_pick(self.pos)).pack(side="right")
+            ui.Button(bar, text="✔ Usar este momento", style="Accent.TButton", compact=True,
+                      command=lambda: on_pick(self.pos)).pack(side="right")
         if on_expand:
-            ui.Button(bar, text="Ampliar ↗", command=on_expand).pack(side="right")
-        self.lbl_range = ttk.Label(bar, text="", style="Muted.TLabel")
-        self.lbl_range.pack(side="right", padx=8)
+            ui.Button(bar, text="Ampliar ↗", compact=True, command=on_expand).pack(side="right")
+        # el rango va encima de la barra (en la barra no cabía con ventanas estrechas)
+        self.lbl_range = ttk.Label(self, text="", style="Muted.TLabel")
+        self.lbl_range.pack(before=bar, anchor="e", pady=(0, 2))
 
         for w in (self, self.cv):
             w.bind("<space>", lambda e: self.toggle())
@@ -95,6 +96,10 @@ class Player(ttk.Frame):
         aw, ah = m.winfo_width(), m.winfo_height()
         if aw < 50 or ah < 50:
             return
+        last = getattr(self, "_fit_last", None)
+        if last and abs(last[0] - aw) < 12 and abs(last[1] - ah) < 12:
+            return                       # el propio vídeo ha movido el hueco unos píxeles: no reajustar
+        self._fit_last = (aw, ah)
         ctrl = self.scale.winfo_reqheight() + self._bar.winfo_reqheight() + 14
         w = min(aw - 4, (ah - ctrl) * 16 / 9)
         w = max(256, int(w) // 4 * 4)
@@ -164,6 +169,7 @@ class Player(ttk.Frame):
 
     def _kill(self):
         self.gen += 1
+        self._pending = None
         for p in self.procs:
             try:
                 p.kill()
@@ -237,16 +243,25 @@ class Player(ttk.Frame):
         target = int((time.time() - self.t0) * FPS) if not single else 0
         frame = None
         ended = False
+        # a velocidad real: un fotograma solo se pinta cuando le toca (si el vídeo se prepara más
+        # rápido de lo que se ve, el que va por delante espera; antes salía a cámara rápida)
         while True:
-            try:
-                i, b = self.q.get_nowait()
-            except queue.Empty:
-                break
+            nxt = getattr(self, "_pending", None)
+            if nxt is None:
+                try:
+                    nxt = self.q.get_nowait()
+                except queue.Empty:
+                    break
+            self._pending = None
+            i, b = nxt
             if i is None:
                 ended = True
                 break
+            if i > target and not single:
+                self._pending = (i, b)
+                break
             frame = (i, b)
-            if i >= target:
+            if i == target or single:
                 break
         if frame:
             self._paint(frame[1])
