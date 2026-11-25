@@ -7,6 +7,8 @@ Saca de tus directos de Twitch tus mejores jugadas de VALORANT (**3K, 4K, ACE y 
 - **un clip por jugada**, ordenado en carpetas (3K, 4K, ACE, Clutch y TOP),
 - y un archivo con el minuto de cada jugada para tu editor.
 
+La interfaz sigue el estilo de Vortexs Live: botones, interruptores y pestañas con animaciones suaves, brillos de la marca en la cabecera y en el panel de progreso.
+
 No «mira» el vídeo para adivinar las jugadas: usa los datos oficiales de cada partida (el segundo exacto de cada kill) y los cuadra con el VOD.
 
 ---
