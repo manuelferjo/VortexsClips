@@ -22,6 +22,7 @@ import time
 import sync
 import tempfile
 import updater
+import killfeed
 import semana
 import ui
 
@@ -299,6 +300,7 @@ class App(tk.Tk):
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
         self.v_suboff = tk.StringVar(value=f"{float(cfg.get('sub_offset', 0.0)):.1f}")
         self.v_cutshift = tk.StringVar(value=f"{float(cfg.get('cut_shift', 0.0)):.1f}")
+        self.v_kfeed = tk.BooleanVar(value=cfg.get("killfeed_vertical", True))
         self.v_capcut = tk.BooleanVar(value=cfg.get("capcut_subs", False))
         self.v_topweek = tk.BooleanVar(value=cfg.get("top_week", True))
         self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
@@ -428,6 +430,9 @@ class App(tk.Tk):
                   variable=self.v_capcut).grid(row=8, column=0, columnspan=4, sticky="w", pady=(2, 0))
         ui.Toggle(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
                         variable=self.v_singles).grid(row=9, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ui.Toggle(t_out, text="Killfeed de tus kills en la vertical (recortado del directo, se apila en cada ronda, "
+                              "con fade y destello)", variable=self.v_kfeed).grid(
+            row=10, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         # ---- pestaña Automático
         ttk.Label(t_auto, text="Tu canal de Twitch").grid(row=0, column=0, sticky="w")
@@ -847,7 +852,7 @@ class App(tk.Tk):
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
                          "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset(),
-                         "top_week": self.v_topweek.get(), "capcut_subs": self.v_capcut.get(),
+                         "top_week": self.v_topweek.get(), "capcut_subs": self.v_capcut.get(), "killfeed_vertical": self.v_kfeed.get(),
                          "cut_shift": self.settings().cut_shift_s})
         try:
             save_cfg(self.cfg)
@@ -2736,6 +2741,7 @@ class App(tk.Tk):
         subs = vertical and self.v_subs.get()
         sub_hl = self.v_subhl.get()
         capcut = subs and self.v_capcut.get()
+        kfeed = self.v_kfeed.get()
         # con CapCut los subtítulos se editan allí: no se pegan en el vídeo ni se abre el editor
         sub_edit = subs and self.v_subedit.get() and not self.unattended() and not capcut
         warnings = []
@@ -2781,9 +2787,23 @@ class App(tk.Tk):
                             raise
                         warnings.append(f"Subtítulos: {e}")
                 v = base + " (vertical).mp4" if vertical else None
+                kf_lines = None
+                if vertical and kfeed:
+                    sub("Recortando tus kills del killfeed para la vertical…")
+                    try:
+                        import hashlib
+                        kdir = os.path.join(core.data_dir(), "killfeed",
+                                            hashlib.sha1(os.path.abspath(out).encode("utf-8")).hexdigest()[:12])
+                        kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop)
+                    except Exception as e:
+                        if "Cancelado" in str(e):
+                            raise
+                        warnings.append(f"Killfeed: {e}")
+                        kf_lines = None
                 sub("Generando el vídeo horizontal" + (" y el vertical a la vez…" if vertical else "…"))
                 core.render(vod, clips, out, encoder=enc, show_label=False, progress=prog, should_stop=stop,
-                            vout_path=v, cam=cam, words=None if capcut else words, highlight=sub_hl)
+                            vout_path=v, cam=cam, words=None if capcut else words, highlight=sub_hl,
+                            kf_lines=kf_lines)
                 made = [out] + ([v] if v else [])
                 if capcut and v and words:
                     subtitles.write_srt(words, os.path.splitext(v)[0], highlight=sub_hl)
@@ -2821,7 +2841,7 @@ class App(tk.Tk):
                     except Exception:
                         pass
                 proj = {"vod": vod, "clips": clips, "out": out, "vertical": v, "cam": cam, "words": words,
-                        "capcut": capcut,
+                        "capcut": capcut, "kf_lines": kf_lines,
                         "highlight": sub_hl, "encoder": enc, "singles": folder}
                 self.save_project(proj)
                 if words and sub_edit and v:
@@ -2908,7 +2928,8 @@ class App(tk.Tk):
         sub("Rehaciendo la vertical con tus subtítulos…")
         core.render(proj["vod"], proj["clips"], proj["vertical"], encoder=proj["encoder"],
                     progress=lambda f, t: cb(f, "Vertical con los subtítulos corregidos…"), should_stop=stop,
-                    cam=proj["cam"], words=new, highlight=proj["highlight"], vertical_only=True)
+                    cam=proj["cam"], words=new, highlight=proj["highlight"], vertical_only=True,
+                    kf_lines=proj.get("kf_lines"))
         if proj.get("singles"):
             sub("Actualizando los clips verticales…")
             core.export_singles(proj["out"], proj["clips"], proj["singles"], vertical_cam=proj["cam"],
@@ -3191,6 +3212,20 @@ def selftest(out_path):
         srts_ = subtitles.write_srt(words, os.path.join(tmp, "capcut"))
         ok_srt = len(srts_) == 3 and "00:00:00,500 --> " in open(srts_[1], encoding="utf-8-sig").read()
         log(ok_srt, "subtítulos para CapCut (.srt con y sin colores + palabras clave)")
+        kpng = os.path.join(tmp, "kf.png")
+        subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "color=c=0x3ec1a5@1.0:s=420x36,format=rgba", "-frames:v", "1", kpng], check=True,
+                       **core._no_window())
+        kvo = os.path.join(tmp, "k (vertical).mp4")
+        core.render(vid, rclips, os.path.join(tmp, "k.mp4"), encoder="auto", vout_path=kvo, cam=cam,
+                    kf_lines=[{"png": kpng, "w": 746, "h": 64, "x": 320, "y": 900, "start": 0.5, "end": 2.0},
+                              {"png": kpng, "w": 746, "h": 64, "x": 320, "y": 972, "start": 2.5, "end": 4.0}])
+        fr_ = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-ss", "1.5", "-i", kvo, "-frames:v", "1",
+                              "-vf", "crop=10:10:600:927", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                             capture_output=True, **core._no_window()).stdout
+        g_ = sum(fr_[1::3]) / max(1, len(fr_) // 3)
+        log(core.probe_vod(kvo)["height"] == 1920 and g_ > 150,
+            f"killfeed en la vertical (línea encima a 1,5 s: verde {g_:.0f})")
         vsolo = os.path.join(tmp, "solo (vertical).mp4")
         core.render(vid, rclips, vsolo, encoder="auto", cam=cam, words=words[:2], vertical_only=True)
         log(core.probe_vod(vsolo)["height"] == 1920, "rehacer solo la vertical (subtítulos corregidos)")

@@ -113,6 +113,7 @@ class Clip:
     vod_end: float
     part: int = 0      # en modo "solo kills", trozo dentro de la ronda
     parts: int = 1
+    base: float | None = None   # segundo del VOD del instante 0 de la partida (para situar cada kill)
 
     @property
     def group(self) -> tuple:
@@ -590,7 +591,7 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
                     segs = _with_clutch(m, r, base, settings, vod_duration_s, segs, precise)
                 if segs and (segs[0][0] < (vod_duration_s or 1e12)) and segs[-1][1] > 0:
                     for i, (a, b) in enumerate(segs):
-                        clips.append(Clip(m, r, a, b, i, len(segs)))
+                        clips.append(Clip(m, r, a, b, i, len(segs), base))
                 continue
             start_round_ms = r.start_match_ms
             # El reloj de ronda de Riot empieza cuando bajan las barreras (tras la compra).
@@ -611,7 +612,7 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
             if vod_duration_s:
                 e = min(vod_duration_s, e)
             if e - s >= 2:
-                clips.append(Clip(m, r, s, e))
+                clips.append(Clip(m, r, s, e, base=base))
     clips.sort(key=lambda c: c.vod_start)
     return clips
 
@@ -1010,8 +1011,40 @@ def _kf_args(times: list[float], venc: list[str]) -> list[str]:
     return args
 
 
+def _kf_inputs(kf, first_index):
+    """Una entrada por línea del killfeed: la animación de entrada (0,4 s) a 60 fps."""
+    out = []
+    for ln in kf or []:
+        out += ["-loop", "1", "-framerate", "60", "-t", "0.45", "-i", ln["png"]]
+    return out
+
+
+def _kf_chains(kf, first_index, src, dst):
+    """
+    Cada línea entra con un fade rápido y un destello (solo la línea, no el vídeo) y luego se queda
+    fija hasta que acaba su ronda. Las de la misma ronda se apilan una debajo de otra.
+    """
+    if not kf:
+        return [f"{src}null{dst}"]
+    ch, cur = [], src
+    for j, ln in enumerate(kf):
+        k = first_index + j
+        st = max(0.0, ln["start"])
+        anim = ln["start"] >= 0          # si empezó en una tanda anterior, ya sin animación
+        flash = ("geq=r='min(255,r(X,Y)+190*max(0,1-T/0.25))':g='min(255,g(X,Y)+190*max(0,1-T/0.25))'"
+                 ":b='min(255,b(X,Y)+190*max(0,1-T/0.25))':a='alpha(X,Y)*min(1,T/0.12)'") if anim \
+            else "null"
+        ch.append(f"[{k}:v]format=rgba,scale={ln['w']}:{ln['h']}:flags=lanczos,{flash},"
+                  f"setpts=PTS-STARTPTS+{st:.3f}/TB[kl{j}]")
+        nxt = dst if j == len(kf) - 1 else f"[kb{j}]"
+        ch.append(f"{cur}[kl{j}]overlay=x={ln['x']}:y={ln['y']}:eof_action=repeat:"
+                  f"enable='between(t,{st:.3f},{ln['end']:.3f})'{nxt}")
+        cur = nxt
+    return ch
+
+
 def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, total_s,
-                  progress, should_stop, vout=None, cam=None, ass_path=None, vonly=False):
+                  progress, should_stop, vout=None, cam=None, ass_path=None, vonly=False, kf=None):
     """
     Una sola pasada de ffmpeg: cada ronda es una entrada con búsqueda precisa (-ss/-t)
     y el filtro concat las une. concat alinea audio y vídeo de cada ronda (rellena
@@ -1038,16 +1071,18 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
                           f"apad,atrim=0:{dur:.3f}[a{i}]")
             labels.append(f"[a{i}]")
     n = len(clips)
-    kf = _kf_args(_group_starts(clips), venc)
+    kfa = _kf_args(_group_starts(clips), venc)
     if vonly:
         # solo la vertical (p. ej. al corregir los subtítulos): una codificación desde el original
         chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[vc]" + ("[a]" if audio else ""))
         vf = vertical_filter(cam, os.path.basename(ass_path) if ass_path else None).replace("[0:v]", "[vc]", 1)
-        chains.append(vf)
+        chains.append(vf.replace("[v]", "[vk0]"))
+        cmd += _kf_inputs(kf, n)
+        chains += _kf_chains(kf, n, "[vk0]", "[v]")
         cmd += ["-filter_complex", ";".join(chains), "-map", "[v]"]
         if audio:
             cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-        cmd += [*venc, *kf, "-movflags", "+faststart", os.path.abspath(out)]
+        cmd += [*venc, *kfa, "-movflags", "+faststart", os.path.abspath(out)]
     elif vout:
         # una sola lectura del VOD: la misma imagen va a la horizontal y a la vertical,
         # cada una codificada UNA vez desde el original (sin pérdida extra)
@@ -1056,20 +1091,22 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
         if audio:
             chains.append("[ac]asplit[a][av]")
         vf = vertical_filter(cam, os.path.basename(ass_path) if ass_path else None).replace("[0:v]", "[vv0]", 1)
-        chains.append(vf.replace("[v]", "[vv]"))
+        chains.append(vf.replace("[v]", "[vk0]"))
+        cmd += _kf_inputs(kf, n)
+        chains += _kf_chains(kf, n, "[vk0]", "[vv]")
         cmd += ["-filter_complex", ";".join(chains), "-map", "[vh]"]
         if audio:
             cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-        cmd += [*venc, *kf, "-movflags", "+faststart", os.path.abspath(out), "-map", "[vv]"]
+        cmd += [*venc, *kfa, "-movflags", "+faststart", os.path.abspath(out), "-map", "[vv]"]
         if audio:
             cmd += ["-map", "[av]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-        cmd += [*venc, *kf, "-movflags", "+faststart", os.path.abspath(vout)]
+        cmd += [*venc, *kfa, "-movflags", "+faststart", os.path.abspath(vout)]
     else:
         chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[v]" + ("[a]" if audio else ""))
         cmd += ["-filter_complex", ";".join(chains), "-map", "[v]"]
         if audio:
             cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-        cmd += [*venc, *kf, "-movflags", "+faststart", out]
+        cmd += [*venc, *kfa, "-movflags", "+faststart", out]
 
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          cwd=os.path.dirname(ass_path) if ass_path and os.path.isabs(ass_path) else None,
@@ -1101,7 +1138,7 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
 def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x264",
            show_label: bool = False, progress=None, should_stop=None,
            vout_path: str | None = None, cam: dict | None = None, words: list | None = None,
-           highlight: bool = True, vertical_only: bool = False) -> str:
+           highlight: bool = True, vertical_only: bool = False, kf_lines: list | None = None) -> str:
     """
     Recorta cada ronda y las une en un único vídeo con audio y vídeo sincronizados.
     Con vout_path, en la MISMA lectura del VOD genera también la vertical 9:16 (con subtítulos),
@@ -1131,7 +1168,8 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
         if progress:
             progress(frac, f"Generando vídeo{'s' if vout_path else ''}… {frac * 100:.0f}%  ({len(clips)} rondas)")
 
-    vkey = (vout_path is not None, cam, words, highlight, vertical_only)
+    vkey = (vout_path is not None, cam, words, highlight, vertical_only,
+            [(round(k["start"], 2), round(k["end"], 2), k["png"]) for k in (kf_lines or [])])
     sig = _hash(os.path.abspath(vod_path), [(round(c.vod_start, 3), round(c.vod_end, 3)) for c in clips],
                 venc, bool(font), audio, vkey, 2)
     outs_ok = _sig_get(out_path) == sig and _dur_ok(out_path, total_s, 1.5)
@@ -1178,8 +1216,11 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
                 tpart = part[:-4] + ".tmp.mp4"
                 tvpart = vpart[:-4] + ".tmp.mp4" if vpart else None
                 ass = batch_ass(tmp, b, done, bdur, f"{bi:03d}")
+                kfb = [{**k, "start": k["start"] - done, "end": min(bdur, k["end"] - done)}
+                       for k in (kf_lines or []) if k["start"] < done + bdur and k["end"] > done] \
+                    if (vout_path or vertical_only) else None
                 _render_batch(ffmpeg, vod_path, b, tpart, venc, font, audio, done, total_s, prog, should_stop,
-                              vout=tvpart, cam=cam, ass_path=ass, vonly=vertical_only)
+                              vout=tvpart, cam=cam, ass_path=ass, vonly=vertical_only, kf=kfb)
                 os.replace(tpart, part)
                 if vpart:
                     os.replace(tvpart, vpart)
