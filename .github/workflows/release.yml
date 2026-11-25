@@ -103,7 +103,7 @@ jobs:
           $pb.AppendText("Mira esta jugada, tres kills seguidas.")
           $s.Speak($pb)
           $s.Dispose()
-          $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest-subs","$pwd\voz.wav","$pwd\subs.txt" -PassThru -Wait
+          $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest-subs","$pwd\voz.wav","$pwd\subs.txt","--gpu-test" -PassThru -Wait
           Get-Content subs.txt
           Remove-Item dist\VortexsClips\ffmpeg -Recurse -Force
           Remove-Item dist\VortexsClips\whisper -Recurse -Force

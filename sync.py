@@ -106,11 +106,10 @@ def hw_mode(vod: str) -> tuple[list, str, str]:
 def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None, crop: str = "",
             gw: int = GW, gh: int = GH) -> bytes:
 
-    # VOD descargado por tramos: se lee del tramo que toca y lo que falte al principio va en negro
-    vod, start, dur, lead = core.vod_piece(vod, start, dur)
-    pad = b"\0" * (int(round(lead * FPS)) * gw * gh) if lead > 0 else b""
-    if dur <= 0:
-        return pad
+    if core.is_parts(vod):
+        # VOD descargado por trozos: se lee de cada trozo que toque y los huecos van en negro
+        return _stitch(vod, start, dur, gw * gh,
+                       lambda f, s_, d_: _frames(f, s_, d_, hwaccel, should_stop, crop, gw, gh))
     ffmpeg = core.find_tool("ffmpeg")
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
     pre = ""
@@ -135,7 +134,29 @@ def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None,
     finally:
         if p.poll() is None:
             p.wait()
-    return pad + b"".join(chunks)
+    return b"".join(chunks)
+
+
+def _stitch(vod: str, start: float, dur: float, fsz: int, reader) -> bytes:
+    """Lee [start, start+dur] de un VOD por trozos: cada trozo en su sitio y los huecos rellenos
+    repitiendo el fotograma de al lado (sin saltos de imagen que confundan al análisis), para que el
+    fotograma k siga siendo el segundo start + k/FPS del VOD."""
+    out, count, last = [], 0, None
+    pending = 0                      # huecos al principio: se rellenan con el primer fotograma real
+    for f, ls, ld, vs in core.vod_pieces(vod, start, dur):
+        target = int(round((vs - start) * FPS))
+        b = reader(f, ls, ld)
+        n = len(b) // fsz
+        if not n:
+            continue
+        if target > count:
+            fill = last if last is not None else b[:fsz]
+            out.append(fill * (target - count))
+            count = target
+        out.append(b[: n * fsz])
+        count += n
+        last = b[(n - 1) * fsz: n * fsz]
+    return b"".join(out)
 
 
 def _prep(frames):
@@ -349,8 +370,14 @@ def cache_root() -> str:
 def _vod_cache_dir(vod: str) -> str:
     import hashlib
     try:
-        st = os.stat(vod)
-        ident = f"{os.path.abspath(vod).lower()}|{st.st_size}|{int(st.st_mtime)}|v{CACHE_VER}|{TILE_W}x{TILE_H}|{FPS}"
+        if core.is_parts(vod):
+            # el índice de trozos cambia mientras se descarga: la caché va por VOD y solo guarda
+            # tramos ya descargados enteros (ver _read_all), así nunca queda nada a medias
+            ident = f"{os.path.abspath(vod).lower()}|partes|v{CACHE_VER}|{TILE_W}x{TILE_H}|{FPS}"
+        else:
+            st = os.stat(vod)
+            ident = (f"{os.path.abspath(vod).lower()}|{st.st_size}|{int(st.st_mtime)}|v{CACHE_VER}|"
+                     f"{TILE_W}x{TILE_H}|{FPS}")
     except OSError:
         ident = f"{os.path.abspath(vod).lower()}|v{CACHE_VER}"
     d = os.path.join(cache_root(), hashlib.sha1(ident.encode("utf-8")).hexdigest()[:16])
@@ -382,20 +409,30 @@ def prune_cache(keep_vods: int = CACHE_KEEP_VODS, max_bytes: int = CACHE_MAX_BYT
             except OSError:
                 pass
         return tot
-    total = 0
-    for i, d in enumerate(dirs):
+    def group(p):
+        # los trozos de un VOD descargado por partidas cuentan como UN VOD
+        try:
+            with open(os.path.join(p, "vod.txt"), encoding="utf-8") as f:
+                src = f.readline().strip()
+        except OSError:
+            return p
+        parent = os.path.dirname(src)
+        return parent.lower() if parent.lower().endswith("(partidas)") else src.lower()
+    total, seen = 0, []
+    for d in dirs:
+        g = group(d)
+        if g not in seen:
+            seen.append(g)
         total += size(d)
-        if i >= keep_vods or total > max_bytes:
+        if seen.index(g) >= keep_vods or total > max_bytes:
             shutil.rmtree(d, ignore_errors=True)
 
 
 def _frames_all(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None) -> bytes:
     """Una sola pasada de ffmpeg: cada zona se recorta y reduce y se pegan una al lado de otra."""
-    # VOD descargado por tramos: se lee del tramo que toca y lo que falte al principio va en negro
-    vod, start, dur, lead = core.vod_piece(vod, start, dur)
-    pad = b"\0" * (int(round(lead * FPS)) * TILE_W * TILE_H) if lead > 0 else b""
-    if dur <= 0:
-        return pad
+    if core.is_parts(vod):
+        return _stitch(vod, start, dur, TILE_W * TILE_H,
+                       lambda f, s_, d_: _frames_all(f, s_, d_, hwaccel, should_stop))
 
     ffmpeg = core.find_tool("ffmpeg")
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -426,7 +463,7 @@ def _frames_all(vod: str, start: float, dur: float, hwaccel: bool, should_stop=N
     finally:
         if p.poll() is None:
             p.wait()
-    return pad + b"".join(chunks)
+    return b"".join(chunks)
 
 
 def _read_all(vod: str, start: float, dur: float, should_stop=None, vod_duration: float = 0.0):
@@ -440,6 +477,8 @@ def _read_all(vod: str, start: float, dur: float, should_stop=None, vod_duration
     fsz = TILE_W * TILE_H
     u0 = math.floor(max(0.0, start) * FPS) / FPS
     need = int(math.ceil((start + dur - u0) * FPS))
+    # VOD por trozos: la caché va por trozo (los trozos no cambian; el índice .partes.json sí, mientras
+    # se descarga). Así lo analizado durante la descarga sirve después para sincronizar.
     cdir = _vod_cache_dir(vod)
     # 1) ¿ya está en caché?
     try:
@@ -484,6 +523,8 @@ def _read_all(vod: str, start: float, dur: float, should_stop=None, vod_duration
         return u0, None
     arr = np.frombuffer(raw[: n * fsz], dtype=np.uint8).reshape(n, TILE_H, TILE_W)
     try:
+        if core.is_parts(vod) and not core.vod_covers(vod, r0, r0 + n / FPS):
+            raise OSError("tramo no descargado entero: no se guarda")
         tmp = os.path.join(cdir, f"tmp_{os.getpid()}_{id(arr)}.npz")
         np.savez_compressed(tmp, f=arr)
         os.replace(tmp, os.path.join(cdir, f"{int(round(r0 * 1000))}_{n}.npz"))
@@ -690,7 +731,7 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
 
 
 def sync_many(vod: str, items: list, vod_duration: float, workers: int = 2, progress=None,
-              should_stop=None) -> dict:
+              should_stop=None, on_done=None) -> dict:
     """
     items: [(match, expected_offset_s)]. Sincroniza varias partidas a la vez (cada una es un
     ffmpeg leyendo su trozo del VOD). progress(frac, texto). Devuelve {match_id: SyncResult}.
@@ -727,6 +768,11 @@ def sync_many(vod: str, items: list, vod_duration: float, workers: int = 2, prog
             d = state["done"]
         if progress:
             progress(d / n, f"{d} de {n} partidas leídas")
+        if on_done:
+            try:
+                on_done(m, r)        # p. ej. empezar ya los subtítulos de esa partida
+            except Exception:
+                pass
         return r
 
     if progress:
@@ -1088,3 +1134,17 @@ def _log(match, expected, results):
                                for r in results) + "\n")
     except OSError:
         pass
+
+
+def prewarm(vod: str, start: float, dur: float, should_stop=None) -> bool:
+    """
+    Deja analizado (en la caché) un tramo del VOD por adelantado: p. ej. un trozo de partidas recién
+    descargado mientras se bajan los demás. Después la sincronización lo encuentra hecho.
+    """
+    try:
+        u0, arr = _read_all(vod, start + CACHE_PAD_S, max(1.0, dur - 2 * CACHE_PAD_S), should_stop, 0.0)
+        return arr is not None
+    except Exception as e:
+        if "Cancelado" in str(e):
+            raise
+        return False

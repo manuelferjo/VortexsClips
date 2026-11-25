@@ -179,6 +179,11 @@ Riot da el segundo exacto de cada kill, pero en una hora que no coincide exactam
 2. **El marcador del HUD**, que cambia al acabar cada ronda.
 3. **El killfeed** (arriba a la derecha), como apoyo.
 
+**Más rápido en VODs largos:**
+- **Mientras se descarga** (con «Bajar solo los trozos con partidas»), cada trozo ya bajado se va analizando mientras baja el siguiente. Al terminar la descarga, la sincronización es casi inmediata.
+- **Varias partidas a la vez** según tu PC: 2 en un portátil normal y hasta 4–5 en un PC con muchos núcleos o con gráfica NVIDIA.
+- **Mientras se sincroniza**, cada partida ya colocada empieza a transcribirse para los subtítulos. Al llegar a «Generar vídeos» suelen estar hechos.
+
 Para ir más rápido, la tarjeta gráfica descodifica el vídeo y solo pasa al programa los 4 fotogramas por segundo que se analizan (la imagen analizada es la misma; si la gráfica no puede, se hace como siempre).
 
 Si dos métodos coinciden en el mismo segundo, la partida se da por buena. Después **se comprueba con todas sus kills**: si algo no cuadra, sale como «⚠ Dudosa» y te avisa también al generar.
@@ -196,6 +201,7 @@ Si dos métodos coinciden en el mismo segundo, la partida se da por buena. Despu
 - **Palabra a palabra:** en la vertical sale una sola palabra cada vez (estilo TikTok). Si juntas varias en una en el editor, salen juntas.
 - **Ajuste de tiempo:** en el editor, **◀ −0,1 s / +0,1 s ▶** mueve todos los subtítulos y lo ves al momento en el vídeo. Marca **Usar este ajuste en los próximos vídeos** para guardarlo. También está en **Salida → Ajuste de tiempo (s)** (+ salen más tarde, − antes).
 - **Diccionario:** cada palabra que corriges se apunta sola (p. ej. «vortex» → «Vortexs», «tres kills» → «3K») y en los siguientes vídeos ya sale corregida. Se ve y se edita en **Salida → Diccionario…**.
+- **Con gráfica NVIDIA** (el PC de stream), la primera vez que abres el programa se baja sola en segundo plano la versión del transcriptor para tu gráfica (unos 440 MB, una sola vez) y los subtítulos salen varias veces más rápido. Si tu gráfica o su driver no la pueden usar, sigue con el procesador como siempre. En un PC sin NVIDIA (el portátil) no se baja nada.
 - **Tiempos:** cada palabra se alinea con la voz con precisión (alineación DTW del transcriptor), sin que los tiempos se vayan desplazando en audios largos, y las palabras que el transcriptor «estiraba» tras una pausa (el texto salía antes de decirlo) se corrigen solas.
 
 ---

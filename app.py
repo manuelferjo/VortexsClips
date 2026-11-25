@@ -130,6 +130,7 @@ class App(tk.Tk):
         self.after(800, self.detect_encoder)
         self.after(1200, self.restore_last_vod)
         self.after(20000, self.purge_old_vods)
+        self.after(30000, subtitles.prefetch_gpu_async)   # en PCs con NVIDIA: transcriptor rápido
         self.after(1500, lambda: self.mirror_delay_log(True))
         if self.v_watch.get():
             self.after(30_000, self.watch_tick)
@@ -1362,13 +1363,37 @@ class App(tk.Tk):
         self.after(0, lambda: self.lbl_step.configure(
             text=f"Descargando solo las partidas: {core.fmt_ts(tot).split('.')[0]} de "
                  f"{core.fmt_ts(info.get('duration') or 0).split('.')[0]} del directo…"))
+        # mientras baja el siguiente trozo, el anterior ya se va analizando para la sincronización
+        # (lo lento); al terminar la descarga, sincronizar es casi inmediato
+        from concurrent.futures import ThreadPoolExecutor
+        ex = ThreadPoolExecutor(max_workers=max(1, self.sync_workers() - 1)) if self.v_autosync.get() else None
+        pre = []
+
+        def on_part(man, start, dur):
+            if ex:
+                pre.append(ex.submit(sync.prewarm, man, start, dur, lambda: self.stop_flag))
         try:
-            return twitch.download_sections(url, out_dir, secs, prog, lambda: self.stop_flag, info)
+            man = twitch.download_sections(url, out_dir, secs, prog, lambda: self.stop_flag, info,
+                                           on_part=on_part)
+            if ex:
+                left = [f for f in pre if not f.done()]
+                if left:
+                    prog(None, f"Terminando de analizar {len(left)} trozo(s) para la sincronización…")
+                for f in pre:
+                    try:
+                        f.result()
+                    except Exception as e2:
+                        if "Cancelado" in str(e2):
+                            raise
+            return man
         except Exception as e:
             if "cancelad" in str(e).lower():
                 raise
             prog(None, f"La descarga por trozos falló ({str(e)[:80]}); bajo el VOD entero…")
             return None
+        finally:
+            if ex:
+                ex.shutdown(wait=False, cancel_futures=True)
 
     def sub_offset(self) -> float:
         try:
@@ -1604,8 +1629,39 @@ class App(tk.Tk):
             n = 0
         if n > 0:
             return min(n, 6)
+        # cada partida es un ffmpeg decodificando 1080p60: unos 3-4 hilos del procesador por partida;
+        # con NVIDIA la decodificación va en la gráfica y cabe una más
         cpus = os.cpu_count() or 4
-        return 3 if cpus >= 12 else 2
+        n = 4 if cpus >= 16 else 3 if cpus >= 12 else 2
+        if subtitles.has_nvidia():
+            n += 1
+        return max(2, min(n, 5))
+
+    def _bg_subs_hook(self, vod, vs, dur, st, dfn):
+        """Mientras se sincronizan las demás partidas, ir transcribiendo las jugadas de las que ya están
+        (al llegar a «Generar vídeos» los subtítulos ya están hechos)."""
+        if not (self.v_vertical.get() and self.v_subs.get()):
+            return None
+        from concurrent.futures import ThreadPoolExecutor
+        if getattr(self, "_sub_ex", None) is None:
+            self._sub_ex = ThreadPoolExecutor(max_workers=1)
+            self.sub_jobs = []
+        # sin gráfica NVIDIA, el transcriptor en segundo plano usa pocos hilos para no frenar la sincronización
+        thr = None if subtitles.find_gpu_cli() else max(2, (os.cpu_count() or 4) // 3)
+
+        def on_done(m, r):
+            if not r.ok:
+                return
+            cl = core.build_clips([m], vs, dur, st, {m.match_id: {"offset_s": r.offset_s}}, dfn)
+            if not cl:
+                return
+            have = subtitles.cache_get(vod)
+            rng = [(c.vod_start - 2, c.vod_end + 2) for c in cl
+                   if subtitles._covering(have, c.vod_start, c.vod_end) is None]
+            if rng:
+                self.sub_jobs.append(self._sub_ex.submit(subtitles.transcribe_ranges, vod, rng, None,
+                                                         lambda: self.stop_flag, thr))
+        return on_done
 
     def run_sync(self, match_ids, then=None):
         if not self.vod_info:
@@ -1640,7 +1696,9 @@ class App(tk.Tk):
                     else:
                         exp = core.match_offset_s(m, vs, {}) + core.delay_offset(m, st, dfn)
                     items.append((m, exp))
-                res = sync.sync_many(vod, items, dur, self.sync_workers(), cb, lambda: self.stop_flag)
+                on_done = self._bg_subs_hook(vod, vs, dur, st, dfn)
+                res = sync.sync_many(vod, items, dur, self.sync_workers(), cb, lambda: self.stop_flag,
+                                     on_done=on_done)
                 # referencias extra: partidas de este mismo VOD que ya se sincronizaron solas antes
                 # (así, al repetir solo las que fallaron, hay desfase común con el que compararlas)
                 refs = {}
@@ -2497,16 +2555,26 @@ class App(tk.Tk):
                 if subs:
                     sub("Transcribiendo lo que dices para los subtítulos…")
                     try:
-                        cb(None, "Sacando el audio de las jugadas…")
-                        wav = base + " (audio subtítulos).wav"
-                        core.render_audio(vod, clips, wav, stop)
-                        try:
-                            words = self.prepare_words(subtitles.transcribe(wav, cb, stop))
-                        finally:
+                        # lo transcrito en segundo plano mientras se sincronizaba se reaprovecha
+                        jobs = [j for j in getattr(self, "sub_jobs", []) if not j.done()]
+                        if jobs:
+                            cb(None, f"Terminando los subtítulos que se hacían mientras sincronizaba…")
+                        for j in getattr(self, "sub_jobs", []):
                             try:
-                                os.remove(wav)
-                            except OSError:
+                                j.result()
+                            except Exception:
                                 pass
+                        self.sub_jobs = []
+                        miss = subtitles.missing_ranges(vod, clips)
+                        if miss:
+                            cb(None, f"Transcribiendo {len(miss)} ronda(s)…")
+                            subtitles.transcribe_ranges(vod, miss, cb, stop)
+                        else:
+                            cb(1, "Los subtítulos ya estaban hechos")
+                        words = subtitles.words_for_clips(vod, clips)
+                        if words is None:
+                            raise RuntimeError("no se pudieron transcribir algunas rondas")
+                        words = self.prepare_words(words)
                     except Exception as e:
                         if "Cancelado" in str(e):
                             raise
@@ -3065,6 +3133,27 @@ def selftest_subs(wav, out_path):
               f"en orden={mono}, dentro={inside}, pausa respetada={pause_ok} ({max(gaps) if gaps else 0:.1f} s), " \
               f"primera a {ws[0]['start'] if ws else -1:.2f} s): {txt[:200]}\n"
         res += "\n".join(f"  {w['start']:6.2f}-{w['end']:6.2f} {w['text']}" for w in ws[:40])
+        # subtítulos por tramos del VOD (los que se hacen mientras se sincroniza) y su reaprovechamiento
+        from types import SimpleNamespace as _NS
+        n_ = subtitles.transcribe_ranges(wav, [(1.5, 7.8), (10.5, min(dur, 15.0))])
+        cl_ = [_NS(vod_start=2.0, vod_end=7.5), _NS(vod_start=11.0, vod_end=min(dur, 14.8))]
+        w2 = subtitles.words_for_clips(wav, cl_)
+        tot_ = sum(c.vod_end - c.vod_start for c in cl_)
+        ok_r = (n_ >= 4 and w2 is not None and len(w2) >= 4 and not subtitles.missing_ranges(wav, cl_)
+                and all(0 <= w["start"] < tot_ for w in w2))
+        res += ("\n" + ("OK  " if ok_r else "FAIL") + f" subtítulos por tramos del VOD ({n_} palabras, "
+                f"{len(w2 or [])} en los clips): " + " ".join(w["text"] for w in (w2 or []))[:160])
+        ok = ok and ok_r
+        # versión para NVIDIA: se baja y, si este PC no la puede usar, se sigue con el procesador
+        if "--gpu-test" in sys.argv:
+            subtitles._NVIDIA["v"] = True
+            g_ = subtitles.ensure_gpu_whisper()
+            ws_g = subtitles.transcribe(wav)
+            ok_g = bool(g_) and len(ws_g) >= 2
+            res += ("\n" + ("OK  " if ok_g else "FAIL") + f" transcriptor NVIDIA: descargado={bool(g_)}, "
+                    f"modo «{subtitles.LAST_MODE}», {len(ws_g)} palabras "
+                    f"(sin gráfica en GitHub: {'falla y sigue con el procesador' if 'GPU' not in subtitles.LAST_MODE else 'funciona'})")
+            ok = ok and ok_g
         res += "\nEN BRUTO (from-to | tokens texto@t_dtw):"
         for sg in (subtitles.LAST_RAW.get("transcription") or [])[:40]:
             o_ = sg.get("offsets") or {}

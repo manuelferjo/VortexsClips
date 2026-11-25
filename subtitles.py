@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import urllib.request
 import zipfile
 
@@ -21,6 +22,8 @@ import core
 
 # versión fija que sí publica los programas para Windows (las últimas solo traen el código)
 WHISPER_ZIP = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.2/whisper-bin-x64.zip"
+# versión para tarjetas NVIDIA (trae sus librerías CUDA: ~436 MB, se baja una vez y solo si hay NVIDIA)
+WHISPER_GPU_ZIP = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.2/whisper-cublas-12.4.0-bin-x64.zip"
 MODEL_NAME = "ggml-small-q5_1.bin"
 MODEL_URLS = [
     # copia en GitHub (funciona en redes donde HuggingFace está bloqueado)
@@ -86,6 +89,96 @@ def _download(url: str, dst: str, progress=None, label=""):
     os.replace(dst + ".part", dst)
 
 
+# ---------------------------------------------------------------- transcribir con la gráfica (NVIDIA)
+_NVIDIA = {}
+
+
+def _quiet_errors():
+    """Que Windows no saque ventanas de «falta tal DLL» si la versión para NVIDIA no puede arrancar
+    (el programa la detecta y sigue con el procesador)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+        except Exception:
+            pass
+
+
+_quiet_errors()
+
+
+def has_nvidia() -> bool:
+    if "v" in _NVIDIA:
+        return _NVIDIA["v"]
+    ok = False
+    if os.name == "nt":
+        smi = shutil.which("nvidia-smi") or os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                                                         "System32", "nvidia-smi.exe")
+        if os.path.isfile(smi):
+            try:
+                r = subprocess.run([smi, "-L"], capture_output=True, text=True, timeout=15, **core._no_window())
+                ok = r.returncode == 0 and "GPU" in r.stdout
+            except Exception:
+                ok = False
+    _NVIDIA["v"] = ok
+    return ok
+
+
+def gpu_dir() -> str:
+    return os.path.join(core.data_dir(), "whisper-gpu")
+
+
+def _gpu_broken_flag() -> str:
+    return os.path.join(gpu_dir(), "no_funciona.txt")
+
+
+def find_gpu_cli() -> str | None:
+    d = gpu_dir()
+    if not os.path.isdir(d) or os.path.isfile(_gpu_broken_flag()):
+        return None
+    for root, _d, files in os.walk(d):
+        if "whisper-cli.exe" in files and ".completo" in files:
+            return os.path.join(root, "whisper-cli.exe")
+    return None
+
+
+_GPU_LOCK = threading.Lock()
+
+
+def ensure_gpu_whisper(progress=None) -> str | None:
+    """Baja (una vez) la versión para NVIDIA. None si no hay NVIDIA o no se puede."""
+    if not has_nvidia() or os.path.isfile(_gpu_broken_flag()):
+        return None
+    cli = find_gpu_cli()
+    if cli:
+        return cli
+    if not _GPU_LOCK.acquire(blocking=False):
+        return None                      # ya se está bajando en segundo plano
+    try:
+        os.makedirs(gpu_dir(), exist_ok=True)
+        z = os.path.join(gpu_dir(), "gpu.zip")
+        _download(WHISPER_GPU_ZIP, z, progress, "Descargando el transcriptor para tu gráfica NVIDIA (una vez):")
+        with zipfile.ZipFile(z) as zf:
+            zf.extractall(gpu_dir())
+        os.remove(z)
+        for root, _d, files in os.walk(gpu_dir()):
+            if "whisper-cli.exe" in files:
+                open(os.path.join(root, ".completo"), "w").close()
+                return os.path.join(root, "whisper-cli.exe")
+        return None
+    except Exception:
+        return None
+    finally:
+        _GPU_LOCK.release()
+
+
+def prefetch_gpu_async():
+    """Al abrir el programa en un PC con NVIDIA: bajar la versión rápida en segundo plano."""
+    if os.name != "nt" or find_gpu_cli() or os.path.isfile(_gpu_broken_flag()):
+        return
+    threading.Thread(target=lambda: has_nvidia() and ensure_gpu_whisper(), daemon=True).start()
+
+
 def ensure_whisper(progress=None) -> tuple[str, str]:
     """Devuelve (programa, modelo); los descarga la primera vez."""
     cli = _find_cli()
@@ -114,7 +207,7 @@ def ensure_whisper(progress=None) -> tuple[str, str]:
     return cli, model
 
 
-def transcribe(video: str, progress=None, should_stop=None) -> list[dict]:
+def transcribe(video: str, progress=None, should_stop=None, threads: int | None = None) -> list[dict]:
     """Lista de palabras [{'start','end','text'}] en segundos, en español."""
     cli, model = ensure_whisper(progress)
     tmp = tempfile.mkdtemp(prefix="vortexsclips_sub_")
@@ -128,23 +221,43 @@ def transcribe(video: str, progress=None, should_stop=None) -> list[dict]:
             raise RuntimeError("No se pudo sacar el audio: " + r.stderr[-300:])
         if progress:
             progress(None, "Transcribiendo lo que dices (subtítulos)…")
-        threads = str(max(2, (os.cpu_count() or 4) - 1))
+        threads = str(threads or max(2, (os.cpu_count() or 4) - 1))
         base = os.path.join(tmp, "out")
         jpath = base + ".json"
         # 1º con alineación precisa por palabra (DTW) y sin arrastrar contexto entre trozos
         #    (en audios largos el contexto hace que los tiempos se vayan desplazando);
         # si esta versión del transcriptor no lo admite, como antes
-        common = [cli, "-m", model, "-f", wav, "-l", "es", "-t", threads, "-ml", "1", "-sow", "-np", "-of", base]
         out_tail = []
         # (la alineación DTW no funciona con «flash attention», que viene activada por defecto: -nfa)
+        attempts = []
+        gcli = find_gpu_cli() if has_nvidia() else None
+        if gcli:                     # 1º con la gráfica NVIDIA (varias veces más rápido)
+            attempts.append((gcli, ["-mc", "0", "-nfa", "-dtw", DTW_PRESET, "-ojf"]))
         for extra in (["-mc", "0", "-nfa", "-dtw", DTW_PRESET, "-ojf"], ["-mc", "0", "-dtw", DTW_PRESET, "-ojf"],
                       ["-mc", "0", "-oj"], ["-oj"]):
+            attempts.append((cli, extra))
+        for exe, extra in attempts:
             try:
                 os.remove(jpath)
             except OSError:
                 pass
-            p = subprocess.Popen(common + extra, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                 encoding="utf-8", errors="replace", **core._no_window())
+            common = [exe, "-m", model, "-f", wav, "-l", "es", "-t", threads, "-ml", "1", "-sow", "-np",
+                      "-of", base]
+            if exe == gcli and progress:
+                progress(None, "Transcribiendo con tu gráfica NVIDIA (subtítulos)…")
+            try:
+                p = subprocess.Popen(common + extra, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     encoding="utf-8", errors="replace", cwd=os.path.dirname(exe) or None,
+                                     **core._no_window())
+            except OSError as e:
+                out_tail = [str(e)]
+                if exe == gcli:
+                    try:
+                        with open(_gpu_broken_flag(), "w", encoding="utf-8") as f_:
+                            f_.write(str(e))
+                    except OSError:
+                        pass
+                continue
             out_tail = []
             for line in p.stdout:
                 out_tail = (out_tail + [line])[-10:]
@@ -154,8 +267,15 @@ def transcribe(video: str, progress=None, should_stop=None) -> list[dict]:
             p.wait()
             if p.returncode == 0 and os.path.isfile(jpath):
                 global LAST_MODE
-                LAST_MODE = " ".join(extra)
+                LAST_MODE = ("GPU " if exe == gcli else "") + " ".join(extra)
                 break
+            if exe == gcli:
+                # la versión para NVIDIA no funciona en este PC (driver antiguo…): no se vuelve a intentar
+                try:
+                    with open(_gpu_broken_flag(), "w", encoding="utf-8") as f_:
+                        f_.write("".join(out_tail)[-2000:])
+                except OSError:
+                    pass
         if not os.path.isfile(jpath):
             raise RuntimeError("El transcriptor falló:\n" + "".join(out_tail)[-400:])
         with open(jpath, encoding="utf-8", errors="replace") as f:
@@ -453,3 +573,113 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f.write(f"Dialogue: 0,{_ts(a)},{_ts(b)},TikTok,,0,0,0,,"
                     f"{{\\pos(540,{y_center})\\fscx85\\fscy85\\t(0,90,\\fscx100\\fscy100)}}{t}\n")
     return len(lines)
+
+
+# ---------------------------------------------------------------- subtítulos con la hora del VOD
+# Se transcribe por tramos del VOD (p. ej. las jugadas de cada partida en cuanto se sincroniza, mientras
+# se sincronizan las demás) y se guarda con la hora del VOD. Al generar se reaprovecha lo ya hecho y solo
+# se transcribe lo que falte.
+SUBS_CACHE_VER = 1
+_CACHE_LOCK = threading.Lock()
+
+
+def _subs_cache_path(vod: str) -> str:
+    import hashlib
+    d = os.path.join(core.data_dir(), "subtitulos_cache")
+    os.makedirs(d, exist_ok=True)
+    h = hashlib.sha1(f"{os.path.abspath(vod).lower()}|{MODEL_NAME}|v{SUBS_CACHE_VER}".encode("utf-8"))
+    return os.path.join(d, h.hexdigest()[:16] + ".json")
+
+
+def cache_get(vod: str) -> list[dict]:
+    with _CACHE_LOCK:
+        try:
+            with open(_subs_cache_path(vod), encoding="utf-8") as f:
+                return json.load(f).get("ranges", [])
+        except Exception:
+            return []
+
+
+def cache_put(vod: str, entries: list[dict]) -> None:
+    with _CACHE_LOCK:
+        p = _subs_cache_path(vod)
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {"vod": vod, "ranges": []}
+        data["ranges"].extend(entries)
+        with open(p + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(p + ".tmp", p)
+
+
+def _covering(entries, a, b):
+    for e in entries:
+        if e["a"] <= a + 0.05 and e["b"] >= b - 0.05:
+            return e
+    return None
+
+
+def missing_ranges(vod: str, clips) -> list[tuple[float, float]]:
+    entries = cache_get(vod)
+    out = []
+    for c in clips:
+        if not _covering(entries, c.vod_start, c.vod_end):
+            out.append((c.vod_start, c.vod_end))
+    return out
+
+
+def transcribe_ranges(vod: str, ranges: list[tuple[float, float]], progress=None, should_stop=None,
+                      threads: int | None = None) -> int:
+    """Transcribe esos tramos del VOD (juntos, en una pasada) y los guarda con la hora del VOD."""
+    from types import SimpleNamespace as _NS
+    rs = []
+    for a, b in sorted(ranges):
+        a = max(0.0, a)
+        if b <= a:
+            continue
+        if rs and a <= rs[-1][1] + 1.0:
+            rs[-1][1] = max(rs[-1][1], b)
+        else:
+            rs.append([a, b])
+    if not rs:
+        return 0
+    tmp = tempfile.mkdtemp(prefix="vortexsclips_rng_")
+    try:
+        wav = os.path.join(tmp, "a.wav")
+        core.render_audio(vod, [_NS(vod_start=a, vod_end=b) for a, b in rs], wav, should_stop)
+        words = transcribe(wav, progress, should_stop, threads)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    cum, t = [], 0.0
+    for a, b in rs:
+        cum.append(t)
+        t += b - a
+    per = [[] for _ in rs]
+    j = 0
+    for w in words:
+        while j + 1 < len(rs) and w["start"] >= cum[j + 1]:
+            j += 1
+        a, b = rs[j]
+        st = a + (w["start"] - cum[j])
+        en = min(b, a + (w["end"] - cum[j]))
+        per[j].append({**w, "start": round(st, 3), "end": round(max(en, st + 0.05), 3)})
+    cache_put(vod, [{"a": a, "b": b, "words": ws} for (a, b), ws in zip(rs, per)])
+    return len(words)
+
+
+def words_for_clips(vod: str, clips) -> list[dict] | None:
+    """Palabras ya en el tiempo del vídeo montado (clips seguidos). None si falta algún tramo."""
+    entries = cache_get(vod)
+    out, t = [], 0.0
+    for c in clips:
+        e = _covering(entries, c.vod_start, c.vod_end)
+        if e is None:
+            return None
+        for w in e["words"]:
+            if c.vod_start <= w["start"] < c.vod_end:
+                out.append({**w, "start": round(w["start"] - c.vod_start + t, 3),
+                            "end": round(min(w["end"], c.vod_end) - c.vod_start + t, 3)})
+        t += c.vod_end - c.vod_start
+    return out

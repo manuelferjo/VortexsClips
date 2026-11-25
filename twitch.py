@@ -421,7 +421,8 @@ def merge_sections(sections: list[tuple[float, float]], duration: float, join_ga
 
 
 def download_sections(url: str, out_dir: str, sections: list[tuple[float, float]], progress=None,
-                      should_stop=None, info: dict | None = None, m3u8: str | None = None) -> str:
+                      should_stop=None, info: dict | None = None, m3u8: str | None = None,
+                      on_part=None) -> str:
     """
     Descarga SOLO los tramos indicados (segundos del VOD) y devuelve un manifiesto
     «<nombre>.partes.json». Los tiempos de todo el programa siguen siendo los del VOD entero.
@@ -483,6 +484,37 @@ def download_sections(url: str, out_dir: str, sections: list[tuple[float, float]
         raise RuntimeError(f"No se pudo bajar un trozo del VOD: {last}")
 
     parts = []
+    total_dur = float(info.get("duration") or pl["duration"])
+    man = os.path.join(out_dir, base + core.PARTS_SUFFIX)
+
+    def write_manifest():
+        old = {}
+        if os.path.isfile(man):
+            try:
+                with open(man, encoding="utf-8") as f:
+                    old = json.load(f)
+            except Exception:
+                old = {}
+        have = {p["file"]: p for p in old.get("parts", []) if os.path.isfile(os.path.join(out_dir, p["file"]))}
+        for p in parts:
+            have[p["file"]] = p
+        m = {"version": 1, "id": info.get("id"), "url": url, "title": info.get("title", ""),
+             "duration": total_dur,
+             "start_utc": info["start"].isoformat() if info.get("start") else None,
+             "parts": sorted(have.values(), key=lambda p: p["start"])}
+        with open(man + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(m, f, ensure_ascii=False, indent=1)
+        os.replace(man + ".tmp", man)
+
+    def part_ready(p):
+        parts.append(p)
+        write_manifest()
+        if on_part:
+            try:
+                on_part(man, p["start"], p["dur"])
+            except Exception:
+                pass
+
     for k, ((a, b), chosen) in enumerate(plan):
         name = f"tramo_{k + 1:02d}_{int(chosen[0]['start'])}.mp4"
         final = os.path.join(pdir, name)
@@ -491,7 +523,7 @@ def download_sections(url: str, out_dir: str, sections: list[tuple[float, float]
         if os.path.isfile(final) and os.path.getsize(final) > 0:
             with lock:
                 done[0] += len(chosen)
-            parts.append({"file": os.path.join(pdir_name, name), "start": p_start, "dur": p_dur})
+            part_ready({"file": os.path.join(pdir_name, name), "start": p_start, "dur": p_dur})
             continue
         sdir = os.path.join(pdir, f"trozos_{k + 1:02d}")
         os.makedirs(sdir, exist_ok=True)
@@ -545,25 +577,8 @@ def download_sections(url: str, out_dir: str, sections: list[tuple[float, float]
             raise RuntimeError("No se pudo unir un tramo del VOD:\n" + r.stderr[-500:])
         os.replace(tmpf, final)
         shutil.rmtree(sdir, ignore_errors=True)
-        parts.append({"file": os.path.join(pdir_name, name), "start": p_start, "dur": p_dur})
-    man = os.path.join(out_dir, base + core.PARTS_SUFFIX)
-    old = {}
-    if os.path.isfile(man):
-        try:
-            with open(man, encoding="utf-8") as f:
-                old = json.load(f)
-        except Exception:
-            old = {}
-    have = {p["file"]: p for p in old.get("parts", []) if os.path.isfile(os.path.join(out_dir, p["file"]))}
-    for p in parts:
-        have[p["file"]] = p
-    m = {"version": 1, "id": info.get("id"), "url": url, "title": info.get("title", ""),
-         "duration": total_dur,
-         "start_utc": info["start"].isoformat() if info.get("start") else None,
-         "parts": sorted(have.values(), key=lambda p: p["start"])}
-    with open(man + ".tmp", "w", encoding="utf-8") as f:
-        json.dump(m, f, ensure_ascii=False, indent=1)
-    os.replace(man + ".tmp", man)
+        part_ready({"file": os.path.join(pdir_name, name), "start": p_start, "dur": p_dur})
+    write_manifest()
     return man
 
 

@@ -695,6 +695,20 @@ def vod_piece(vod: str, start: float, dur: float) -> tuple[str, float, float, fl
     return best["file"], s0 - best["start"], e0 - s0, s0 - a
 
 
+def vod_pieces(vod: str, start: float, dur: float) -> list[tuple[str, float, float, float]]:
+    """Todos los trozos descargados que tocan [start, start+dur]: [(archivo, inicio en el archivo,
+    duración, segundo del VOD donde empieza)], en orden. Lo que no esté, son huecos."""
+    if not is_parts(vod):
+        return [(vod, max(0.0, start), dur, max(0.0, start))]
+    a, b = start, start + dur
+    out = []
+    for p in load_parts(vod)["parts"]:
+        s0, e0 = max(a, p["start"]), min(b, p["start"] + p["dur"])
+        if e0 > s0:
+            out.append((p["file"], s0 - p["start"], e0 - s0, s0))
+    return out
+
+
 def vod_part_start(vod: str, file: str) -> float:
     if not is_parts(vod):
         return 0.0
