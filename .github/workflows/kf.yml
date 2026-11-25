@@ -14,17 +14,16 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           python -m pip install -q yt-dlp
-      - name: Trozo del VOD (Sunset 24/11 18:46)
+      - name: Trozos del VOD (rondas sin killfeed)
         run: |
-          mkdir -p out
-          yt-dlp -q -f "b/bv*" -S "res,fps" --download-sections "*3900-4500" -o trozo.mp4 "https://www.twitch.tv/videos/2939461539" || true
-          ffprobe -v error -show_entries format=duration:stream=width,height -of default=nw=1 trozo.mp4 | tee out/info.txt || true
-          # killfeed a tamaño real, 1 por segundo, hojas de 5x10 (zona 0.22 de alto)
-          ffmpeg -loglevel error -i trozo.mp4 -vf "fps=1,crop=iw*0.31:ih*0.22:iw*0.685:ih*0.035,tile=5x10" out/hoja_%02d.png
-          # además 4 por segundo en bruto (sin juntar) para probar el detector
           mkdir -p out/r4
-          ffmpeg -loglevel error -i trozo.mp4 -vf "fps=4,crop=iw*0.31:ih*0.22:iw*0.685:ih*0.035" out/r4/f_%04d.png
-          du -sh out
+          for r in 8132-8142 9460-9468 10524-10535 12364-12394 1484-1490; do
+            a=${r%-*}; b=${r#*-}
+            yt-dlp -q -f "b/bv*" -S "res,fps" --download-sections "*$a-$b" -o "t_$a.mp4" "https://www.twitch.tv/videos/2939461539" || true
+            ffmpeg -loglevel error -i "t_$a.mp4" -vf "fps=4,crop=iw*0.31:ih*0.22:iw*0.685:ih*0.035" "out/r4/s${a}_%03d.png" || true
+          done
+          ffprobe -v error -show_entries stream=width,height -of csv=p=0 t_8132.mp4 > out/info.txt || true
+          ls out/r4 | wc -l
       - name: Guardar
         run: |
           git config user.name "github-actions"; git config user.email "actions@github.com"
