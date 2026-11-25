@@ -100,10 +100,18 @@ def clip_texts(c, words: list[dict] | None = None, why: list[str] | None = None,
         lines.append(f"🔴 En directo en twitch.tv/{channel}")
     lines.append(f"📸 {INSTAGRAM}")
     desc = "\n".join(lines)
+    # TikTok: solo título y 5 hashtags (ahí la descripción es el propio título)
+    tk = ["#valorant", (KIND_TAGS.get(key) or ["#clutch"])[0], _tag(agent) or "#valorantclips", "#valorantclips",
+          "#parati"]
+    tk_uniq = []
+    for t in tk + ["#gaming", "#fps"]:
+        if t and t not in tk_uniq:
+            tk_uniq.append(t)
     return {
         "title": title[:95],
         "description": desc,
         "hashtags": uniq[:10],
+        "tiktok": {"title": title[:95], "hashtags": tk_uniq[:5]},
         "why": why or [],
     }
 
@@ -153,14 +161,22 @@ def words_in(words: list[dict] | None, t: float, d: float) -> list[dict]:
             if w["start"] >= t - 0.2 and w["start"] < t + d]
 
 
+def tiktok_line(tx: dict) -> str:
+    tk = tx.get("tiktok")
+    return f"{tk['title']} {' '.join(tk['hashtags'])}" if tk else ""
+
+
 def _block(name: str, tx: dict) -> str:
-    return (f"=== {name} ===\nTÍTULO: {tx['title']}\n\nDESCRIPCIÓN:\n{tx['description']}\n\n"
-            f"HASHTAGS: {' '.join(tx['hashtags'])}\n")
+    tk = (f"TIKTOK (copia y pega tal cual):\n{tiktok_line(tx)}\n\n" if tx.get("tiktok") else "")
+    return (f"=== {name} ===\n{tk}TÍTULO: {tx['title']}\n\nDESCRIPCIÓN (YouTube / Instagram):\n"
+            f"{tx['description']}\n\nHASHTAGS: {' '.join(tx['hashtags'])}\n")
 
 
 def write_clip_txt(video_path: str, tx: dict) -> str:
     p = os.path.splitext(video_path)[0] + ".txt"
     with open(p, "w", encoding="utf-8") as f:
+        if tx.get("tiktok"):
+            f.write(f"TIKTOK:\n{tiktok_line(tx)}\n\n---\n\n")
         f.write(f"{tx['title']}\n\n{tx['description']}\n\n{' '.join(tx['hashtags'])}\n")
     return p
 
