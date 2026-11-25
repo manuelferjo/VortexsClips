@@ -161,7 +161,7 @@ class App(tk.Tk):
 
     def _panel(self, parent, title, sub=""):
         """Tarjeta redondeada con número y título: «1 · Cuenta y partidas» -> 01 Cuenta y partidas."""
-        f = ui.Card(parent, pad=18, radius=18)
+        f = ui.Card(parent, pad=16, radius=18)
         hd = ttk.Frame(f, style="Panel.TFrame")
         hd.grid(row=0, column=0, columnspan=10, sticky="w", pady=(0, 8))
         num, _, txt = title.partition(" · ")
@@ -189,7 +189,7 @@ class App(tk.Tk):
         ttk.Label(tl, text=" Clips", style="TitleY.TLabel").pack(side="left")
         ttk.Label(tb, text=f"BY VORTEXS · V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
                   style="Sub.TLabel").pack(anchor="w")
-        ttk.Button(head, text="Buscar actualizaciones",
+        ui.Button(head, text="Buscar actualizaciones",
                    command=lambda: self.check_update(silent=False)).pack(side="right")
         self.pill = ui.status_pill(head)
         self.pill.pack(side="right", padx=12)
@@ -216,17 +216,17 @@ class App(tk.Tk):
             row=2, column=1, columnspan=3, sticky="we", padx=6)
         b = ttk.Frame(p1, style="Panel.TFrame")
         b.grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        self.btn_load = ttk.Button(b, text="Cargar partidas", style="Purple.TButton",
+        self.btn_load = ui.Button(b, text="Cargar partidas", style="Purple.TButton",
                                    command=self.load_matches)
         self.btn_load.pack(side="left")
-        self.btn_more = ttk.Button(b, text="Cargar 10 más", command=lambda: self.load_matches(True))
+        self.btn_more = ui.Button(b, text="Cargar 10 más", command=lambda: self.load_matches(True))
         self.btn_more.pack(side="left", padx=6)
         ttk.Label(p1, text="o pega el enlace de una partida de tracker.gg").grid(
             row=4, column=0, columnspan=4, sticky="w", pady=(10, 2))
         lf = ttk.Frame(p1, style="Panel.TFrame")
         lf.grid(row=5, column=0, columnspan=4, sticky="we")
         ttk.Entry(lf, textvariable=self.v_link, width=44).pack(side="left", fill="x", expand=True)
-        ttk.Button(lf, text="Añadir", command=self.add_by_link).pack(side="left", padx=6)
+        ui.Button(lf, text="Añadir", command=self.add_by_link).pack(side="left", padx=6)
         kp = ttk.Frame(p1, style="Panel.TFrame")
         kp.grid(row=6, column=0, columnspan=4, sticky="we", pady=(16, 0))
         self.kpi = {}
@@ -298,7 +298,7 @@ class App(tk.Tk):
         tf = ttk.Frame(t_vod, style="Panel.TFrame")
         tf.grid(row=1, column=0, columnspan=4, sticky="we", pady=(4, 0))
         ttk.Entry(tf, textvariable=self.v_twitch, width=50).pack(side="left", fill="x", expand=True)
-        self.btn_dl = ttk.Button(tf, text="Descargar VOD", style="Accent.TButton", command=self.download_vod)
+        self.btn_dl = ui.Button(tf, text="Descargar VOD", style="Accent.TButton", command=self.download_vod)
         self.btn_dl.pack(side="left", padx=6)
         self.lbl_queue = ttk.Label(t_vod, text="", style="Muted.TLabel")
         self.lbl_queue.grid(row=2, column=0, columnspan=4, sticky="w")
@@ -312,13 +312,13 @@ class App(tk.Tk):
                                  "(los vídeos generados no se tocan)", variable=self.v_autodel).pack(anchor="w")
         of = ttk.Frame(t_vod, style="Panel.TFrame")
         of.grid(row=4, column=0, columnspan=4, sticky="we", pady=(6, 0))
-        ttk.Button(of, text="Carpeta…", command=self.pick_outdir).pack(side="left")
+        ui.Button(of, text="Carpeta…", command=self.pick_outdir).pack(side="left")
         self.lbl_outdir = ttk.Label(of, text=self.v_outdir.get(), style="Muted.TLabel")
         self.lbl_outdir.pack(side="left", padx=8)
         ttk.Separator(t_vod).grid(row=5, column=0, columnspan=4, sticky="we", pady=8)
         vf = ttk.Frame(t_vod, style="Panel.TFrame")
         vf.grid(row=6, column=0, columnspan=4, sticky="we")
-        ttk.Button(vf, text="o elegir un VOD del PC…", command=self.pick_vod).pack(side="left")
+        ui.Button(vf, text="o elegir un VOD del PC…", command=self.pick_vod).pack(side="left")
         self.lbl_vod = ttk.Label(vf, text="Ningún vídeo elegido", style="Muted.TLabel")
         self.lbl_vod.pack(side="left", padx=8)
         ttk.Label(t_vod, text="Inicio del directo").grid(row=7, column=0, sticky="w", pady=(8, 0))
@@ -365,8 +365,8 @@ class App(tk.Tk):
         self.lbl_delaylog.grid(row=8, column=0, columnspan=5, sticky="w", pady=(2, 0))
         mf_ = ttk.Frame(t_cut, style="Panel.TFrame")
         mf_.grid(row=9, column=0, columnspan=5, sticky="we", pady=(4, 0))
-        ttk.Button(mf_, text="Elegir registro…", command=self.pick_delay_log).pack(side="left")
-        ttk.Button(mf_, text="Copiar mi registro a…", command=self.pick_mirror).pack(side="left", padx=6)
+        ui.Button(mf_, text="Elegir registro…", command=self.pick_delay_log).pack(side="left")
+        ui.Button(mf_, text="Copiar mi registro a…", command=self.pick_mirror).pack(side="left", padx=6)
         self.lbl_mirror = ttk.Label(mf_, text="", style="Muted.TLabel")
         self.lbl_mirror.pack(side="left", padx=8)
 
@@ -382,7 +382,7 @@ class App(tk.Tk):
         vf2.grid(row=3, column=0, columnspan=4, sticky="we")
         ui.Toggle(vf2, text="Versión vertical 9:16 (como tus TikToks)",
                         variable=self.v_vertical).pack(side="left")
-        ttk.Button(vf2, text="Elegir cámara…", command=self.pick_cam).pack(side="left", padx=8)
+        ui.Button(vf2, text="Elegir cámara…", command=self.pick_cam).pack(side="left", padx=8)
         self.lbl_cam = ttk.Label(vf2, text=self._cam_text(), style="Muted.TLabel")
         self.lbl_cam.pack(side="left")
         ui.Toggle(t_out, text="Subtítulos automáticos en la vertical (lo que dices, en grande bajo la cámara)",
@@ -397,7 +397,7 @@ class App(tk.Tk):
         ttk.Spinbox(sf_, from_=-3.0, to=3.0, increment=0.1, textvariable=self.v_suboff, width=6,
                     format="%.1f").pack(side="left", padx=4)
         ttk.Label(sf_, text="+ salen más tarde · − salen antes", style="Muted.TLabel").pack(side="left", padx=(2, 12))
-        ttk.Button(sf_, text="Diccionario…", command=self.edit_sub_dict).pack(side="left")
+        ui.Button(sf_, text="Diccionario…", command=self.edit_sub_dict).pack(side="left")
         ui.Toggle(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
                         variable=self.v_singles).grid(row=8, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
@@ -419,8 +419,8 @@ class App(tk.Tk):
         sf = ttk.Frame(t_auto, style="Panel.TFrame")
         sf.grid(row=6, column=0, columnspan=4, sticky="w")
         ttk.Label(sf, text="Usar en otro PC:").pack(side="left")
-        ttk.Button(sf, text="Exportar ajustes", command=self.export_settings).pack(side="left", padx=6)
-        ttk.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
+        ui.Button(sf, text="Exportar ajustes", command=self.export_settings).pack(side="left", padx=6)
+        ui.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
 
         # --- 3. partidas
         mid = ttk.Frame(self, padding=(16, 12, 16, 10))
@@ -450,12 +450,12 @@ class App(tk.Tk):
             self.tv_m.tag_configure(tag_, foreground=col_)
         mb = ttk.Frame(p3, style="Panel.TFrame")
         mb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ttk.Button(mb, text="Marcar las que están en el VOD", command=self.auto_check).pack(side="left")
-        ttk.Button(mb, text="Sincronizar solo", style="Purple.TButton", command=self.sync_checked).pack(side="left", padx=6)
-        ttk.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="left")
-        ttk.Button(mb, text="Informes", style="Ghost.TButton", command=self.open_reports).pack(side="right")
-        ttk.Button(mb, text="Revisar sincro", command=self.review_sync).pack(side="right", padx=6)
-        ttk.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
+        ui.Button(mb, text="Marcar las que están en el VOD", command=self.auto_check).pack(side="left")
+        ui.Button(mb, text="Sincronizar solo", style="Purple.TButton", command=self.sync_checked).pack(side="left", padx=6)
+        ui.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="left")
+        ui.Button(mb, text="Informes", style="Ghost.TButton", command=self.open_reports).pack(side="right")
+        ui.Button(mb, text="Revisar sincro", command=self.review_sync).pack(side="right", padx=6)
+        ui.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
         lg = ttk.Frame(p3, style="Panel.TFrame")
         lg.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
         for tag_, txt_ in (("s_ok", "segura"), ("s_approx", "aproximada (revísala)"),
@@ -491,12 +491,12 @@ class App(tk.Tk):
         self.tv_c.tag_configure("alt", background=ROW_ALT)
         cb = ttk.Frame(p4, style="Panel.TFrame")
         cb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ttk.Button(cb, text="Calcular rondas", style="Purple.TButton", command=self.compute).pack(side="left")
-        ttk.Button(cb, text="Ver ronda", command=self.preview).pack(side="left", padx=6)
-        ttk.Button(cb, text="Quitar", style="Ghost.TButton", command=self.remove_clips).pack(side="left")
+        ui.Button(cb, text="Calcular rondas", style="Purple.TButton", command=self.compute).pack(side="left")
+        ui.Button(cb, text="Ver ronda", command=self.preview).pack(side="left", padx=6)
+        ui.Button(cb, text="Quitar", style="Ghost.TButton", command=self.remove_clips).pack(side="left")
 
         # --- pie
-        foot = ui.Card(self, pad=18, radius=20, glow=True)
+        foot = ui.Card(self, pad=16, radius=20, glow=True)
         # el panel de progreso se coloca primero abajo para que nunca quede cortado;
         # si falta sitio, encogen las listas del medio
         foot.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
@@ -520,18 +520,18 @@ class App(tk.Tk):
         self.lbl_step.pack(side="left")
         self.lbl_pct = ttk.Label(top_row, text="", style="Pct.TLabel")
         self.lbl_pct.pack(side="right")
-        self.pb = ttk.Progressbar(foot, mode="determinate", maximum=1, style="Horizontal.TProgressbar")
+        self.pb = ui.GradBar(foot, mode="determinate", maximum=1)
         self.pb.pack(fill="x")
         row = ttk.Frame(foot, style="Panel.TFrame")
         row.pack(fill="x", pady=(6, 0))
         self.lbl_status = ttk.Label(row, text="Pega un enlace de Twitch o elige un VOD.", style="Detail.TLabel",
                                     wraplength=760)
         self.lbl_status.pack(side="left")
-        self.btn_render = ttk.Button(row, text="GENERAR VÍDEO", style="Accent.TButton", command=self.render)
+        self.btn_render = ui.Button(row, text="GENERAR VÍDEO", style="Accent.TButton", command=self.render)
         self.btn_render.pack(side="right")
-        self.btn_cancel = ttk.Button(row, text="Cancelar", command=self.cancel, state="disabled")
+        self.btn_cancel = ui.Button(row, text="Cancelar", command=self.cancel, state="disabled")
         self.btn_cancel.pack(side="right", padx=6)
-        self.btn_subs = ttk.Button(row, text="Corregir subtítulos…", style="Ghost.TButton",
+        self.btn_subs = ui.Button(row, text="Corregir subtítulos…", style="Ghost.TButton",
                                    command=self.fix_subtitles_later)
         self.btn_subs.pack(side="right")
 
@@ -1016,8 +1016,8 @@ class App(tk.Tk):
             self.auto_check()
             if self.clips or self.checked:
                 self.compute()
-        ttk.Button(bf, text="Buscar en el VOD", style="Purple.TButton", command=look).pack(side="left")
-        ttk.Button(bf, text="Guardar", style="Accent.TButton", command=ok).pack(side="left", padx=6)
+        ui.Button(bf, text="Buscar en el VOD", style="Purple.TButton", command=look).pack(side="left")
+        ui.Button(bf, text="Guardar", style="Accent.TButton", command=ok).pack(side="left", padx=6)
         dlg.bind("<Return>", lambda ev: ok())
 
     def learn_in_background(self, m, offset_s):
@@ -1436,10 +1436,10 @@ class App(tk.Tk):
                 d.pop(k, None)
             fill()
             self.persist()
-        ttk.Button(af, text="Añadir", command=add).pack(side="left", padx=6)
-        ttk.Button(af, text="Quitar seleccionadas", command=remove).pack(side="right")
+        ui.Button(af, text="Añadir", command=add).pack(side="left", padx=6)
+        ui.Button(af, text="Quitar seleccionadas", command=remove).pack(side="right")
         tv.bind("<Delete>", lambda e: remove())
-        ttk.Button(dlg, text="Cerrar", style="Accent.TButton", command=dlg.destroy).pack(anchor="e", padx=12,
+        ui.Button(dlg, text="Cerrar", style="Accent.TButton", command=dlg.destroy).pack(anchor="e", padx=12,
                                                                                          pady=(0, 12))
         fill()
         dlg._api = {"add": add, "remove": remove, "a": va, "b": vb, "tv": tv}
@@ -1930,15 +1930,15 @@ class App(tk.Tk):
                     ws[i]["hl"] = hl
             fill([str(i) for i in s_])
 
-        ttk.Button(ed, text="Cambiar", command=apply_text).pack(side="left")
-        ttk.Button(ed, text="Borrar", command=delete).pack(side="left", padx=6)
+        ui.Button(ed, text="Cambiar", command=apply_text).pack(side="left")
+        ui.Button(ed, text="Borrar", command=delete).pack(side="left", padx=6)
         cl = ttk.Frame(dlg, style="Panel.TFrame")
         cl.pack(fill="x", padx=12, pady=(6, 0))
         ttk.Label(cl, text="Color:").pack(side="left")
-        ttk.Button(cl, text="Amarillo", command=lambda: set_color("y")).pack(side="left", padx=4)
-        ttk.Button(cl, text="Morado", command=lambda: set_color("p")).pack(side="left", padx=4)
-        ttk.Button(cl, text="Sin color", command=lambda: set_color("none")).pack(side="left", padx=4)
-        ttk.Button(cl, text="Automático", command=lambda: set_color("auto")).pack(side="left", padx=4)
+        ui.Button(cl, text="Amarillo", command=lambda: set_color("y")).pack(side="left", padx=4)
+        ui.Button(cl, text="Morado", command=lambda: set_color("p")).pack(side="left", padx=4)
+        ui.Button(cl, text="Sin color", command=lambda: set_color("none")).pack(side="left", padx=4)
+        ui.Button(cl, text="Automático", command=lambda: set_color("auto")).pack(side="left", padx=4)
         tf_ = ttk.Frame(dlg, style="Panel.TFrame")
         tf_.pack(fill="x", padx=12, pady=(6, 0))
         ttk.Label(tf_, text="Tiempo de todos:").pack(side="left")
@@ -1956,9 +1956,9 @@ class App(tk.Tk):
             if pl and not pl.playing:
                 on_time(pl._now())
 
-        ttk.Button(tf_, text="◀ −0,1 s (antes)", command=lambda: move(-0.1)).pack(side="left", padx=4)
+        ui.Button(tf_, text="◀ −0,1 s (antes)", command=lambda: move(-0.1)).pack(side="left", padx=4)
         lbl_mv.pack(side="left")
-        ttk.Button(tf_, text="+0,1 s (después) ▶", command=lambda: move(0.1)).pack(side="left", padx=4)
+        ui.Button(tf_, text="+0,1 s (después) ▶", command=lambda: move(0.1)).pack(side="left", padx=4)
         ui.Toggle(tf_, text="Usar este ajuste en los próximos vídeos", variable=v_keep).pack(side="left",
                                                                                                   padx=10)
         sl = ttk.Frame(dlg, style="Panel.TFrame")
@@ -1985,9 +1985,9 @@ class App(tk.Tk):
         def select_none():
             tv.selection_set([])
 
-        ttk.Button(sl, text="Toda la frase", command=select_phrase).pack(side="left", padx=4)
-        ttk.Button(sl, text="Todo (Ctrl+A)", command=select_all).pack(side="left", padx=4)
-        ttk.Button(sl, text="Ninguna", command=select_none).pack(side="left", padx=4)
+        ui.Button(sl, text="Toda la frase", command=select_phrase).pack(side="left", padx=4)
+        ui.Button(sl, text="Todo (Ctrl+A)", command=select_all).pack(side="left", padx=4)
+        ui.Button(sl, text="Ninguna", command=select_none).pack(side="left", padx=4)
         lbl_n = ttk.Label(sl, text="", style="Muted.TLabel")
         lbl_n.pack(side="left", padx=10)
         ttk.Label(dlg, text="Varias a la vez: arrastra con el ratón, o Ctrl+clic / Mayús+clic.  Clic derecho: "
@@ -2053,7 +2053,7 @@ class App(tk.Tk):
                 pl.play()
 
         if pl:
-            ttk.Button(ed, text="▶ Escuchar desde aquí", command=listen).pack(side="left", padx=(12, 0))
+            ui.Button(ed, text="▶ Escuchar desde aquí", command=listen).pack(side="left", padx=(12, 0))
             tv.bind("<<TreeviewSelect>>", jump)
         else:
             tv.bind("<<TreeviewSelect>>", count)
@@ -2077,9 +2077,9 @@ class App(tk.Tk):
 
         bf = ttk.Frame(dlg, style="Panel.TFrame")
         bf.pack(fill="x", padx=12, pady=12)
-        ttk.Button(bf, text="Guardar y rehacer la vertical" if video else "Continuar con estos subtítulos",
+        ui.Button(bf, text="Guardar y rehacer la vertical" if video else "Continuar con estos subtítulos",
                    style="Accent.TButton", command=lambda: finish(ws or None)).pack(side="right")
-        ttk.Button(bf, text="Quitar todos los subtítulos",
+        ui.Button(bf, text="Quitar todos los subtítulos",
                    command=lambda: finish(None)).pack(side="right", padx=6)
         dlg.protocol("WM_DELETE_WINDOW", lambda: finish(ws or None))
         fill()
@@ -2218,7 +2218,7 @@ class App(tk.Tk):
                       style="Muted.TLabel").pack(anchor="w")
             tk.Label(info, text=stt, bg=PANEL, fg=col, font=("Segoe UI Semibold", 9), wraplength=240,
                      justify="left").pack(anchor="w", pady=(2, 6))
-            ttk.Button(info, text="Sincronizar a mano…",
+            ui.Button(info, text="Sincronizar a mano…",
                        command=lambda mid=m.match_id: manual(mid)).pack(anchor="w")
             if not ks:
                 ttk.Label(row, text="No hay kills tuyas dentro del VOD en esta partida.",
@@ -2320,8 +2320,8 @@ class App(tk.Tk):
             self.lbl_cam.configure(text=self._cam_text())
             self.persist()
             dlg.destroy()
-        ttk.Button(bf, text="Guardar", style="Accent.TButton", command=save).pack(side="right")
-        ttk.Button(bf, text="Sin cámara (solo juego)", command=none).pack(side="right", padx=6)
+        ui.Button(bf, text="Guardar", style="Accent.TButton", command=save).pack(side="right")
+        ui.Button(bf, text="Sin cámara (solo juego)", command=none).pack(side="right", padx=6)
         self.wait_window(dlg)
 
     def play(self, start, dur=None, clock=False):

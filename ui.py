@@ -66,14 +66,7 @@ def init_fonts(root):
                 return fams[n.lower()]
         return None
     _FAM["display"] = pick("Outfit", "Outfit Bold") or _FAM["display"]
-    body = pick("Plus Jakarta Sans")
-    if body:
-        _FAM["body"] = body
-        semi = pick("Plus Jakarta Sans SemiBold")
-        if semi:
-            _FAM["semi"] = semi
-        else:
-            _FAM["semi"], _SEMI_WEIGHT = body, "bold"
+    # los textos normales siguen en Segoe UI: Plus Jakarta Sans se ve apelotonada con el dibujo de Tk
     _FAM["mono"] = pick("JetBrains Mono Medium", "JetBrains Mono") or _FAM["mono"]
 
 
@@ -128,25 +121,41 @@ def compose(w, h, layers, under=SURFACE, ss=3):
     """
     Imagen w x h: capas [(dentro(x,y)->bool, color(x,y)->rgb)] una encima de otra, con bordes suavizados.
     Lo que queda fuera de todas es transparente; los bordes se mezclan con «under».
+    Rápida: solo se supermuestrean los píxeles en los que cambia la capa de arriba.
     """
     img = tk.PhotoImage(width=w, height=h)
     und = _rgb(under)
     offs = [(i + 0.5) / ss for i in range(ss)]
     n = ss * ss
+
+    def top(px, py):
+        k = -1
+        for i, (inside, _c) in enumerate(layers):
+            if inside(px, py):
+                k = i
+        return k
+    grid = [[top(x, y) for x in range(w + 1)] for y in range(h + 1)]
     clear = []
     for y in range(h):
         row = []
+        g0, g1 = grid[y], grid[y + 1]
         for x in range(w):
+            k = g0[x]
+            if k == g0[x + 1] == g1[x] == g1[x + 1]:
+                if k < 0:
+                    row.append(_hex(und))
+                    clear.append((x, y))
+                else:
+                    row.append(_hex(layers[k][1](x + 0.5, y + 0.5)))
+                continue
             acc = [0.0, 0.0, 0.0]
             cov = 0
             for oy in offs:
                 for ox in offs:
                     px, py = x + ox, y + oy
-                    col = None
-                    for inside, color in layers:
-                        if inside(px, py):
-                            col = color(px, py)
-                    if col is not None:
+                    kk = top(px, py)
+                    if kk >= 0:
+                        col = layers[kk][1](px, py)
                         cov += 1
                         acc[0] += col[0]
                         acc[1] += col[1]
@@ -156,8 +165,7 @@ def compose(w, h, layers, under=SURFACE, ss=3):
                 clear.append((x, y))
                 continue
             c = (acc[0] / cov, acc[1] / cov, acc[2] / cov)
-            a = cov / n
-            row.append(_hex(_lerp(und, c, a)))
+            row.append(_hex(_lerp(und, c, cov / n)))
         img.put("{" + " ".join(row) + "}", to=(0, y))
     for x, y in clear:
         img.transparency_set(x, y, True)
@@ -205,13 +213,13 @@ def apply_style(root):
     s.configure("Status.TLabel", background=BG, foreground=MUTED)
 
     # campos redondeados
-    fn = cached("field_n", lambda: rrect_img(40, 34, 9, INPUT, BORDER))
-    ff = cached("field_f", lambda: rrect_img(40, 34, 9, INPUT, VIOLET))
-    fh = cached("field_h", lambda: rrect_img(40, 34, 9, INPUT, BORDER_HI))
-    fd = cached("field_d", lambda: rrect_img(40, 34, 9, SURFACE, BORDER))
+    fn = cached("field_n", lambda: rrect_img(30, 28, 8, INPUT, BORDER))
+    ff = cached("field_f", lambda: rrect_img(30, 28, 8, INPUT, VIOLET))
+    fh = cached("field_h", lambda: rrect_img(30, 28, 8, INPUT, BORDER_HI))
+    fd = cached("field_d", lambda: rrect_img(30, 28, 8, SURFACE, BORDER))
     try:
         s.element_create("VField.field", "image", fn, ("disabled", fd), ("focus", ff), ("hover", fh),
-                         border=10, sticky="nsew")
+                         border=9, padding=(8, 4), sticky="nsew")
     except tk.TclError:
         pass
     s.layout("TEntry", [("VField.field", {"sticky": "nswe", "children": [
@@ -227,7 +235,7 @@ def apply_style(root):
         ("Spinbox.padding", {"sticky": "nswe", "children": [("Spinbox.textarea", {"sticky": "nswe"})]})]})])
     for w in ("TEntry", "TCombobox", "TSpinbox"):
         s.configure(w, fieldbackground=INPUT, background=INPUT, foreground=TEXT, insertcolor=VIOLET,
-                    padding=(10, 6), arrowcolor=VIOLET, arrowsize=12, selectbackground=SEL,
+                    padding=(2, 1), arrowcolor=VIOLET, arrowsize=12, selectbackground=SEL,
                     selectforeground=TEXT, font=base)
         s.map(w, fieldbackground=[("readonly", INPUT), ("disabled", SURFACE)],
               foreground=[("readonly", TEXT), ("disabled", DIM)],
@@ -241,44 +249,36 @@ def apply_style(root):
 
     # botones redondeados: normal (elevado con borde), principal (degradado), secundario (morado suave)
     imgs = {
-        "n": cached("b_n", lambda: rrect_img(60, 36, 11, ELEVATED, BORDER_HI)),
-        "h": cached("b_h", lambda: rrect_img(60, 36, 11, "#20202c", "#4a4760")),
-        "p": cached("b_p", lambda: rrect_img(60, 36, 11, "#262434", VIOLET)),
-        "d": cached("b_d", lambda: rrect_img(60, 36, 11, SURFACE, BORDER)),
-        "an": cached("a_n", lambda: rrect_img(120, 40, 12, VIOLET, gradient=True)),
-        "ah": cached("a_h", lambda: compose(120, 40, [(lambda x, y: _in_rrect(x, y, 0, 0, 120, 40, 12),
-                                                       lambda x, y: _lerp(grad_at(x / 120), (255, 255, 255),
-                                                                          0.18))])),
-        "ad": cached("a_d", lambda: rrect_img(120, 40, 12, "#2a2833", BORDER_HI)),
-        "vn": cached("v_n", lambda: rrect_img(60, 36, 11, "#211b33", "#6b569a")),
-        "vh": cached("v_h", lambda: rrect_img(60, 36, 11, "#2b2244", VIOLET)),
+        "n": cached("b_n", lambda: rrect_img(30, 30, 9, ELEVATED, BORDER_HI)),
+        "h": cached("b_h", lambda: rrect_img(30, 30, 9, "#20202c", "#4a4760")),
+        "p": cached("b_p", lambda: rrect_img(30, 30, 9, "#262434", VIOLET)),
+        "d": cached("b_d", lambda: rrect_img(30, 30, 9, SURFACE, BORDER)),
+        "vn": cached("v_n", lambda: rrect_img(30, 30, 9, "#211b33", "#6b569a")),
+        "vh": cached("v_h", lambda: rrect_img(30, 30, 9, "#2b2244", VIOLET)),
     }
     root._ui_imgs = imgs
-    for name, n_, h_, p_, d_ in (("VBtn", "n", "h", "p", "d"), ("VAcc", "an", "ah", "ah", "ad"),
+    for name, n_, h_, p_, d_ in (("VBtn", "n", "h", "p", "d"),
                                  ("VSec", "vn", "vh", "p", "d"), ("VGhost", None, "h", "p", None)):
         try:
-            ghost = cached("ghost", lambda: rrect_img(60, 36, 11, SURFACE))
+            ghost = cached("ghost", lambda: rrect_img(30, 30, 9, SURFACE))
             s.element_create(f"{name}.bg", "image", imgs[n_] if n_ else ghost,
                              ("disabled", imgs[d_] if d_ else ghost), ("pressed", imgs[p_]),
-                             ("active", imgs[h_]), border=12, sticky="nsew")
+                             ("active", imgs[h_]), border=10, padding=(12, 5), sticky="nsew")
         except tk.TclError:
             pass
     lay = lambda el: [(el, {"sticky": "nswe", "children": [("Button.padding", {"sticky": "nswe", "children": [
         ("Button.label", {"sticky": "nswe"})]})]})]
     s.layout("TButton", lay("VBtn.bg"))
-    s.layout("Accent.TButton", lay("VAcc.bg"))
     s.layout("Purple.TButton", lay("VSec.bg"))
     s.layout("Ghost.TButton", lay("VGhost.bg"))
-    s.configure("TButton", background=SURFACE, foreground=TEXT, padding=(16, 8), font=semi(9), anchor="center")
+    s.configure("TButton", background=SURFACE, foreground=TEXT, padding=(4, 1), font=semi(9), anchor="center")
     s.map("TButton", foreground=[("disabled", DIM)], background=[("active", SURFACE)])
-    s.configure("Accent.TButton", foreground="#0b0a10", padding=(24, 10), font=display(12))
-    s.map("Accent.TButton", foreground=[("disabled", DIM)])
     s.configure("Purple.TButton", foreground=VIOLET_L, font=semi(9))
-    s.configure("Ghost.TButton", foreground=DIM, padding=(12, 8), font=body(9))
+    s.configure("Ghost.TButton", foreground=DIM, padding=(2, 1), font=body(9))
     s.map("Ghost.TButton", foreground=[("active", TEXT), ("disabled", BORDER_HI)])
 
     # tablas
-    s.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=TEXT, rowheight=30,
+    s.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=TEXT, rowheight=27,
                 borderwidth=0, bordercolor=SURFACE, lightcolor=SURFACE, darkcolor=SURFACE, font=base)
     s.configure("Treeview.Heading", background=SURFACE, foreground=DIM, font=mono(8), borderwidth=0,
                 bordercolor=BORDER, lightcolor=SURFACE, darkcolor=BORDER, padding=(6, 8), relief="flat")
@@ -289,18 +289,6 @@ def apply_style(root):
         s.configure(f"{o}.TScrollbar", background=BORDER_HI, troughcolor=SURFACE, bordercolor=SURFACE,
                     lightcolor=BORDER_HI, darkcolor=BORDER_HI, arrowcolor=DIM, gripcount=0, arrowsize=10)
         s.map(f"{o}.TScrollbar", background=[("active", "#4a4760")])
-
-    # barra de progreso con el degradado
-    tr = cached("pb_t", lambda: rrect_img(40, 12, 6, INPUT, BORDER))
-    pb = cached("pb_b", lambda: rrect_img(200, 12, 6, VIOLET, gradient=True))
-    try:
-        s.element_create("VPb.trough", "image", tr, border=6, sticky="nsew")
-        s.element_create("VPb.pbar", "image", pb, border=6, sticky="nsew")
-    except tk.TclError:
-        pass
-    s.layout("Horizontal.TProgressbar", [("VPb.trough", {"sticky": "nswe", "children": [
-        ("VPb.pbar", {"side": "left", "sticky": "ns"})]})])
-    s.configure("Horizontal.TProgressbar", thickness=12, background=VIOLET, troughcolor=INPUT)
 
     s.configure("TSeparator", background=BORDER)
     s.configure("TCheckbutton", background=SURFACE, foreground=TEXT, indicatorbackground=INPUT,
@@ -604,3 +592,202 @@ def logo_image(root, size=44):
         return img.subsample(f, f) if f > 1 else img
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------- botón principal en degradado
+class GradButton(tk.Canvas):
+    """Botón principal (degradado morado -> amarillo) con la misma forma de uso que ttk.Button."""
+
+    def __init__(self, parent, text="", command=None, bg=None, font=None, padx=26, height=42, **_kw):
+        try:
+            bg = bg or ttk.Style(parent).lookup(parent.cget("style") or "TFrame", "background") or SURFACE
+        except Exception:
+            bg = bg or SURFACE
+        self._text, self._cmd, self._state, self._hover = text, command, "normal", False
+        self._font = font or display(12)
+        self._bgc, self._h, self._padx = bg, height, padx
+        super().__init__(parent, bg=bg, highlightthickness=0, bd=0, height=height, cursor="hand2")
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<ButtonRelease-1>", self._click)
+        self._draw()
+
+    def _size(self):
+        fm = tkfont.Font(root=self, font=self._font)
+        return fm.measure(self._text) + 2 * self._padx, self._h
+
+    def _draw(self):
+        w, h = self._size()
+        self.configure(width=w, height=h)
+        self.delete("all")
+        dis = self._state == "disabled"
+        r = 12
+
+        def mk(kind):
+            if kind == "d":
+                return rrect_img(w, h, r, "#24232d", BORDER_HI, under=self._bgc)
+            mix = 0.16 if kind == "h" else 0.0
+            return compose(w, h, [(lambda x, y: _in_rrect(x, y, 0, 0, w, h, r),
+                                   lambda x, y: _lerp(grad_at(x / w), (255, 255, 255), mix))], under=self._bgc)
+        kind = "d" if dis else ("h" if self._hover else "n")
+        self._img = cached(("gb", w, h, kind, self._bgc), lambda: mk(kind))
+        self.create_image(0, 0, image=self._img, anchor="nw")
+        self.create_text(w / 2, h / 2, text=self._text, font=self._font, fill=DIM if dis else "#0b0a10")
+        self.configure(cursor="arrow" if dis else "hand2")
+
+    def _set_hover(self, v):
+        if self._hover != v:
+            self._hover = v
+            if self._state != "disabled":
+                self._draw()
+
+    def _click(self, e):
+        if self._state == "disabled":
+            return
+        if 0 <= e.x <= self.winfo_width() and 0 <= e.y <= self.winfo_height() and self._cmd:
+            self._cmd()
+
+    def invoke(self):
+        if self._state != "disabled" and self._cmd:
+            self._cmd()
+
+    def configure(self, cnf=None, **kw):
+        redraw = False
+        if "state" in kw:
+            self._state = str(kw.pop("state"))
+            redraw = True
+        if "text" in kw:
+            self._text = kw.pop("text")
+            redraw = True
+        if "command" in kw:
+            self._cmd = kw.pop("command")
+        kw.pop("style", None)
+        r = super().configure(cnf, **kw) if (kw or cnf) else None
+        if redraw:
+            self._draw()
+        return r
+
+    config = configure
+
+    def cget(self, key):
+        if key == "state":
+            return self._state
+        if key == "text":
+            return self._text
+        return super().cget(key)
+
+    def __setitem__(self, key, value):
+        self.configure(**{key: value})
+
+    def __getitem__(self, key):
+        return self.cget(key)
+
+
+def Button(parent, **kw):
+    """ttk.Button, salvo el estilo principal («Accent.TButton»), que es el botón en degradado."""
+    if kw.get("style") == "Accent.TButton":
+        kw.pop("style")
+        return GradButton(parent, **kw)
+    return ttk.Button(parent, **kw)
+
+
+# ---------------------------------------------------------------- barra de progreso en degradado
+class GradBar(tk.Canvas):
+    """Como ttk.Progressbar (mode, maximum, value, start, stop) pero con el degradado de la marca."""
+
+    H = 12
+
+    def __init__(self, parent, mode="determinate", maximum=1, bg=SURFACE, **_kw):
+        super().__init__(parent, height=self.H, bg=bg, highlightthickness=0, bd=0)
+        self._mode, self._max, self._val, self._bgc = mode, float(maximum), 0.0, bg
+        self._anim, self._phase = None, 0.0
+        self.bind("<Configure>", lambda e: self._build())
+
+    def _build(self):
+        w, h = self.winfo_width(), self.H
+        if w < 30:
+            return
+        self.delete("all")
+        r = h // 2
+        cap = lambda side, fill, border: cached(("cap", side, fill, border, self._bgc), lambda: compose(
+            r + 1, h, [(lambda x, y: (x - (r if side == "l" else 0)) ** 2 + (y - r) ** 2 <= r * r,
+                        lambda x, y: _rgb(border or fill)),
+                       (lambda x, y: (x - (r if side == "l" else 0)) ** 2 + (y - r) ** 2 <= (r - 1) ** 2,
+                        lambda x, y: _rgb(fill))], under=self._bgc))
+        # degradado completo (debajo) y una tapa del color del fondo de la barra que se mueve
+        step = 3
+        for x in range(r, w - r, step):
+            self.create_rectangle(x, 0, x + step, h, fill=_hex(grad_at(x / w)), width=0, tags="g")
+        self._lc = self.create_image(0, 0, image=cap("l", VIOLET, None), anchor="nw", tags="g")
+        self.create_image(w - r - 1, 0, image=cap("r", YELLOW, None), anchor="nw", tags="tail")
+        self._cover = self.create_rectangle(r, 0, w, h, fill=INPUT, outline="", tags="cv")
+        self._cover2 = self.create_rectangle(r, 0, r, h, fill=INPUT, outline="", tags="cv")
+        self.create_line(r, 0, w - r, 0, fill=BORDER, tags="bd")
+        self.create_line(r, h - 1, w - r, h - 1, fill=BORDER, tags="bd")
+        self._rcap = self.create_image(w - r - 1, 0, image=cap("r", INPUT, BORDER), anchor="nw", tags="bd")
+        self._lcap_off = self.create_image(0, 0, image=cap("l", INPUT, BORDER), anchor="nw", tags="bd")
+        self._w = w
+        self._update()
+
+    def _update(self):
+        if not hasattr(self, "_w"):
+            return
+        w, h, r = self._w, self.H, self.H // 2
+        if self._mode == "indeterminate":
+            span = w * 0.25
+            a = (w + span) * self._phase - span
+            b = a + span
+            self.coords(self._cover, max(r, b), 0, w, h)
+            self.coords(self._cover2, r, 0, max(r, a), h)
+            self.itemconfigure(self._lcap_off, state="normal" if a > 0 else "hidden")
+            self.itemconfigure(self._rcap, state="normal" if b < w - r else "hidden")
+        else:
+            f = 0.0 if self._max <= 0 else max(0.0, min(1.0, self._val / self._max))
+            x = r + (w - 2 * r) * f
+            self.coords(self._cover, x, 0, w, h)
+            self.coords(self._cover2, r, 0, r, h)
+            self.itemconfigure(self._lcap_off, state="hidden" if f > 0 else "normal")
+            self.itemconfigure(self._rcap, state="hidden" if f >= 0.999 else "normal")
+
+    def _tick(self, ms):
+        self._phase = (self._phase + 0.012) % 1.0
+        self._update()
+        self._anim = self.after(ms, self._tick, ms)
+
+    def start(self, ms=12):
+        self.stop()
+        self._tick(max(10, int(ms)))
+
+    def stop(self):
+        if self._anim:
+            self.after_cancel(self._anim)
+            self._anim = None
+
+    def configure(self, cnf=None, **kw):
+        ch = False
+        for k in ("mode", "maximum", "value"):
+            if k in kw:
+                v = kw.pop(k)
+                if k == "mode":
+                    self._mode = str(v)
+                elif k == "maximum":
+                    self._max = float(v)
+                else:
+                    self._val = float(v or 0)
+                ch = True
+        kw.pop("style", None)
+        r = super().configure(cnf, **kw) if (kw or cnf) else None
+        if ch:
+            self._update()
+        return r
+
+    config = configure
+
+    def cget(self, key):
+        if key == "mode":
+            return self._mode
+        if key == "maximum":
+            return self._max
+        if key == "value":
+            return self._val
+        return super().cget(key)
