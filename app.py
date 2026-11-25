@@ -2003,6 +2003,21 @@ class App(tk.Tk):
                         try:
                             r.check = sync.verify_match(vod, self.matches[mid], r.offset_s, dur,
                                                         lambda: self.stop_flag)
+                            # si la comprobación ve con mucha claridad (pico fuerte y las dos mitades de
+                            # acuerdo) que está en otro sitio —típico: se enganchó al «eco» del cartel,
+                            # ~7 s tarde—, se mueve ahí y se vuelve a comprobar; solo se queda si sale bien
+                            ck = r.check or {}
+                            if ck.get("state") == "dudosa" and abs(float(ck.get("shift", 0))) <= 15:
+                                sh = float(ck["shift"])
+                                ck2 = sync.verify_match(vod, self.matches[mid], r.offset_s + sh, dur,
+                                                        lambda: self.stop_flag)
+                                if ck2.get("state") == "ok":
+                                    r.offset_s += sh
+                                    r.shift_s += sh
+                                    r.check = ck2
+                                    m_ = self.matches[mid]
+                                    sync._log_line(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}: "
+                                                   f"corregida por la comprobación {sh:+.2f} s")
                         except Exception as e:
                             if "Cancelado" in str(e):
                                 raise
