@@ -2043,6 +2043,29 @@ class App(tk.Tk):
                 on_done = self._bg_subs_hook(vod, vs, dur, st, dfn)
                 res = sync.sync_many(vod, items, dur, self.sync_workers(), cb, lambda: self.stop_flag,
                                      on_done=on_done)
+                # si NO sale ninguna (p. ej. un día con más delay o el directo empezó a otra hora: el
+                # 17/11 iba +150 s), segunda pasada buscando mucho más lejos (±5,5 min; el VOD por
+                # partidas se baja con 6 min de margen). Con varias partidas, el consenso confirma.
+                if len(items) >= 2 and not any(r.ok for r in res.values()) and not self.stop_flag:
+                    cb(None, "No ha salido ninguna: buscando más lejos (±5 min)…")
+                    old_s = sync.SEARCH_S
+                    try:
+                        sync.SEARCH_S = 330.0
+                        res2 = sync.sync_many(vod, items, dur, self.sync_workers(), cb, lambda: self.stop_flag,
+                                              on_done=on_done)
+                        if len(res2) > 1:
+                            times2 = {mid: self.matches[mid].started_at.timestamp()
+                                      for mid in res2 if mid in self.matches}
+                            res2 = sync.consensus(res2, os.path.basename(vod), times2)
+                    finally:
+                        sync.SEARCH_S = old_s
+                    oks2 = [r for r in res2.values() if r.ok]
+                    # se acepta solo si al menos dos partidas coinciden en el desfase (±15 s)
+                    if len(oks2) >= 2:
+                        sh = sorted(r.shift_s for r in oks2)
+                        med = sh[len(sh) // 2]
+                        if sum(1 for x in sh if abs(x - med) <= 15) >= 2:
+                            res = res2
                 # referencias extra: partidas de este mismo VOD que ya se sincronizaron solas antes
                 # (así, al repetir solo las que fallaron, hay desfase común con el que compararlas)
                 refs = {}
