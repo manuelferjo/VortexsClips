@@ -1054,16 +1054,16 @@ class VButton(tk.Canvas):
         tw = fm.measure(self._text)
         if self._wchars:
             tw = max(tw, fm.measure("0") * int(self._wchars))
-        self._w, self._h = tw + 2 * padx, h
-        super().configure(width=self._w + 2 * self._m, height=self._h + 2 * self._m)
+        self._bw, self._bh = tw + 2 * padx, h
+        super().configure(width=self._bw + 2 * self._m, height=self._bh + 2 * self._m)
 
     def _face(self, hq, pq, dis):
         """Imagen del botón para un punto de la transición (cacheada)."""
-        key = (self._w, self._h, self.kind, hq, pq, dis, self._bgc)
+        key = (self._bw, self._bh, self.kind, hq, pq, dis, self._bgc)
         if key in self._cache:
             return self._cache[key]
         np = _np()
-        m, w, h = self._m, self._w, self._h
+        m, w, h = self._m, self._bw, self._bh
         W, H = w + 2 * m, h + 2 * m
         img = np.empty((H, W, 3), np.float32)
         img[:] = _rgbf(self._bgc)
@@ -1123,13 +1123,13 @@ class VButton(tk.Canvas):
         pq = round(ease(self._prs) * 3) / 3
         self._img = self._face(hq, pq, dis)
         self.create_image(0, 0, image=self._img, anchor="nw")
-        cx = self._m + self._w / 2
+        cx = self._m + self._bw / 2
         if self.kind == "link":
-            cx = self._m + self._w - 6
-            self.create_text(cx, self._m + self._h / 2, text=self._text, font=self._font,
+            cx = self._m + self._bw - 6
+            self.create_text(cx, self._m + self._bh / 2, text=self._text, font=self._font,
                              fill=self._text_color(), anchor="e")
         else:
-            self.create_text(cx, self._m + self._h / 2 + (0.5 if pq else 0), text=self._text, font=self._font,
+            self.create_text(cx, self._m + self._bh / 2 + (0.5 if pq else 0), text=self._text, font=self._font,
                              fill=self._text_color())
         super().configure(cursor="arrow" if dis else "hand2")
 
@@ -1460,7 +1460,7 @@ class GlowHeader(tk.Canvas):
 
     def __init__(self, parent, height=78):
         super().__init__(parent, height=height, bg=BG, highlightthickness=0, bd=0)
-        self._h = height
+        self._hh = height
         self._last = None
         self.bind("<Configure>", lambda e: self._redraw(e.width))
         self.items = []
@@ -1470,7 +1470,7 @@ class GlowHeader(tk.Canvas):
             return
         self._last = w
         np = _np()
-        h = self._h
+        h = self._hh
         img = np.empty((h, w, 3), np.float32)
         img[:] = _rgbf(BG)
         img = glow_into(img, w * 0.12, -h * 0.4, w * 0.45, h * 2.0, VIOLET, 48 / 255)
