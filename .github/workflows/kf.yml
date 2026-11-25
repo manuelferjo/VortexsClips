@@ -1,0 +1,32 @@
+name: Muestras killfeed
+on:
+  push:
+    branches: [kf-muestras]
+permissions:
+  contents: write
+jobs:
+  kf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Herramientas
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          python -m pip install -q yt-dlp
+      - name: Trozo del VOD (Abyss 24/11 20:26)
+        run: |
+          mkdir -p out
+          yt-dlp -q -f "b/bv*" -S "res,fps" --download-sections "*9650-9900" -o trozo.mp4 "https://www.twitch.tv/videos/2939461539" || true
+          ls -la
+          ffprobe -v error -show_entries format=duration:stream=width,height -of default=nw=1 trozo.mp4 | tee out/info.txt || true
+          ffmpeg -loglevel error -i trozo.mp4 -vf "fps=1,crop=iw*0.31:ih*0.30:iw*0.685:ih*0.035,tile=5x10" -frames:v 5 out/hoja_%d.png
+          for t in 30 60 90 120 150 180 210; do ffmpeg -loglevel error -ss $t -i trozo.mp4 -frames:v 1 out/frame_$t.png; done
+          ffmpeg -loglevel error -i trozo.mp4 -vf "fps=4,crop=iw*0.31:ih*0.30:iw*0.685:ih*0.035,scale=iw/2:-2,tile=8x25" -frames:v 3 out/rapido_%d.png
+      - name: Guardar
+        run: |
+          git config user.name "github-actions"; git config user.email "actions@github.com"
+          git checkout --orphan kf-resultado
+          git rm -rf --cached . > /dev/null || true
+          git add -f out
+          git commit -qm "muestras"
+          git push -f origin kf-resultado
