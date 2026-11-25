@@ -154,6 +154,8 @@ Mientras trabaja, el PC no se suspende (la pantalla sí puede apagarse o bloquea
 
 **Top de la semana:** en la pestaña **Automático**, «Top de la semana cada lunes» junta las 10 mejores jugadas (por nota) de los directos de la semana pasada en un vídeo con cuenta atrás (#10 … #1), en horizontal y en vertical, con `publicar.txt` (título, capítulos y hashtags). «Hacer el top ahora…» lo hace al momento.
 
+**Cortes al segundo de la imagen:** al sincronizar, el programa mide cuándo se VEN las kills en tu directo (killfeed y aviso de kill) respecto a la hora de Riot, con la mediana de todas las partidas del VOD, y corta desde ahí. En tus directos la kill se ve ~0,25 s antes que la hora de Riot. Así «Segundos antes de cada kill» y «y después» son exactos sobre la imagen. Si aun así quieres mover todos los cortes, usa **Ajuste fino de todos los cortes** (− = antes, + = después).
+
 ## 5. Qué sale al final (una carpeta por directo, junto al VOD)
 
 Todo lo de un directo queda junto en **una carpeta** `2026-11-21 Twitch … - rondas 3K+`:

@@ -49,6 +49,7 @@ class SyncResult:
     report: str = ""       # informe guardado si no salió claro
     data: dict | None = None   # (para el consenso entre partidas) fotogramas del killfeed, t0, kills
     approx: bool = False   # sincronizada con el desfase común (sin pico propio claro)
+    kill_bias: float | None = None   # cuánto antes (−) o después (+) aparecen las kills en el vídeo
 
 
 def report_dir() -> str:
@@ -734,6 +735,12 @@ def sync_match(vod: str, match: core.Match, expected_offset_s: float, vod_durati
         _log(match, expected_offset_s, results)
         out = SyncResult(expected_offset_s + best["shift"], best["shift"], best["conf"], True, "", "", None)
         out.methods = _summary(results)
+        # momento real en que se ven las kills (aviso de kill o killfeed) respecto a lo colocado
+        for name in ("aviso", "killfeed"):
+            k = next((r for r in results if r.get("set") == name), None)
+            if k is not None and k.get("zpeak", 0) >= 3.5 and abs(k["shift"] - best["shift"]) <= 1.5:
+                out.kill_bias = float(k["shift"] - best["shift"])
+                break
         return out
     results.sort(key=lambda r: r["conf"], reverse=True)
     best = results[0]

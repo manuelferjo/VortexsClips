@@ -466,6 +466,7 @@ class CutSettings:
     clutch_min: int = 2           # también clutches ganados de 1 contra X o más (0 = no)
     clutch_pre_s: float = 3.0     # clutch en modo kills: segundos antes de quedarte solo
     residual_s: float = 0.0       # con registro de delay de Vortexs Live: corrección fija aprendida
+    cut_shift_s: float = 0.0      # ajuste fino de TODOS los cortes (− = antes, + = después)
     unsynced_extra_pre_s: float = 6.0   # modo kills: margen extra si la partida NO está sincronizada
     unsynced_extra_post_s: float = 4.0
 
@@ -539,7 +540,7 @@ def match_base_s(m: Match, vod_start_utc: datetime, settings: CutSettings, calib
     base = match_offset_s(m, vod_start_utc, calib)
     if not is_synced(calib, m.match_id):
         base += delay_offset(m, settings, delay_fn)
-    return base + float(c.get("extra_s", 0.0))
+    return base + float(c.get("extra_s", 0.0)) + float(getattr(settings, "cut_shift_s", 0.0) or 0.0)
 
 
 def _with_clutch(m: Match, r: Round, base: float, settings: CutSettings, vod_duration_s: float,

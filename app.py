@@ -298,6 +298,7 @@ class App(tk.Tk):
         self.v_subedit = tk.BooleanVar(value=cfg.get("sub_edit", True))
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
         self.v_suboff = tk.StringVar(value=f"{float(cfg.get('sub_offset', 0.0)):.1f}")
+        self.v_cutshift = tk.StringVar(value=f"{float(cfg.get('cut_shift', 0.0)):.1f}")
         self.v_capcut = tk.BooleanVar(value=cfg.get("capcut_subs", False))
         self.v_topweek = tk.BooleanVar(value=cfg.get("top_week", True))
         self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
@@ -352,8 +353,17 @@ class App(tk.Tk):
         ttk.Label(t_cut, text="Qué cortar").grid(row=1, column=0, sticky="w", pady=(8, 2))
         ttk.Radiobutton(t_cut, text="Solo las kills (de la primera a la última, con cortes entre ellas)",
                         value="kills", variable=self.v_mode).grid(row=1, column=1, columnspan=4, sticky="w", pady=(8, 2))
-        kf = ttk.Frame(t_cut, style="Panel.TFrame")
-        kf.grid(row=2, column=1, columnspan=4, sticky="w", padx=(22, 0))
+        kfc = ttk.Frame(t_cut, style="Panel.TFrame")
+        kfc.grid(row=2, column=1, columnspan=4, sticky="w", padx=(22, 0))
+        kf = ttk.Frame(kfc, style="Panel.TFrame")
+        kf.pack(anchor="w")
+        kf2 = ttk.Frame(kfc, style="Panel.TFrame")
+        kf2.pack(anchor="w", pady=(4, 0))
+        ttk.Label(kf2, text="Ajuste fino de todos los cortes (s)").pack(side="left")
+        ttk.Spinbox(kf2, from_=-3.0, to=3.0, increment=0.1, textvariable=self.v_cutshift, width=6,
+                    format="%.1f").pack(side="left", padx=4)
+        ttk.Label(kf2, text="− si la kill pasa antes de tiempo (sobra al final) · + si se corta",
+                  style="Muted.TLabel").pack(side="left", padx=(2, 0))
         ttk.Label(kf, text="Segundos antes de cada kill").pack(side="left")
         ttk.Entry(kf, textvariable=self.v_kpre, width=4).pack(side="left", padx=4)
         ttk.Label(kf, text="  y después").pack(side="left")
@@ -700,7 +710,8 @@ class App(tk.Tk):
                                 mode=self.v_mode.get(), kill_pre_s=max(0.0, f(self.v_kpre, 2.5)),
                                 kill_post_s=max(0.0, f(self.v_kpost, 1.5)),
                                 merge_gap_s=f(self.v_kgap, 4.0),
-                                residual_s=float(self.cfg.get("residual_s", 0.0)))
+                                residual_s=float(self.cfg.get("residual_s", 0.0)),
+                                cut_shift_s=max(-3.0, min(3.0, f(self.v_cutshift, 0.0))))
 
     # ------------------------------------------------------------ delay de Vortexs Live
     def load_delay(self):
@@ -836,7 +847,8 @@ class App(tk.Tk):
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
                          "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset(),
-                         "top_week": self.v_topweek.get(), "capcut_subs": self.v_capcut.get()})
+                         "top_week": self.v_topweek.get(), "capcut_subs": self.v_capcut.get(),
+                         "cut_shift": self.settings().cut_shift_s})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -1939,6 +1951,15 @@ class App(tk.Tk):
                     m_ = self.matches.get(mid)
                     if m_:
                         failed.append(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}")
+            # cuándo se VEN las kills en tu directo respecto a la hora de Riot (mediana del VOD, estable):
+            # los cortes se calculan desde ahí, así «antes» y «después» son exactos sobre la imagen
+            biases = sorted(r.kill_bias for r in res.values() if r.ok and r.kill_bias is not None)
+            if len(biases) >= 2:
+                kb = max(-0.75, min(0.5, biases[len(biases) // 2]))
+                kb = round(kb * 4) / 4
+                for mid, r in res.items():
+                    if r.ok and mid in self.calib:
+                        self.calib[mid]["extra_s"] = kb
             if len(learned) >= 2:
                 learned.sort()
                 base = learned[len(learned) // 2]
