@@ -339,7 +339,8 @@ class App(tk.Tk):
         self.v_startup = tk.BooleanVar(value=cfg.get("startup", False))
 
         # ---- pestaña VOD
-        ttk.Label(t_vod, text="Pega uno o varios enlaces de VOD de Twitch (se procesan en cola):").grid(
+        ttk.Label(t_vod, text="Pega uno o varios enlaces de VOD de Twitch, como quieras (juntos, con espacios, "
+                              "en líneas…): se separan solos y se procesan en cola").grid(
             row=0, column=0, columnspan=4, sticky="w")
         tf = ttk.Frame(t_vod, style="Panel.TFrame")
         tf.grid(row=1, column=0, columnspan=4, sticky="we", pady=(4, 0))
@@ -348,6 +349,29 @@ class App(tk.Tk):
         self.btn_dl.pack(side="left", padx=6)
         self.lbl_queue = ttk.Label(t_vod, text="", style="Muted.TLabel")
         self.lbl_queue.grid(row=2, column=0, columnspan=4, sticky="w")
+        # al pegar varios enlaces: se separan en el propio campo y se dice cuántos VODs hay
+        self._links_fixing = False
+
+        def on_links(*_a):
+            if self._links_fixing:
+                return
+            raw = self.v_twitch.get()
+            urls = twitch.find_vod_urls(raw)
+            n = len(urls)
+            try:
+                self.btn_dl.configure(text=f"Descargar {n} VODs" if n > 1 else "Descargar VOD")
+            except AttributeError:
+                pass
+            if n > 1:
+                tidy = "   ".join(urls)
+                if raw.strip() != tidy:
+                    self._links_fixing = True
+                    self.after_idle(lambda: (self.v_twitch.set(tidy), setattr(self, "_links_fixing", False)))
+                self.lbl_queue.configure(text=f"{n} VODs detectados: " + ", ".join(u.rsplit("/", 1)[-1] for u in urls)
+                                         + " · se descargan y procesan uno detrás de otro")
+            elif not self.flow_active and not self.queue:
+                self.lbl_queue.configure(text="")
+        self.v_twitch.trace_add("write", on_links)
         af = ttk.Frame(t_vod, style="Panel.TFrame")
         af.grid(row=3, column=0, columnspan=4, sticky="w", pady=(2, 0))
         ui.Toggle(af, text="Al terminar la descarga, sacar las rondas y generar los vídeos",
@@ -1909,6 +1933,23 @@ class App(tk.Tk):
         st = self.settings()
         dfn = self.delay_fn_for_vod()
         vod, dur = self.v_vod.get(), self.vod_info["duration"]
+        # solo las partidas de ESTE vídeo (las de otros días no son «fallos»)
+        ms = [m for m in ms if core.match_in_vod(m, vs, dur, st, self.calib, dfn)]
+        if not ms:
+            messagebox.showinfo(APP_NAME, "Ninguna de las partidas marcadas cae dentro de este VOD.")
+            return
+        # si ya sincronizaste a mano alguna partida de este VOD, su desfase sirve de punto de partida para
+        # las demás (p. ej. un día con mucho más delay del normal: con una a mano, el resto se encuentran solas)
+        anchors = []
+        for mid, c in self.calib.items():
+            m_ = self.matches.get(mid)
+            if m_ is None or c.get("first_kill_vod_s") is None:
+                continue
+            if not core.match_in_vod(m_, vs, dur, st, self.calib, dfn):
+                continue
+            man = core.match_offset_s(m_, vs, {mid: {"first_kill_vod_s": c["first_kill_vod_s"]}})
+            anchors.append(man - (core.match_offset_s(m_, vs, {}) + core.delay_offset(m_, st, dfn)))
+        anchor = sorted(anchors)[len(anchors) // 2] if anchors else 0.0
         self.stop_flag = False
         self.set_running(True)
         self.set_step(2, f"Sincronizando {len(ms)} partidas con el VOD…")
@@ -1924,7 +1965,7 @@ class App(tk.Tk):
                     if c.get("first_kill_vod_s") is not None:
                         exp = core.match_offset_s(m, vs, {m.match_id: {"first_kill_vod_s": c["first_kill_vod_s"]}})
                     else:
-                        exp = core.match_offset_s(m, vs, {}) + core.delay_offset(m, st, dfn)
+                        exp = core.match_offset_s(m, vs, {}) + core.delay_offset(m, st, dfn) + anchor
                     items.append((m, exp))
                 on_done = self._bg_subs_hook(vod, vs, dur, st, dfn)
                 res = sync.sync_many(vod, items, dur, self.sync_workers(), cb, lambda: self.stop_flag,
@@ -2002,6 +2043,8 @@ class App(tk.Tk):
                             approx.append(f"{m_.map_name} {m_.started_at.astimezone():%d/%m %H:%M}")
                     good += 1
                     shifts.append(r.shift_s)
+                elif r.reason == "la partida no está en el VOD":
+                    continue
                 else:
                     bad += 1
                     if not core.is_synced(self.calib, mid):
@@ -2039,7 +2082,10 @@ class App(tk.Tk):
                 self.sync_warning = (f"{len(failed)} partida(s) no se han podido sincronizar solas "
                                      f"({', '.join(failed[:6])}{'…' if len(failed) > 6 else ''}). "
                                      "Sus cortes pueden caer desplazados: revísalas con «Ver ronda» o "
-                                     "sincronízalas a mano.")
+                                     "sincronízalas a mano."
+                                     + (" Si no ha salido NINGUNA de este directo (p. ej. ese día el delay era "
+                                        "mucho mayor), sincroniza UNA a mano y vuelve a darle a Sincronizar: "
+                                        "las demás se buscan desde ahí." if good == 0 else ""))
             else:
                 self.sync_warning = ""
             if then:
