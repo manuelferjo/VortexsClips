@@ -172,9 +172,9 @@ class App(tk.Tk):
 
     def _panel(self, parent, title, sub=""):
         """Tarjeta redondeada con número y título: «1 · Cuenta y partidas» -> 01 Cuenta y partidas."""
-        f = ui.Card(parent, pad=16, radius=18)
+        f = ui.Card(parent, pad=13, radius=18)
         hd = ttk.Frame(f, style="Panel.TFrame")
-        hd.grid(row=0, column=0, columnspan=10, sticky="w", pady=(0, 8))
+        hd.grid(row=0, column=0, columnspan=10, sticky="w", pady=(0, 4))
         num, _, txt = title.partition(" · ")
         if txt:
             ttk.Label(hd, text=num.zfill(2), style="Num.TLabel").pack(side="left", padx=(0, 10))
@@ -207,7 +207,7 @@ class App(tk.Tk):
 
         # todo lo de en medio va en una zona que se desplaza si la ventana es baja
         self.body = ui.ScrollArea(self)
-        top = ttk.Frame(self.body.inner, padding=(16, 12, 16, 0))
+        top = ttk.Frame(self.body.inner, padding=(16, 8, 16, 0))
         top.pack(fill="x")
         top.columnconfigure(0, weight=1)
         top.columnconfigure(1, weight=1)
@@ -241,7 +241,7 @@ class App(tk.Tk):
         ttk.Entry(lf, textvariable=self.v_link, width=44).pack(side="left", fill="x", expand=True)
         ui.Button(lf, text="Añadir", command=self.add_by_link).pack(side="left", padx=6)
         kp = ttk.Frame(p1, style="Panel.TFrame")
-        kp.grid(row=6, column=0, columnspan=4, sticky="we", pady=(16, 0))
+        kp.grid(row=6, column=0, columnspan=4, sticky="we", pady=(10, 0))
         self.kpi = {}
         for i, (key, cap) in enumerate((("invod", "partidas en el VOD"), ("synced", "sincronizadas"),
                                         ("plays", "jugadas para cortar"))):
@@ -443,7 +443,7 @@ class App(tk.Tk):
         ui.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
 
         # --- 3. partidas
-        mid = ttk.Frame(self.body.inner, padding=(16, 12, 16, 10))
+        mid = ttk.Frame(self.body.inner, padding=(16, 10, 16, 8))
         mid.columnconfigure(0, weight=3)
         mid.columnconfigure(1, weight=2)
         mid.rowconfigure(0, weight=1)
@@ -613,7 +613,7 @@ class App(tk.Tk):
             if mid_wide:
                 p3.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 12), pady=0)
                 p4o.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=0, pady=0)
-                mid.rowconfigure(0, weight=1, minsize=300)
+                mid.rowconfigure(0, weight=1, minsize=280)
                 mid.rowconfigure(1, weight=0, minsize=0)
             else:
                 p3.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, 12))

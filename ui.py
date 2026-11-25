@@ -219,7 +219,7 @@ def apply_style(root):
     fd = cached("field_d", lambda: rrect_img(30, 28, 8, SURFACE, BORDER))
     try:
         s.element_create("VField.field", "image", fn, ("disabled", fd), ("focus", ff), ("hover", fh),
-                         border=9, padding=(8, 4), sticky="nsew")
+                         border=9, padding=(8, 3), sticky="nsew")
     except tk.TclError:
         pass
     s.layout("TEntry", [("VField.field", {"sticky": "nswe", "children": [
@@ -263,7 +263,7 @@ def apply_style(root):
             ghost = cached("ghost", lambda: rrect_img(30, 30, 9, SURFACE))
             s.element_create(f"{name}.bg", "image", imgs[n_] if n_ else ghost,
                              ("disabled", imgs[d_] if d_ else ghost), ("pressed", imgs[p_]),
-                             ("active", imgs[h_]), border=10, padding=(12, 5), sticky="nsew")
+                             ("active", imgs[h_]), border=10, padding=(12, 3), sticky="nsew")
         except tk.TclError:
             pass
     lay = lambda el: [(el, {"sticky": "nswe", "children": [("Button.padding", {"sticky": "nswe", "children": [
@@ -278,7 +278,7 @@ def apply_style(root):
     s.map("Ghost.TButton", foreground=[("active", TEXT), ("disabled", BORDER_HI)])
 
     # tablas
-    s.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=TEXT, rowheight=27,
+    s.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=TEXT, rowheight=25,
                 borderwidth=0, bordercolor=SURFACE, lightcolor=SURFACE, darkcolor=SURFACE, font=base)
     s.configure("Treeview.Heading", background=SURFACE, foreground=DIM, font=mono(8), borderwidth=0,
                 bordercolor=BORDER, lightcolor=SURFACE, darkcolor=BORDER, padding=(6, 8), relief="flat")
@@ -417,7 +417,7 @@ def keep_cards_in_sync(root):
 class Toggle(tk.Frame):
     """Interruptor como los de Vortexs Live (sustituye a una casilla): Toggle(padre, text=, variable=, command=)."""
 
-    W, H = 38, 22
+    W, H = 36, 20
 
     def __init__(self, parent, text="", variable=None, command=None, bg=SURFACE, **_kw):
         super().__init__(parent, bg=bg)
@@ -426,7 +426,7 @@ class Toggle(tk.Frame):
         lead = len(text) - len(text.lstrip(" "))
         self.cv = tk.Canvas(self, width=self.W, height=self.H, bg=bg, highlightthickness=0, bd=0,
                             cursor="hand2")
-        self.cv.pack(side="left", padx=(lead * 4, 10), pady=3)
+        self.cv.pack(side="left", padx=(lead * 4, 10), pady=1)
         self.lbl = tk.Label(self, text=text.strip(), bg=bg, fg=TEXT, font=body(10), cursor="hand2",
                             anchor="w", justify="left")
         self.lbl.pack(side="left")
@@ -494,7 +494,7 @@ class Tabs(ttk.Frame):
         super().__init__(parent, style="Panel.TFrame")
         self._bg = bg
         self.bar = tk.Canvas(self, height=40, bg=bg, highlightthickness=0, bd=0)
-        self.bar.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        self.bar.grid(row=0, column=0, sticky="w", pady=(0, 6))
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self.pages, self.names, self.cur = [], [], None
@@ -533,7 +533,7 @@ class Tabs(ttk.Frame):
         cv.delete("all")
         f = semi(10)
         fm = tkfont.Font(root=self, font=f)
-        x, pad_x, h, gap = 4, 16, 32, 2
+        x, pad_x, h, gap = 4, 16, 28, 2
         boxes = []
         for i, n in enumerate(self.names):
             w = fm.measure(n) + 2 * pad_x
