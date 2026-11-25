@@ -6,7 +6,9 @@ mantiene actualizado, porque Twitch cambia a menudo y las versiones viejas falla
 import json
 import os
 import re
+import shutil
 import subprocess
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -359,3 +361,224 @@ def find_vod_urls(text: str) -> list[str]:
             seen.add(m.group(1))
             out.append(f"https://www.twitch.tv/videos/{m.group(1)}")
     return out
+
+
+# ---------------------------------------------------------------- descarga solo de las partidas
+def playlist_url(url: str) -> str:
+    """URL de la lista de reproducción (m3u8) de la mejor calidad del VOD."""
+    exe = ensure_ytdlp()
+    r = subprocess.run([exe, "-g", "--no-warnings", "--no-playlist", *_net_opts(),
+                        "-f", "b/bv*", "-S", "res,fps,br", url],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       **core._no_window())
+    if r.returncode != 0 or not r.stdout.strip():
+        raise RuntimeError(_explain(r.stderr))
+    return r.stdout.strip().splitlines()[0]
+
+
+def _fetch(url: str, timeout: float = 30) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 VortexsClips"})
+    with urllib.request.urlopen(req, timeout=timeout) as f:
+        return f.read()
+
+
+def parse_m3u8(text: str, base_url: str) -> dict:
+    """Segmentos con su hora exacta dentro del VOD (suma de #EXTINF)."""
+    import urllib.parse
+    segs, t, dur, init = [], 0.0, None, None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#EXTINF:"):
+            dur = float(line[8:].split(",")[0])
+        elif line.startswith("#EXT-X-MAP:"):
+            m = re.search(r'URI="([^"]+)"', line)
+            if m:
+                init = urllib.parse.urljoin(base_url, m.group(1))
+        elif not line.startswith("#") and dur is not None:
+            segs.append({"url": urllib.parse.urljoin(base_url, line), "start": t, "dur": dur,
+                         "ext": os.path.splitext(urllib.parse.urlparse(line).path)[1] or ".ts"})
+            t += dur
+            dur = None
+    if not segs:
+        raise RuntimeError("La lista de Twitch no trae trozos de vídeo.")
+    return {"segments": segs, "init": init, "duration": t}
+
+
+def merge_sections(sections: list[tuple[float, float]], duration: float, join_gap: float = 300.0):
+    """Ordena, recorta al VOD y junta tramos que se tocan o están a menos de join_gap."""
+    out = []
+    for a, b in sorted((max(0.0, a), min(duration, b)) for a, b in sections):
+        if b <= a:
+            continue
+        if out and a <= out[-1][1] + join_gap:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def download_sections(url: str, out_dir: str, sections: list[tuple[float, float]], progress=None,
+                      should_stop=None, info: dict | None = None, m3u8: str | None = None) -> str:
+    """
+    Descarga SOLO los tramos indicados (segundos del VOD) y devuelve un manifiesto
+    «<nombre>.partes.json». Los tiempos de todo el programa siguen siendo los del VOD entero.
+    Si se corta, al repetir solo baja lo que falte.
+    """
+    import concurrent.futures as cf
+    info = info or vod_info(url)
+    base = base_name(info)
+    os.makedirs(out_dir, exist_ok=True)
+    if progress:
+        progress(None, "Leyendo la lista de trozos del VOD…")
+    m3u8 = m3u8 or playlist_url(url)
+    pl = parse_m3u8(_fetch(m3u8).decode("utf-8", "replace"), m3u8)
+    segs = pl["segments"]
+    total_dur = float(info.get("duration") or pl["duration"])
+    secs = merge_sections(sections, pl["duration"])
+    if not secs:
+        raise RuntimeError("No hay tramos que descargar.")
+    pdir_name = base + " (partidas)"
+    pdir = os.path.join(out_dir, pdir_name)
+    os.makedirs(pdir, exist_ok=True)
+    plan = []                                   # (tramo, [segmentos])
+    for a, b in secs:
+        chosen = [s for s in segs if s["start"] + s["dur"] > a and s["start"] < b]
+        if chosen:
+            plan.append(((a, b), chosen))
+    need = sum(len(c) for _, c in plan)
+    est = int(info.get("size_est") or 0)
+    if est and pl["duration"]:
+        frac = sum(sum(s["dur"] for s in c) for _, c in plan) / pl["duration"]
+        check_space(out_dir, int(est * frac * 2.1), "descargar las partidas")
+    ffmpeg = core.find_tool("ffmpeg")
+    done = [0]
+    nbytes = [0]
+    t0 = time.time()
+    lock = threading.Lock()
+
+    def get(seg, path):
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            with lock:
+                done[0] += 1
+            return
+        last = None
+        for attempt in range(8):
+            if should_stop and should_stop():
+                raise RuntimeError("Descarga cancelada. Si vuelves a darle, sigue por donde iba.")
+            try:
+                data = _fetch(seg["url"], 60)
+                with open(path + ".tmp", "wb") as f:
+                    f.write(data)
+                os.replace(path + ".tmp", path)
+                with lock:
+                    done[0] += 1
+                    nbytes[0] += len(data)
+                return
+            except Exception as e:          # red: reintentar con espera creciente
+                last = e
+                time.sleep(min(30, 2 * (attempt + 1)))
+        raise RuntimeError(f"No se pudo bajar un trozo del VOD: {last}")
+
+    parts = []
+    for k, ((a, b), chosen) in enumerate(plan):
+        name = f"tramo_{k + 1:02d}_{int(chosen[0]['start'])}.mp4"
+        final = os.path.join(pdir, name)
+        p_start = chosen[0]["start"]
+        p_dur = sum(s["dur"] for s in chosen)
+        if os.path.isfile(final) and os.path.getsize(final) > 0:
+            with lock:
+                done[0] += len(chosen)
+            parts.append({"file": os.path.join(pdir_name, name), "start": p_start, "dur": p_dur})
+            continue
+        sdir = os.path.join(pdir, f"trozos_{k + 1:02d}")
+        os.makedirs(sdir, exist_ok=True)
+        local = []
+        for i, s in enumerate(chosen):
+            local.append((s, os.path.join(sdir, f"s{i:05d}{s['ext']}")))
+        init_local = None
+        if pl["init"]:
+            init_local = os.path.join(sdir, "init" + (os.path.splitext(pl["init"])[1] or ".mp4"))
+            if not os.path.isfile(init_local):
+                with open(init_local + ".tmp", "wb") as f:
+                    f.write(_fetch(pl["init"], 60))
+                os.replace(init_local + ".tmp", init_local)
+        with cf.ThreadPoolExecutor(8) as ex:
+            futs = [ex.submit(get, s, p) for s, p in local]
+            while futs:
+                fin, futs_set = cf.wait(futs, timeout=0.5)
+                for f in fin:
+                    f.result()
+                futs = list(futs_set)
+                if progress:
+                    el = max(0.1, time.time() - t0)
+                    frac = done[0] / max(1, need)
+                    spd = nbytes[0] / el
+                    eta = (el / frac - el) if frac > 0.02 else None
+                    progress(frac, f"Partidas: trozo {done[0]} de {need}  ·  {fmt_size(nbytes[0])} a "
+                                   f"{fmt_size(spd)}/s" + (f"  ·  quedan {fmt_eta(eta)}" if eta else ""))
+                if should_stop and should_stop():
+                    for f in futs:
+                        f.cancel()
+                    raise RuntimeError("Descarga cancelada. Si vuelves a darle, sigue por donde iba.")
+        # unir los trozos de este tramo en un MP4 (copia, sin recodificar)
+        lst = os.path.join(sdir, "lista.m3u8")
+        with open(lst, "w", encoding="utf-8") as f:
+            f.write("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n"
+                    % int(max(s["dur"] for s in chosen) + 1))
+            if init_local:
+                f.write(f'#EXT-X-MAP:URI="{os.path.basename(init_local)}"\n')
+            for s, p in local:
+                f.write(f"#EXTINF:{s['dur']:.6f},\n{os.path.basename(p)}\n")
+            f.write("#EXT-X-ENDLIST\n")
+        if progress:
+            progress(None, f"Uniendo el tramo {k + 1} de {len(plan)}…")
+        tmpf = final[:-4] + ".tmp.mp4"
+        r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-allowed_extensions", "ALL",
+                            "-i", "lista.m3u8", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                            "-bsf:a", "aac_adtstoasc", "-avoid_negative_ts", "make_zero",
+                            "-movflags", "+faststart", os.path.abspath(tmpf)],
+                           capture_output=True, text=True, cwd=sdir, **core._no_window())
+        if r.returncode != 0:
+            raise RuntimeError("No se pudo unir un tramo del VOD:\n" + r.stderr[-500:])
+        os.replace(tmpf, final)
+        shutil.rmtree(sdir, ignore_errors=True)
+        parts.append({"file": os.path.join(pdir_name, name), "start": p_start, "dur": p_dur})
+    man = os.path.join(out_dir, base + core.PARTS_SUFFIX)
+    old = {}
+    if os.path.isfile(man):
+        try:
+            with open(man, encoding="utf-8") as f:
+                old = json.load(f)
+        except Exception:
+            old = {}
+    have = {p["file"]: p for p in old.get("parts", []) if os.path.isfile(os.path.join(out_dir, p["file"]))}
+    for p in parts:
+        have[p["file"]] = p
+    m = {"version": 1, "id": info.get("id"), "url": url, "title": info.get("title", ""),
+         "duration": total_dur,
+         "start_utc": info["start"].isoformat() if info.get("start") else None,
+         "parts": sorted(have.values(), key=lambda p: p["start"])}
+    with open(man + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(m, f, ensure_ascii=False, indent=1)
+    os.replace(man + ".tmp", man)
+    return man
+
+
+def find_parts(out_dir: str, info: dict, sections: list[tuple[float, float]] | None = None) -> str | None:
+    """Un manifiesto ya descargado de ese VOD que cubra todos los tramos pedidos."""
+    man = os.path.join(out_dir, base_name(info) + core.PARTS_SUFFIX)
+    if not os.path.isfile(man):
+        return None
+    try:
+        m = core.load_parts(man)
+    except Exception:
+        return None
+    if any(not os.path.isfile(p["file"]) for p in m["parts"]):
+        return None
+    for a, b in sections or []:
+        if not core.vod_covers(man, max(0.0, a), min(b, m["duration"])):
+            return None
+    return man

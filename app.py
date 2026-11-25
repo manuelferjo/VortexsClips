@@ -123,6 +123,7 @@ class App(tk.Tk):
         self.load_delay()
         self.after(800, self.detect_encoder)
         self.after(1200, self.restore_last_vod)
+        self.after(20000, self.purge_old_vods)
         self.after(1500, lambda: self.mirror_delay_log(True))
         if self.v_watch.get():
             self.after(30_000, self.watch_tick)
@@ -364,6 +365,8 @@ class App(tk.Tk):
         self.v_subhl = tk.BooleanVar(value=cfg.get("sub_highlight", True))
         self.v_subedit = tk.BooleanVar(value=cfg.get("sub_edit", True))
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
+        self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
+        self.v_autodel = tk.BooleanVar(value=cfg.get("auto_delete_vod", True))
         self.cam = cfg.get("cam")
         self.v_channel = tk.StringVar(value=cfg.get("watch_channel", ""))
         self.v_watch = tk.BooleanVar(value=cfg.get("watch", False))
@@ -379,8 +382,14 @@ class App(tk.Tk):
         self.btn_dl.pack(side="left", padx=6)
         self.lbl_queue = ttk.Label(t_vod, text="", style="Muted.TLabel")
         self.lbl_queue.grid(row=2, column=0, columnspan=4, sticky="w")
-        ttk.Checkbutton(t_vod, text="Al terminar la descarga, sacar las rondas y generar los vídeos",
-                        variable=self.v_auto).grid(row=3, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        af = ttk.Frame(t_vod, style="Panel.TFrame")
+        af.grid(row=3, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ttk.Checkbutton(af, text="Al terminar la descarga, sacar las rondas y generar los vídeos",
+                        variable=self.v_auto).pack(anchor="w")
+        ttk.Checkbutton(af, text="Bajar solo los trozos con partidas (no el directo entero: mucho más rápido "
+                                 "y ocupa una fracción)", variable=self.v_partial).pack(anchor="w")
+        ttk.Checkbutton(af, text="Borrar el VOD descargado 5 días después de sacar sus vídeos "
+                                 "(los vídeos generados no se tocan)", variable=self.v_autodel).pack(anchor="w")
         of = ttk.Frame(t_vod, style="Panel.TFrame")
         of.grid(row=4, column=0, columnspan=4, sticky="we", pady=(6, 0))
         ttk.Button(of, text="Carpeta…", command=self.pick_outdir).pack(side="left")
@@ -460,7 +469,7 @@ class App(tk.Tk):
                         variable=self.v_subs).grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
         ttk.Checkbutton(t_out, text="    Palabras destacadas en amarillo y morado (colores del canal)",
                         variable=self.v_subhl).grid(row=5, column=0, columnspan=4, sticky="w", pady=(2, 0))
-        ttk.Checkbutton(t_out, text="    Revisar y editar los subtítulos antes de generar la vertical",
+        ttk.Checkbutton(t_out, text="    Revisar y editar los subtítulos viendo el vídeo generado",
                         variable=self.v_subedit).grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
         ttk.Checkbutton(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
                         variable=self.v_singles).grid(row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
@@ -594,6 +603,8 @@ class App(tk.Tk):
         self.btn_render.pack(side="right")
         self.btn_cancel = ttk.Button(row, text="Cancelar", command=self.cancel, state="disabled")
         self.btn_cancel.pack(side="right", padx=6)
+        self.btn_subs = ttk.Button(row, text="Corregir subtítulos…", command=self.fix_subtitles_later)
+        self.btn_subs.pack(side="right")
 
     # ------------------------------------------------------------ util
     def status(self, txt):
@@ -801,7 +812,8 @@ class App(tk.Tk):
                          "kill_pre": self.v_kpre.get(), "kill_post": self.v_kpost.get(),
                          "kill_gap": self.v_kgap.get(),
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
-                         "startup": self.v_startup.get()})
+                         "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
+                         "auto_delete_vod": self.v_autodel.get()})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -1106,7 +1118,8 @@ class App(tk.Tk):
     # ------------------------------------------------------------ VOD
     def pick_vod(self):
         p = filedialog.askopenfilename(title="Elige el VOD descargado",
-                                       filetypes=[("Vídeo", "*.mp4 *.mkv *.mov *.ts *.flv"), ("Todo", "*.*")])
+                                       filetypes=[("Vídeo o VOD por partidas", "*.mp4 *.mkv *.mov *.ts *.flv *.partes.json"),
+                                                  ("Todo", "*.*")])
         if not p:
             return
         self.v_start.set("")
@@ -1121,11 +1134,12 @@ class App(tk.Tk):
         self.clips = []
         self.fill_clips()
         d = info["duration"]
-        self.lbl_vod.configure(text=f"{os.path.basename(p)}  ·  {core.fmt_ts(d).split('.')[0]}  ·  "
-                                    f"{info.get('width')}x{info.get('height')}")
+        extra = f"  ·  solo partidas ({info['parts']} trozos)" if info.get("parts") else ""
+        self.lbl_vod.configure(text=f"{core.vod_display_base(p)}  ·  {core.fmt_ts(d).split('.')[0]}  ·  "
+                                    f"{info.get('width')}x{info.get('height')}{extra}")
         if start_utc is not None:
             self.v_start.set(start_utc.astimezone().strftime("%d/%m/%Y %H:%M:%S"))
-        elif not self.v_start.get().strip():
+        elif not self.v_start.get().strip() and info.get("start_guess"):
             self.v_start.set(info["start_guess"].astimezone().strftime("%d/%m/%Y %H:%M:%S"))
         self.set_progress(1, "VOD cargado. Revisa la hora de inicio y pulsa «Marcar las que están en el VOD».")
         self.auto_check()
@@ -1264,6 +1278,7 @@ class App(tk.Tk):
         self.btn_render.configure(state="disabled" if running else "normal")
         self.btn_dl.configure(state="disabled" if running else "normal")
         self.btn_cancel.configure(state="normal" if running else "disabled")
+        self.btn_subs.configure(state="disabled" if running else "normal")
 
     # ------------------------------------------------------------ cola de VODs
     def download_vod(self):
@@ -1344,9 +1359,13 @@ class App(tk.Tk):
                 path = twitch.find_existing(out_dir, info)
                 if path:
                     prog(1, f"Ya estaba descargado: {os.path.basename(path)}")
-                else:
+                elif auto and self.v_partial.get() and info.get("start"):
+                    path = self._download_matches_only(url, out_dir, info, prog)
+                if not path:
                     path = twitch.download(url, out_dir, prog, lambda: self.stop_flag, info)
                 prog(None, "Leyendo el vídeo descargado…")
+                self.cfg.setdefault("downloaded_vods", {})[os.path.abspath(path)] = time.time()
+                self.after(0, self.persist)
                 return info, path, core.probe_vod(path)
             finally:
                 self.after(0, lambda: self.set_running(False))
@@ -1360,6 +1379,105 @@ class App(tk.Tk):
                 self.finish_steps("VOD descargado")
                 self.flow_done(path)
         self.run_bg(work, done, "No se pudo descargar el VOD")
+
+    def _match_sections(self, info, prog):
+        """Tramos del VOD (segundos) donde están tus partidas de competitivo, con margen de sobra
+        para la sincronización (que busca ±2 min) y el delay del directo."""
+        vs, dur = info["start"], float(info.get("duration") or 0)
+        riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
+        st = self.settings()
+        secs = []
+        for page in range(6):
+            prog(None, f"Buscando qué trozos del directo tienen partidas ({page * 10 + 1}–{page * 10 + 10})…")
+            raws = core.fetch_recent_matches(riot, key, reg, size=10, start=page * 10)
+            if not raws:
+                break
+            ms = []
+            for r in raws:
+                try:
+                    ms.append(core.parse_match(r, riot))
+                except Exception:
+                    pass
+            for m in ms:
+                rel = (m.started_at - vs).total_seconds()
+                known = self.delay_fn_for_vod() is not None
+                off = rel + core.delay_offset(m, st, self.delay_fn_for_vod())
+                length = (m.length_ms or 3000 * 1000) / 1000
+                a = off - 6 * 60
+                b = off + length + (5 if known else 9) * 60
+                if b > 0 and a < dur:
+                    secs.append((a, b))
+            if ms and min(m.started_at for m in ms) < vs:
+                break
+        return twitch.merge_sections(secs, dur)
+
+    def _download_matches_only(self, url, out_dir, info, prog):
+        """Baja solo las partidas. Si algo falla, devuelve None y se baja el VOD entero."""
+        try:
+            secs = self._match_sections(info, prog)
+        except Exception as e:
+            prog(None, f"No pude ver las partidas ({str(e)[:80]}); bajo el VOD entero…")
+            return None
+        if not secs:
+            return None
+        have = twitch.find_parts(out_dir, info, secs)
+        if have:
+            prog(1, "Las partidas ya estaban descargadas")
+            return have
+        tot = sum(b - a for a, b in secs)
+        self.after(0, lambda: self.lbl_step.configure(
+            text=f"Descargando solo las partidas: {core.fmt_ts(tot).split('.')[0]} de "
+                 f"{core.fmt_ts(info.get('duration') or 0).split('.')[0]} del directo…"))
+        try:
+            return twitch.download_sections(url, out_dir, secs, prog, lambda: self.stop_flag, info)
+        except Exception as e:
+            if "cancelad" in str(e).lower():
+                raise
+            prog(None, f"La descarga por trozos falló ({str(e)[:80]}); bajo el VOD entero…")
+            return None
+
+    VOD_KEEP_DAYS = 5
+
+    def purge_old_vods(self):
+        """Borra los VODs que bajó la app y de los que ya se sacaron los vídeos hace más de 5 días.
+        Nunca toca un vídeo elegido a mano ni los vídeos generados."""
+        if not self.v_autodel.get() or self.busy or self.flow_active:
+            self.after(3600 * 1000, self.purge_old_vods)
+            return
+        gen = self.cfg.get("generated_vods") or {}
+        dl = self.cfg.get("downloaded_vods") or {}
+        cur = os.path.abspath(self.v_vod.get()) if self.v_vod.get() else ""
+        now, freed, gone = time.time(), 0, []
+        for path, when in list(gen.items()):
+            if path not in dl or now - when < self.VOD_KEEP_DAYS * 86400 or path == cur:
+                if path not in dl and now - when > 60 * 86400:
+                    gen.pop(path, None)
+                continue
+            try:
+                if core.is_parts(path):
+                    if os.path.isfile(path):
+                        m = core.load_parts(path)
+                        for p in m["parts"]:
+                            if os.path.isfile(p["file"]):
+                                freed += os.path.getsize(p["file"])
+                                os.remove(p["file"])
+                        d = os.path.dirname(m["parts"][0]["file"]) if m["parts"] else ""
+                        os.remove(path)
+                        if d and os.path.isdir(d) and not os.listdir(d):
+                            os.rmdir(d)
+                elif os.path.isfile(path):
+                    freed += os.path.getsize(path)
+                    os.remove(path)
+                gone.append(os.path.basename(path))
+            except OSError:
+                continue          # abierto en otro programa: se intenta otro día
+            gen.pop(path, None)
+            dl.pop(path, None)
+        if gone:
+            self.persist()
+            self.status(f"Liberados {twitch.fmt_size(freed)}: borrados {len(gone)} VOD(s) de hace más de "
+                        f"{self.VOD_KEEP_DAYS} días (los vídeos generados siguen ahí).")
+        self.after(6 * 3600 * 1000, self.purge_old_vods)
 
     def auto_process(self):
         """Tras descargar: trae las partidas del VOD, saca las rondas y genera el vídeo."""
@@ -1422,7 +1540,7 @@ class App(tk.Tk):
             self.flow_done("Sin rondas para cortar en este VOD.")
             return
         vod = self.v_vod.get()
-        base = os.path.splitext(os.path.basename(vod))[0]
+        base = core.vod_display_base(vod)
         out = os.path.join(os.path.dirname(vod), f"{base} - rondas {self.settings().min_kills}K+.mp4")
         self.render(out)
 
@@ -1612,25 +1730,46 @@ class App(tk.Tk):
         self.run_sync(sorted(self.checked))
 
     # ------------------------------------------------------------ editor de subtítulos
-    def edit_subtitles(self, words, callback):
+    def edit_subtitles(self, words, callback, video=None, highlight=True):
         """
-        Ventana para corregir los subtítulos antes de la vertical: cambiar el texto de una palabra,
-        borrarla, ponerla en amarillo / morado / sin color, o quitar todos los subtítulos.
+        Ventana para corregir los subtítulos: cambiar el texto de una palabra, borrarla, ponerla en
+        amarillo / morado / sin color, o quitar todos los subtítulos.
+        Con video (el vídeo horizontal ya generado) se ve y se oye el vídeo dentro de la ventana con
+        el subtítulo pintado encima: cada cambio se ve al momento.
         callback(lista de palabras) al continuar, o callback(None) para no poner subtítulos.
         """
         ws = [dict(w) for w in words]
         dlg = tk.Toplevel(self)
         dlg.title("Revisar subtítulos")
         dlg.configure(bg=PANEL)
-        dlg.geometry("760x640")
+        dlg.geometry("1240x720" if video else "760x640")
         dlg.transient(self)
-        ttk.Label(dlg, text="Revisa los subtítulos antes de generar la vertical", style="H.TLabel").pack(
-            anchor="w", padx=12, pady=(10, 0))
-        ttk.Label(dlg, text="Doble clic en una palabra para corregirla. Puedes seleccionar varias (Ctrl/Mayús) "
-                            "para borrarlas o cambiarles el color. «auto» = el programa decide si va en color.",
-                  style="Muted.TLabel", wraplength=720).pack(anchor="w", padx=12, pady=(2, 8))
-        fr = ttk.Frame(dlg, style="Panel.TFrame")
-        fr.pack(fill="both", expand=True, padx=12)
+        ttk.Label(dlg, text="Revisa los subtítulos " + ("viendo el vídeo" if video else "antes de generar la vertical"),
+                  style="H.TLabel").pack(anchor="w", padx=12, pady=(10, 0))
+        ttk.Label(dlg, text=("Clic en una palabra: el vídeo salta ahí. Doble clic: corregirla. Espacio en el "
+                             "vídeo: reproducir/pausa. " if video else "Doble clic en una palabra para corregirla. ") +
+                            "Puedes seleccionar varias (Ctrl/Mayús) para borrarlas o cambiarles el color. "
+                            "«auto» = el programa decide si va en color.",
+                  style="Muted.TLabel", wraplength=1180 if video else 720).pack(anchor="w", padx=12, pady=(2, 8))
+        body = ttk.Frame(dlg, style="Panel.TFrame")
+        body.pack(fill="both", expand=True, padx=12)
+        pl = None
+        if video:
+            left = ttk.Frame(body, style="Panel.TFrame")
+            left.pack(side="left", fill="y", padx=(0, 12))
+            pl = player.Player(left, lambda: video)
+            pl.pack(anchor="n")
+            try:
+                vdur = core.probe_vod(video)["duration"]
+            except Exception:
+                vdur = (ws[-1]["end"] + 5) if ws else 60
+            pl.range = (0.0, vdur)
+            pl.scale.configure(from_=0, to=vdur)
+            pl.cv.itemconfigure(pl.msg, text="")
+            ttk.Label(left, text="Así quedará el texto en la vertical (aquí en pequeño).",
+                      style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        fr = ttk.Frame(body, style="Panel.TFrame")
+        fr.pack(side="left", fill="both", expand=True)
         tv = ttk.Treeview(fr, columns=("t", "w", "c"), show="headings", selectmode="extended")
         for c_, t_, w_ in (("t", "Momento", 110), ("w", "Palabra", 380), ("c", "Color", 160)):
             tv.heading(c_, text=t_)
@@ -1652,7 +1791,65 @@ class App(tk.Tk):
         tv.tag_configure("p", foreground=PURPLE)
         tv.tag_configure("none", foreground=MUTED)
 
+        tv.tag_configure("now", background="#3a2f52")
+        ov = {"chunks": [], "items": [], "cur": None, "row": None}
+        cols = {subtitles.ASS_YELLOW: YELLOW, subtitles.ASS_PURPLE: PURPLE}
+
+        def rebuild_overlay():
+            ov["chunks"] = subtitles.chunk_words_rich(ws, highlight=highlight) if ws else []
+            ov["cur"] = "x"
+            if pl:
+                on_time(pl._now())
+
+        def on_time(t):
+            if not pl:
+                return
+            ch = next((c for c in ov["chunks"] if c[0] <= t < c[1]), None)
+            key = id(ch) if ch else None
+            if key != ov["cur"]:
+                ov["cur"] = key
+                for it in ov["items"]:
+                    pl.cv.delete(it)
+                ov["items"] = []
+                if ch:
+                    fnt = ("Arial Black", 22)
+                    txts = [(w, cols.get(c, "#ffffff")) for w, c in ch[2]]
+                    widths = []
+                    for w, _c in txts:
+                        it = pl.cv.create_text(0, 0, text=w, font=fnt)
+                        b = pl.cv.bbox(it)
+                        pl.cv.delete(it)
+                        widths.append((b[2] - b[0]) if b else 10 * len(w))
+                    gap = 10
+                    x = player.VW / 2 - (sum(widths) + gap * (len(widths) - 1)) / 2
+                    y = player.VH * 0.78
+                    for (w, c), wd in zip(txts, widths):
+                        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (2, 2)):
+                            ov["items"].append(pl.cv.create_text(x + dx, y + dy, text=w, font=fnt, fill="#000000",
+                                                                 anchor="w", tags=("overlay",)))
+                        ov["items"].append(pl.cv.create_text(x, y, text=w, font=fnt, fill=c, anchor="w",
+                                                             tags=("overlay",)))
+                        x += wd + gap
+            # marcar en la lista la palabra que suena
+            idx = None
+            for i, w in enumerate(ws):
+                if w["start"] <= t:
+                    idx = i
+                else:
+                    break
+            if idx != ov["row"]:
+                if ov["row"] is not None and tv.exists(str(ov["row"])):
+                    tv.item(str(ov["row"]), tags=tuple(x for x in tv.item(str(ov["row"]), "tags") if x != "now"))
+                ov["row"] = idx
+                if idx is not None and tv.exists(str(idx)) and pl.playing:
+                    tv.item(str(idx), tags=tuple(tv.item(str(idx), "tags")) + ("now",))
+                    tv.see(str(idx))
+
+        if pl:
+            pl.on_time = on_time
+
         def fill(keep=None):
+            ov["row"] = None
             tv.delete(*tv.get_children())
             for i, w in enumerate(ws):
                 hl = w.get("hl")
@@ -1666,6 +1863,7 @@ class App(tk.Tk):
                 if ok_:
                     tv.selection_set(ok_)
                     tv.see(ok_[0])
+            rebuild_overlay()
 
         ed = ttk.Frame(dlg, style="Panel.TFrame")
         ed.pack(fill="x", padx=12, pady=(8, 0))
@@ -1721,6 +1919,20 @@ class App(tk.Tk):
         ttk.Button(cl, text="Morado", command=lambda: set_color("p")).pack(side="left", padx=4)
         ttk.Button(cl, text="Sin color", command=lambda: set_color("none")).pack(side="left", padx=4)
         ttk.Button(cl, text="Automático", command=lambda: set_color("auto")).pack(side="left", padx=4)
+        def jump(_e=None):
+            s_ = sel()
+            if pl and s_ and not pl.playing:
+                pl.seek(max(0.0, ws[s_[0]]["start"] - 0.05))
+
+        def listen():
+            s_ = sel()
+            if pl and s_:
+                pl.pos = max(0.0, ws[s_[0]]["start"] - 1.0)
+                pl.play()
+
+        if pl:
+            ttk.Button(ed, text="▶ Escuchar desde aquí", command=listen).pack(side="left", padx=(12, 0))
+            tv.bind("<<TreeviewSelect>>", jump)
         tv.bind("<Double-1>", load)
         tv.bind("<Delete>", lambda e: delete())
         ent.bind("<Return>", apply_text)
@@ -1730,20 +1942,25 @@ class App(tk.Tk):
             if done["v"]:
                 return
             done["v"] = True
+            if pl:
+                pl.on_time = None
+                pl.stop()
             dlg.destroy()
             callback(res)
 
         bf = ttk.Frame(dlg, style="Panel.TFrame")
         bf.pack(fill="x", padx=12, pady=12)
-        ttk.Button(bf, text="Continuar con estos subtítulos", style="Accent.TButton",
-                   command=lambda: finish(ws or None)).pack(side="right")
+        ttk.Button(bf, text="Guardar y rehacer la vertical" if video else "Continuar con estos subtítulos",
+                   style="Accent.TButton", command=lambda: finish(ws or None)).pack(side="right")
         ttk.Button(bf, text="Quitar todos los subtítulos",
                    command=lambda: finish(None)).pack(side="right", padx=6)
         dlg.protocol("WM_DELETE_WINDOW", lambda: finish(ws or None))
         fill()
         # para la prueba automática
         dlg._api = {"tv": tv, "words": ws, "set_color": set_color, "delete": delete, "text": v_txt,
-                    "apply": apply_text, "finish": finish}
+                    "apply": apply_text, "finish": finish, "player": pl, "overlay": ov, "on_time": on_time}
+        if pl:
+            pl.seek(ws[0]["start"] if ws else 0.0)
         return dlg
 
     # ------------------------------------------------------------ revisión rápida de la sincro
@@ -1985,7 +2202,9 @@ class App(tk.Tk):
         if not ffplay or not self.v_vod.get():
             messagebox.showinfo(APP_NAME, f"Abre el VOD en tu reproductor y ve a {core.fmt_ts(start)}.")
             return
-        cmd = [ffplay, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.2f}",
+        vfile, lstart = core.vod_resolve(self.v_vod.get(), start)
+        shift = start - lstart
+        cmd = [ffplay, "-hide_banner", "-loglevel", "error", "-ss", f"{lstart:.2f}",
                "-window_title", "Vista previa  (flechas: ←/→ 10 s, ↑/↓ 1 min, espacio: pausa)",
                "-x", "1280", "-y", "720"]
         if dur:
@@ -1993,9 +2212,9 @@ class App(tk.Tk):
         font = core._font_for_drawtext()
         if clock and font:
             cmd += ["-vf", f"drawtext=fontfile='{core._esc_filter_path(font)}'"
-                           ":text='%{pts\\:hms}':fontsize=h/14:fontcolor=0xFFD21F"
+                           f":text='%{{pts\\:hms\\:{shift:.3f}}}':fontsize=h/14:fontcolor=0xFFD21F"
                            ":box=1:boxcolor=0x000000AA:boxborderw=12:x=(w-tw)/2:y=h/30"]
-        cmd.append(self.v_vod.get())
+        cmd.append(vfile)
         subprocess.Popen(cmd)
 
     # ------------------------------------------------------------ rondas
@@ -2049,7 +2268,7 @@ class App(tk.Tk):
             if not self.clips:
                 return
         vod = self.v_vod.get()
-        base = os.path.splitext(os.path.basename(vod))[0]
+        base = core.vod_display_base(vod)
         out = out or filedialog.asksaveasfilename(title="Guardar vídeo", defaultextension=".mp4",
                                            initialdir=os.path.dirname(vod),
                                            initialfile=f"{base}_rondas_{self.settings().min_kills}K+.mp4",
@@ -2103,44 +2322,56 @@ class App(tk.Tk):
                 copies = 1 + (1 if vertical else 0) + ((2 if vertical else 1) if singles else 0)
                 twitch.check_space(os.path.dirname(os.path.abspath(out)) or ".",
                                    core.estimate_bytes(vod, total_s) * copies, "generar los vídeos")
-                core.render(vod, clips, out, encoder=enc, show_label=False, progress=prog, should_stop=stop)
-                made = [out]
                 base = os.path.splitext(out)[0]
                 words = None
                 if subs:
                     sub("Transcribiendo lo que dices para los subtítulos…")
                     try:
-                        words = subtitles.transcribe(out, cb, stop)
+                        cb(None, "Sacando el audio de las jugadas…")
+                        wav = base + " (audio subtítulos).wav"
+                        core.render_audio(vod, clips, wav, stop)
+                        try:
+                            words = subtitles.transcribe(wav, cb, stop)
+                        finally:
+                            try:
+                                os.remove(wav)
+                            except OSError:
+                                pass
                     except Exception as e:
                         if "Cancelado" in str(e):
                             raise
                         warnings.append(f"Subtítulos: {e}")
-                    if words and sub_edit:
-                        sub("Revisa los subtítulos en la ventana que se ha abierto…")
-                        cb(None, "Esperando a que revises los subtítulos")
-                        ev, box = threading.Event(), {}
-
-                        def got(res):
-                            box["r"] = res
-                            ev.set()
-                        self.after(0, lambda: self.edit_subtitles(words, got))
-                        while not ev.wait(0.3):
-                            if self.stop_flag:
-                                raise RuntimeError("Cancelado.")
-                        words = box.get("r")
-                if vertical:
-                    sub("Generando la versión vertical (TikTok)…")
-                    v = base + " (vertical).mp4"
-                    core.make_vertical(out, v, cam, enc, lambda f, t: cb(f, "Versión vertical 9:16…"), stop,
-                                       words=words, highlight=sub_hl)
-                    made.append(v)
+                v = base + " (vertical).mp4" if vertical else None
+                sub("Generando el vídeo horizontal" + (" y el vertical a la vez…" if vertical else "…"))
+                core.render(vod, clips, out, encoder=enc, show_label=False, progress=prog, should_stop=stop,
+                            vout_path=v, cam=cam, words=words, highlight=sub_hl)
+                made = [out] + ([v] if v else [])
+                self.cfg.setdefault("generated_vods", {})[os.path.abspath(vod)] = time.time()
+                self.after(0, self.persist)
+                folder = base + " - clips sueltos" if singles else None
+                import publish
+                chan = (self.v_channel.get() or "").strip().lstrip("@")
+                try:
+                    vs_ = self.vod_start_utc().strftime("%d/%m/%Y")
+                except Exception:
+                    vs_ = ""
+                vtx = publish.video_texts(clips, vs_, chan)
+                try:
+                    publish.write_clip_txt(base + " - publicar.mp4", vtx)
+                except OSError:
+                    pass
                 if singles:
                     sub("Sacando un clip por ronda…")
-                    folder = base + " - clips sueltos"
                     core.export_singles(out, clips, folder, vertical_cam=cam, vertical=vertical,
                                         encoder=enc, progress=cb, should_stop=stop, words=words,
-                                        highlight=sub_hl, ranking=ranking)
+                                        highlight=sub_hl, ranking=ranking, vsrc=v, channel=chan,
+                                        video_texts=vtx)
                     made.append(folder)
+                proj = {"vod": vod, "clips": clips, "out": out, "vertical": v, "cam": cam, "words": words,
+                        "highlight": sub_hl, "encoder": enc, "singles": folder}
+                self.save_project(proj)
+                if words and sub_edit and v:
+                    self.review_subs_blocking(proj, cb, sub, stop, ranking)
                 return made
             finally:
                 self.after(0, lambda: self.set_running(False))
@@ -2179,6 +2410,90 @@ class App(tk.Tk):
                 if os.name == "nt":
                     subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
         self.run_bg(work, finish, "No se pudo generar el vídeo")
+
+    # ------------------------------------------------------------ corregir subtítulos después
+    def project_path(self):
+        return os.path.join(core.data_dir(), "ultimo_video.pkl")
+
+    def save_project(self, proj):
+        import pickle
+        try:
+            with open(self.project_path() + ".tmp", "wb") as f:
+                pickle.dump(proj, f)
+            os.replace(self.project_path() + ".tmp", self.project_path())
+        except Exception:
+            pass
+
+    def load_project(self):
+        import pickle
+        try:
+            with open(self.project_path(), "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            return None
+
+    def review_subs_blocking(self, proj, cb, sub, stop, ranking=None):
+        """(en segundo plano) Abre el editor con el vídeo ya generado y espera. Si se cambia algo,
+        rehace SOLO la vertical (una codificación desde el VOD) y vuelve a cortar sus clips."""
+        sub("Revisa los subtítulos viendo el vídeo (ventana abierta)…")
+        cb(None, "Esperando a que revises los subtítulos")
+        ev, box = threading.Event(), {}
+
+        def got(res):
+            box["r"] = res
+            ev.set()
+        self.after(0, lambda: self.edit_subtitles(proj["words"], got, video=proj["out"],
+                                                  highlight=proj["highlight"]))
+        while not ev.wait(0.3):
+            if self.stop_flag:
+                raise RuntimeError("Cancelado.")
+        new = box.get("r")
+        if new == proj["words"]:
+            return False
+        proj["words"] = new
+        sub("Rehaciendo la vertical con tus subtítulos…")
+        core.render(proj["vod"], proj["clips"], proj["vertical"], encoder=proj["encoder"],
+                    progress=lambda f, t: cb(f, "Vertical con los subtítulos corregidos…"), should_stop=stop,
+                    cam=proj["cam"], words=new, highlight=proj["highlight"], vertical_only=True)
+        if proj.get("singles"):
+            sub("Actualizando los clips verticales…")
+            core.export_singles(proj["out"], proj["clips"], proj["singles"], vertical_cam=proj["cam"],
+                                vertical=True, encoder=proj["encoder"], progress=cb, should_stop=stop,
+                                words=new, highlight=proj["highlight"],
+                                ranking=ranking if ranking is not None else [], vsrc=proj["vertical"])
+        self.save_project(proj)
+        return True
+
+    def fix_subtitles_later(self):
+        """Botón «Corregir subtítulos…»: reabre el último vídeo generado."""
+        proj = self.load_project()
+        if not proj or not proj.get("words") or not proj.get("vertical"):
+            messagebox.showinfo(APP_NAME, "Todavía no hay un vídeo con subtítulos para corregir.\n\n"
+                                          "Genera uno con «Versión vertical» y «Subtítulos» activados.")
+            return
+        if not all(os.path.exists(p) for p in (proj["out"], proj["vertical"])) or \
+                not (os.path.isfile(proj["vod"]) or core.is_parts(proj["vod"]) and os.path.isfile(proj["vod"])):
+            messagebox.showinfo(APP_NAME, "No encuentro el vídeo o el VOD de la última vez (¿se movió o se "
+                                          "borró?). Para rehacer la vertical hace falta el VOD.")
+            return
+        self.stop_flag = False
+        self.set_running(True)
+        self.set_step(4, "Corrigiendo subtítulos…")
+        cb = self.progress_cb()
+
+        def sub(title):
+            self.after(0, lambda: self.lbl_step.configure(text=title))
+
+        def work():
+            try:
+                return self.review_subs_blocking(proj, cb, sub, lambda: self.stop_flag)
+            finally:
+                self.after(0, lambda: self.set_running(False))
+
+        def done(changed):
+            self.finish_steps("Subtítulos actualizados" if changed else "Sin cambios")
+            self.status(proj["vertical"] if changed else "No cambiaste nada: la vertical se queda igual.")
+        self.run_bg(work, done, "No se pudieron corregir los subtítulos")
 
     def cancel(self):
         self.stop_flag = True
@@ -2382,6 +2697,50 @@ def selftest(out_path):
         msgs_ = []
         core.render(vid, rclips, rout, encoder="auto", progress=lambda f_, t_: msgs_.append(t_))
         log(any("ya estaba generado" in x for x in msgs_), "retomar: no se rehace lo ya generado")
+        # 1.14: horizontal + vertical en UNA pasada, clips copiados sin recodificar, textos para publicar
+        dvo, dvv = os.path.join(tmp, "d.mp4"), os.path.join(tmp, "d (vertical).mp4")
+        core.render(vid, rclips, dvo, encoder="auto", vout_path=dvv, cam=cam, words=words)
+        ih_, iv_ = core.probe_vod(dvo), core.probe_vod(dvv)
+        log(ih_["width"] == 1920 and iv_["height"] == 1920 and abs(ih_["duration"] - iv_["duration"]) < 0.3,
+            f"horizontal y vertical en la misma pasada ({ih_['duration']:.2f} s / {iv_['duration']:.2f} s)")
+        dfold = os.path.join(tmp, "sueltos2")
+        a_ = time.time()
+        core.export_singles(dvo, rclips, dfold, vertical_cam=cam, vertical=True, encoder="auto", words=words,
+                            ranking=[], vsrc=dvv, channel="vortexs")
+        mp4s_ = [os.path.join(d_, f_) for d_, _, fs_ in os.walk(dfold) for f_ in fs_
+                 if f_.endswith(".mp4") and "TOP" not in d_]
+        log(len(mp4s_) == 4 and all(abs(core.probe_vod(p_)["duration"] - 2.0) < 0.25 for p_ in mp4s_),
+            f"clips sueltos copiados sin recodificar ({time.time() - a_:.1f} s)")
+        log(os.path.isfile(os.path.join(dfold, "publicar.txt")) and os.path.isfile(os.path.join(dfold, "publicar.json"))
+            and any(f_.endswith(".txt") for _, _, fs_ in os.walk(dfold) for f_ in fs_ if f_ != "publicar.txt"),
+            "títulos, descripción y hashtags por clip")
+        vsolo = os.path.join(tmp, "solo (vertical).mp4")
+        core.render(vid, rclips, vsolo, encoder="auto", cam=cam, words=words[:2], vertical_only=True)
+        log(core.probe_vod(vsolo)["height"] == 1920, "rehacer solo la vertical (subtítulos corregidos)")
+        # VOD descargado solo por partidas (lista HLS local con trozos de 1 s)
+        hdir = os.path.join(tmp, "hls")
+        os.makedirs(hdir, exist_ok=True)
+        subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-i", vid, "-c:v", "libx264",
+                        "-preset", "ultrafast", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0", "-c:a", "aac",
+                        "-f", "hls",
+                        "-hls_time", "1", "-hls_list_size", "0", "-hls_segment_filename",
+                        os.path.join(hdir, "s%03d.ts"), os.path.join(hdir, "i.m3u8")], check=True, **core._no_window())
+        import pathlib
+        _mg = twitch.merge_sections
+        twitch.merge_sections = lambda s_, d_, join_gap=0: _mg(s_, d_, 0)
+        try:
+            pinfo = {"id": "st", "title": "t", "duration": 6.0, "start": datetime.now(timezone.utc), "size_est": 0}
+            man = twitch.download_sections("x", os.path.join(tmp, "dl"), [(0.2, 1.8), (3.5, 5.5)], info=pinfo,
+                                           m3u8=pathlib.Path(os.path.join(hdir, "i.m3u8")).as_uri())
+        finally:
+            twitch.merge_sections = _mg
+        pm = core.load_parts(man)
+        log(len(pm["parts"]) == 2 and core.probe_vod(man)["duration"] == 6.0 and not core.vod_covers(man, 2.2, 2.8),
+            f"descargar solo las partidas ({len(pm['parts'])} tramos)")
+        pr_ = os.path.join(tmp, "p.mp4")
+        core.render(man, [core.Clip(m, m.rounds[0], 0.5, 1.5), core.Clip(m, m.rounds[1], 4.0, 5.0)], pr_,
+                    encoder="auto")
+        log(abs(core.probe_vod(pr_)["duration"] - 2.0) < 0.2, "generar desde el VOD por partidas")
         SR = sync.SyncResult
         gd = {"a": SR(1, 0.0, .8, True), "b": SR(1, 0.5, .8, True), "c": SR(1, 26.0, .8, True)}
         log(len(sync.stream_jumps(gd, {"a": 0, "b": 100, "c": 300})) == 1, "detectar cortes del directo")
@@ -2401,6 +2760,17 @@ def selftest(out_path):
         api["delete"]()
         api["finish"](api["words"])
         log(bool(got) and got[0] and got[0][0].get("hl") == "p" and len(got[0]) == 3, "editor de subtítulos")
+        got2 = []
+        dlg2 = app.edit_subtitles(words, got2.append, video=dvo)
+        api2 = dlg2._api
+        api2["on_time"](words[0]["start"] + 0.05)
+        ok_ov = len(api2["overlay"]["items"]) > 0
+        api2["tv"].selection_set(["0"])
+        api2["text"].set("VAMOS")
+        api2["apply"]()
+        api2["on_time"](words[0]["start"] + 0.06)
+        api2["finish"](api2["words"])
+        log(ok_ov and got2 and got2[0][0]["text"] == "VAMOS", "editor de subtítulos viendo el vídeo")
         # revisión rápida de la sincro
         rtmp = tempfile.mkdtemp(prefix="vc_rev_")
         a_png, b_png = os.path.join(rtmp, "a.png"), os.path.join(rtmp, "b.png")
@@ -2440,8 +2810,15 @@ def selftest_subs(wav, out_path):
     try:
         ws = subtitles.transcribe(wav)
         txt = " ".join(w["text"] for w in ws)
-        ok = len(ws) >= 2
-        res = ("OK  " if ok else "FAIL") + f" transcripción ({len(ws)} palabras): {txt[:200]}"
+        dur = core.probe_vod(wav)["duration"]
+        mono = all(b["start"] >= a["start"] for a, b in zip(ws, ws[1:]))
+        inside = bool(ws) and ws[0]["start"] >= 0 and ws[-1]["end"] <= dur + 0.5
+        # la voz de prueba empieza tras 2 s de silencio: el primer subtítulo no puede salir antes
+        early = bool(ws) and ws[0]["start"] < 1.3
+        ok = len(ws) >= 2 and mono and inside and not early
+        res = ("OK  " if ok else "FAIL") + f" transcripción ({len(ws)} palabras, modo «{subtitles.LAST_MODE}», " \
+              f"en orden={mono}, dentro={inside}, primera a {ws[0]['start'] if ws else -1:.2f} s): {txt[:200]}\n"
+        res += "\n".join(f"  {w['start']:6.2f}-{w['end']:6.2f} {w['text']}" for w in ws[:40])
     except Exception:
         ok, res = False, "FAIL " + traceback.format_exc()
     with open(out_path, "w", encoding="utf-8") as f:

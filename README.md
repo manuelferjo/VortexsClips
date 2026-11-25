@@ -69,6 +69,8 @@ Las partidas descargadas se guardan: no se vuelven a pedir y, si la API falla o 
 |---|---|
 | **Enlaces + Descargar VOD** | Descarga en la máxima calidad (normalmente 1080p60) con la hora exacta del directo. Si se corta, reintenta y sigue por donde iba. Antes comprueba que haya espacio en el disco. |
 | **Al terminar la descarga…** | Si está marcada, después de descargar lo hace todo solo. |
+| **Bajar solo los trozos con partidas** | En vez del directo entero (7 h ≈ 20–25 GB), mira antes qué partidas jugaste y baja solo esos trozos, con margen de sobra para la sincronización. Mucho más rápido y ocupa una fracción. Si algo falla, baja el VOD entero como siempre. Se guarda como `… .partes.json` + la carpeta `… (partidas)`; para abrirlo a mano, elige el `.partes.json`. |
+| **Borrar el VOD 5 días después** | Cuando ya se han sacado los vídeos de un VOD, lo borra a los 5 días para liberar espacio. Solo borra VODs que bajó el propio programa (nunca uno elegido a mano) y nunca los vídeos generados. |
 | **Carpeta…** | Dónde se guardan los VODs y los vídeos. |
 | **o elegir un VOD del PC…** | Usar un vídeo que ya tengas. |
 | **Inicio del directo** | Hora a la que empezó el directo (se pone sola con el enlace). |
@@ -94,7 +96,7 @@ Las partidas descargadas se guardan: no se vuelven a pedir y, si la API falla o 
 | **Elegir cámara…** | Marcar dónde está tu cámara en el directo (o **Sin cámara** para solo el juego). |
 | **Subtítulos automáticos** | Transcribe lo que dices y lo pone en la vertical, en grande, bajo la cámara. Funciona en tu PC, sin internet (la primera vez descarga el modelo de voz, unos 200 MB). |
 | **Palabras destacadas en amarillo y morado** | Algunas palabras salen con los colores del canal. |
-| **Revisar y editar los subtítulos antes de generar** | Abre una ventana para corregir palabras, cambiar su color, borrarlas o quitar todos los subtítulos antes de hacer la vertical. |
+| **Revisar y editar los subtítulos viendo el vídeo generado** | Al terminar, abre el editor con el vídeo dentro para corregir palabras, colores o quitarlos; al guardar se rehace solo la vertical. |
 | **Un clip suelto por cada ronda** | Además del vídeo unido, una carpeta con un archivo por jugada, ordenados en 3K / 4K / ACE / Clutch. |
 
 **Pestaña Automático**
@@ -140,6 +142,7 @@ Arriba verás un **resumen**: partidas dentro del VOD, cuántas están sincroniz
 |---|---|
 | **GENERAR VÍDEO** | Genera todo. Va por tandas: si se corta, al repetir reaprovecha lo ya hecho. |
 | **Cancelar** | Para lo que esté haciendo. |
+| **Corregir subtítulos…** | Reabre el último vídeo generado en el editor de subtítulos (ver apartado 7). |
 | **Panel de progreso** | El paso en el que está, el porcentaje, los GB, la velocidad y el tiempo que queda. |
 
 Mientras trabaja, el PC no se suspende (la pantalla sí puede apagarse o bloquearse: no pasa nada).
@@ -156,6 +159,13 @@ Mientras trabaja, el PC no se suspende (la pantalla sí puede apagarse o bloquea
 | `… - clips sueltos\TOP` | Las 3 mejores jugadas del directo. |
 | `… - clips sueltos\ranking.txt` | Todas las jugadas ordenadas por nota. |
 | `… - rondas 3K+_marcas.txt` | Minuto de cada jugada en el VOD y en el vídeo, con su nota. Para tu editor. |
+| `… - rondas 3K+ - publicar.txt` | Título, descripción con capítulos y hashtags para subir el vídeo completo a YouTube. |
+| `… - clips sueltos\publicar.txt` | Título, descripción y hashtags de cada clip, el mejor primero (copiar y pegar). |
+| `… - clips sueltos\…\<clip>.txt` | Lo mismo al lado de cada clip. `publicar.json` lleva lo mismo para programas de subida (Vortexs Post). |
+
+**Rápido y sin perder calidad:** la horizontal y la vertical salen en **una sola lectura del VOD**, cada una codificada una única vez desde el original. Los clips sueltos se cortan de esos vídeos **copiando, sin volver a codificar** (tardan segundos y son idénticos).
+
+**Los textos para publicar** se hacen solos con la jugada (3K, 4K, ACE, clutch), el agente, el mapa y, si hay subtítulos, la frase con más «hype» que dijiste. Revísalos antes de subir: son una base.
 
 **La nota de cada jugada** tiene en cuenta si es 3K, 4K, ACE o clutch, si las kills fueron rápidas y el pico de volumen de tu reacción. Al terminar, el aviso final te dice las 3 mejores.
 
@@ -169,6 +179,8 @@ Riot da el segundo exacto de cada kill, pero en una hora que no coincide exactam
 2. **El marcador del HUD**, que cambia al acabar cada ronda.
 3. **El killfeed** (arriba a la derecha), como apoyo.
 
+Para ir más rápido, la tarjeta gráfica descodifica el vídeo y solo pasa al programa los 4 fotogramas por segundo que se analizan (la imagen analizada es la misma; si la gráfica no puede, se hace como siempre).
+
 Si dos métodos coinciden en el mismo segundo, la partida se da por buena. Después **se comprueba con todas sus kills**: si algo no cuadra, sale como «⚠ Dudosa» y te avisa también al generar.
 
 **Con Vortexs Live 4.24 o posterior**, se guarda el delay real de cada momento del directo (`%APPDATA%\VortexsLive\delay_log.csv`) y Vortexs Clips lo suma solo, aunque cambies el delay en pleno directo. Si el directo se cortó y se reconectó, las partidas afectadas usan el desfase de su vecina.
@@ -179,7 +191,9 @@ Si dos métodos coinciden en el mismo segundo, la partida se da por buena. Despu
 
 - Se generan solo para la versión vertical, con lo que dices en ese trozo.
 - Estilo de tus TikToks: blanco con borde negro, en minúsculas y en grande, en el borde de abajo de la cámara.
-- Con **Revisar y editar los subtítulos** puedes: corregir una palabra (doble clic), cambiar su color (amarillo, morado, sin color o automático), borrarla, o quitar todos los subtítulos.
+- **Revisar viendo el vídeo:** con **Revisar y editar los subtítulos** marcada, al terminar se abre el editor con el vídeo ya generado dentro. Clic en una palabra y el vídeo salta ahí; **▶ Escuchar desde aquí** lo reproduce con sonido, y el subtítulo se pinta encima tal cual quedará, **cada cambio se ve al momento**. Puedes corregir una palabra (doble clic), cambiar su color (amarillo, morado, sin color o automático), borrarla o quitar todos. Al pulsar **Guardar y rehacer la vertical** se rehace solo la vertical (desde el VOD, sin perder calidad) y sus clips. Si no cambias nada, no se rehace nada.
+- ¿Lo ves más tarde? Botón **Corregir subtítulos…** (abajo): reabre el último vídeo.
+- **Tiempos:** cada palabra se alinea con la voz con precisión (alineación DTW del transcriptor), sin que los tiempos se vayan desplazando en audios largos, y las palabras que el transcriptor «estiraba» tras una pausa (el texto salía antes de decirlo) se corrigen solas.
 
 ---
 
@@ -212,6 +226,6 @@ Si algo falla, pulsa **Informes** y pasa la carpeta (o el `sincronizacion.txt`) 
 ## Para el desarrollador
 
 - Código en Python (tkinter, numpy) con ffmpeg, yt-dlp y whisper.cpp. Datos de partidas: HenrikDev API.
-- **Publicar una versión:** sube `VERSION` en `version.py` y súbelo a `main`. GitHub Actions construye en Windows el instalador (PyInstaller + Inno Setup, con ffmpeg y whisper.cpp), ejecuta la **autoprueba** del programa empaquetado (ventana, vista previa, vídeo vertical con subtítulos, sincronización por cartel, transcripción…) y, solo si pasa, crea la Release con `VortexsClips-Setup.exe` y el zip del código. Los programas instalados se actualizan solos.
+- **Publicar una versión:** sube `VERSION` en `version.py` y súbelo a `main`. GitHub Actions construye en Windows el instalador (PyInstaller + Inno Setup, con ffmpeg y whisper.cpp), ejecuta la **autoprueba** del programa empaquetado (ventana, vista previa, vídeo vertical con subtítulos, horizontal + vertical en una pasada, clips por copia, descarga por tramos, textos para publicar, editor de subtítulos con vídeo, sincronización por cartel, transcripción con comprobación de tiempos…) y, solo si pasa, crea la Release con `VortexsClips-Setup.exe` y el zip del código. Los programas instalados se actualizan solos.
 - El modelo de voz está en la Release `modelo-voz` (para redes donde HuggingFace está bloqueado).
 - `pruebas/`: prueba con VODs y partidas reales en GitHub (no publica nada).

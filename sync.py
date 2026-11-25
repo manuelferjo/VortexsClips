@@ -57,14 +57,68 @@ def report_dir() -> str:
     return d
 
 
+# ---------------------------------------------------------------- lectura ligera con la gráfica
+# La gráfica descodifica y se queda solo con los FPS fotogramas por segundo que se analizan ANTES de
+# pasarlos a la memoria (antes se bajaban los 60 fps). La imagen analizada es idéntica; solo afecta
+# a la lectura para sincronizar: los vídeos que se generan no cambian.
+_HW_CHOICE: dict = {}
+
+
+def _hw_candidates():
+    # sin reescalar: probado que reducir la imagen desplaza la detección (está calibrada a tamaño real)
+    return [
+        ("cuda", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"], "hwdownload,format=nv12,", ""),
+        ("d3d11", ["-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11"], "hwdownload,format=nv12,", ""),
+        ("qsv", ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"], "hwdownload,format=nv12,", ""),
+    ]
+
+
+def hw_mode(vod: str) -> tuple[list, str, str]:
+    """(argumentos de entrada, filtro previo, nombre). Se prueba una vez por sesión con el propio VOD."""
+    if "m" in _HW_CHOICE:
+        return _HW_CHOICE["m"]
+    choice = (["-hwaccel", "auto"], "", "auto")
+    ffmpeg = core.find_tool("ffmpeg")
+    try:
+        hw = subprocess.run([ffmpeg, "-hide_banner", "-hwaccels"], capture_output=True, text=True,
+                            timeout=20, **core._no_window()).stdout
+        flt = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True,
+                             timeout=20, **core._no_window()).stdout
+        f, t, _, lead = core.vod_piece(vod, 30.0, 2.0)
+        for name, args, pre, fname in _hw_candidates():
+            acc = args[1]
+            if acc not in hw or (fname and fname not in flt):
+                continue
+            r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *args,
+                                "-ss", f"{t:.3f}", "-t", "2", "-i", f, "-an",
+                                "-vf", f"fps={FPS},{pre}scale=32:18,format=gray",
+                                "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
+                               capture_output=True, timeout=60, **core._no_window())
+            if r.returncode == 0 and len(r.stdout) >= 32 * 18 * (FPS * 2 - 2):
+                choice = (args, pre, name)
+                break
+    except Exception:
+        pass
+    _HW_CHOICE["m"] = choice
+    return choice
+
+
 def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None, crop: str = "",
             gw: int = GW, gh: int = GH) -> bytes:
+
+    # VOD descargado por tramos: se lee del tramo que toca y lo que falte al principio va en negro
+    vod, start, dur, lead = core.vod_piece(vod, start, dur)
+    pad = b"\0" * (int(round(lead * FPS)) * gw * gh) if lead > 0 else b""
+    if dur <= 0:
+        return pad
     ffmpeg = core.find_tool("ffmpeg")
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
+    pre = ""
     if hwaccel:
-        cmd += ["-hwaccel", "auto"]
+        hargs, pre, _ = hw_mode(vod)
+        cmd += hargs
     cmd += ["-ss", f"{max(0.0, start):.3f}", "-t", f"{dur:.3f}", "-i", vod, "-an",
-            "-vf", f"fps={FPS},{crop + ',' if crop else ''}scale={gw * 4}:{gh * 4}:flags=area,"
+            "-vf", f"fps={FPS},{pre}{crop + ',' if crop else ''}scale={gw * 4}:{gh * 4}:flags=area,"
                    f"scale={gw}:{gh}:flags=area,format=gray",
             "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **core._no_window())
@@ -81,7 +135,7 @@ def _frames(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None,
     finally:
         if p.poll() is None:
             p.wait()
-    return b"".join(chunks)
+    return pad + b"".join(chunks)
 
 
 def _prep(frames):
@@ -337,12 +391,20 @@ def prune_cache(keep_vods: int = CACHE_KEEP_VODS, max_bytes: int = CACHE_MAX_BYT
 
 def _frames_all(vod: str, start: float, dur: float, hwaccel: bool, should_stop=None) -> bytes:
     """Una sola pasada de ffmpeg: cada zona se recorta y reduce y se pegan una al lado de otra."""
+    # VOD descargado por tramos: se lee del tramo que toca y lo que falte al principio va en negro
+    vod, start, dur, lead = core.vod_piece(vod, start, dur)
+    pad = b"\0" * (int(round(lead * FPS)) * TILE_W * TILE_H) if lead > 0 else b""
+    if dur <= 0:
+        return pad
+
     ffmpeg = core.find_tool("ffmpeg")
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
+    pre = ""
     if hwaccel:
-        cmd += ["-hwaccel", "auto"]
+        hargs, pre, _ = hw_mode(vod)
+        cmd += hargs
     n = len(TILES)
-    chains = [f"[0:v]fps={FPS},split={n}" + "".join(f"[s{i}]" for i in range(n))]
+    chains = [f"[0:v]fps={FPS},{pre}split={n}" + "".join(f"[s{i}]" for i in range(n))]
     for i, (_, crop, gw, gh) in enumerate(TILES):
         chains.append(f"[s{i}]{crop + ',' if crop else ''}scale={gw * 4}:{gh * 4}:flags=area,"
                       f"scale={gw}:{gh}:flags=area,format=gray,pad={gw}:{TILE_H}:0:0[t{i}]")
@@ -364,7 +426,7 @@ def _frames_all(vod: str, start: float, dur: float, hwaccel: bool, should_stop=N
     finally:
         if p.poll() is None:
             p.wait()
-    return b"".join(chunks)
+    return pad + b"".join(chunks)
 
 
 def _read_all(vod: str, start: float, dur: float, should_stop=None, vod_duration: float = 0.0):

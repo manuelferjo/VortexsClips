@@ -34,6 +34,7 @@ class Player(ttk.Frame):
         self._img = None
         self._raw_ok = True
         self._tick_id = None
+        self.on_time = None          # función(t) en cada fotograma (p. ej. para pintar subtítulos encima)
 
         self.cv = tk.Canvas(self, width=VW, height=VH, bg="black", highlightthickness=0)
         self.cv.pack(fill="both", expand=False)
@@ -145,9 +146,10 @@ class Player(ttk.Frame):
         if not vod or not ffmpeg:
             return
         gen = self.gen
+        vod, t_local = core.vod_resolve(vod, t)
         vf = (f"fps={FPS},scale={VW}:{VH}:force_original_aspect_ratio=decrease,"
               f"pad={VW}:{VH}:(ow-iw)/2:(oh-ih)/2")
-        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", vod,
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{t_local:.3f}", "-i", vod,
                "-an", "-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo"]
         if single:
             cmd += ["-frames:v", "1"]
@@ -158,7 +160,7 @@ class Player(ttk.Frame):
         if audio:
             ffplay = core.find_tool("ffplay")
             if ffplay:
-                a = subprocess.Popen([ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", "-ss", f"{t:.3f}",
+                a = subprocess.Popen([ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", "-ss", f"{t_local:.3f}",
                                       vod], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL, **core._no_window())
                 self.procs.append(a)
@@ -235,6 +237,7 @@ class Player(ttk.Frame):
         self.cv.itemconfigure(self.img_id, image=img)
         self.cv.tag_raise(self.clock_bg)
         self.cv.tag_raise(self.clock)
+        self.cv.tag_raise("overlay")
 
     def _show_clock(self, t):
         self.cv.itemconfigure(self.clock, text=core.fmt_ts(t).split(".")[0] if t < 3600 else
@@ -243,3 +246,8 @@ class Player(ttk.Frame):
             self.v_scale.set(t)
         except tk.TclError:
             pass
+        if self.on_time:
+            try:
+                self.on_time(t)
+            except Exception:
+                pass

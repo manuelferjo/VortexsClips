@@ -625,6 +625,104 @@ def match_in_vod(m: Match, vod_start_utc: datetime, vod_duration_s: float,
     return end > 0 and base < vod_duration_s
 
 
+# ---------------------------------------------------------------- VOD por tramos
+PARTS_SUFFIX = ".partes.json"
+
+
+def is_parts(path: str) -> bool:
+    return bool(path) and path.lower().endswith(PARTS_SUFFIX)
+
+
+_PARTS_CACHE: dict = {}
+
+
+def load_parts(path: str) -> dict:
+    """
+    Manifiesto de un VOD descargado por tramos (solo las partidas):
+    {"duration": duración del VOD entero, "parts": [{"file", "start", "dur"}], ...}
+    Todos los tiempos del programa siguen siendo los del VOD completo.
+    """
+    st = os.path.getmtime(path)
+    hit = _PARTS_CACHE.get(path)
+    if hit and hit[0] == st:
+        return hit[1]
+    with open(path, encoding="utf-8") as f:
+        m = json.load(f)
+    base = os.path.dirname(os.path.abspath(path))
+    for p in m["parts"]:
+        if not os.path.isabs(p["file"]):
+            p["file"] = os.path.join(base, p["file"])
+    m["parts"].sort(key=lambda p: p["start"])
+    _PARTS_CACHE[path] = (st, m)
+    return m
+
+
+def vod_resolve(vod: str, t: float) -> tuple[str, float]:
+    """(archivo, segundo dentro de ese archivo) para el segundo t del VOD."""
+    if not is_parts(vod):
+        return vod, max(0.0, t)
+    parts = load_parts(vod)["parts"]
+    best = None
+    for p in parts:
+        if p["start"] - 0.05 <= t < p["start"] + p["dur"]:
+            return p["file"], max(0.0, t - p["start"])
+        if p["start"] > t and best is None:
+            best = p
+    if best is not None:                 # en un hueco: lo siguiente que hay
+        return best["file"], 0.0
+    last = parts[-1]
+    return last["file"], max(0.0, last["dur"] - 0.5)
+
+
+def vod_piece(vod: str, start: float, dur: float) -> tuple[str, float, float, float]:
+    """
+    Para leer [start, start+dur] del VOD: (archivo, inicio dentro del archivo, duración, relleno),
+    donde «relleno» son los segundos del principio que no están descargados (se rellenan en negro
+    para que los tiempos sigan cuadrando).
+    """
+    if not is_parts(vod):
+        return vod, max(0.0, start), dur, 0.0
+    a, b = start, start + dur
+    best, ov = None, -1.0
+    for p in load_parts(vod)["parts"]:
+        o = min(b, p["start"] + p["dur"]) - max(a, p["start"])
+        if o > ov:
+            best, ov = p, o
+    s0 = max(a, best["start"])
+    e0 = min(b, best["start"] + best["dur"])
+    if e0 <= s0:
+        return best["file"], 0.0, 0.0, 0.0
+    return best["file"], s0 - best["start"], e0 - s0, s0 - a
+
+
+def vod_part_start(vod: str, file: str) -> float:
+    if not is_parts(vod):
+        return 0.0
+    for p in load_parts(vod)["parts"]:
+        if os.path.normcase(os.path.abspath(p["file"])) == os.path.normcase(os.path.abspath(file)):
+            return float(p["start"])
+    return 0.0
+
+
+def vod_display_base(vod: str) -> str:
+    """Nombre base del VOD para los archivos que se generan (sin «.partes.json»)."""
+    b = os.path.basename(vod)
+    if is_parts(b):
+        return b[: -len(PARTS_SUFFIX)]
+    return os.path.splitext(b)[0]
+
+
+def vod_first_file(vod: str) -> str:
+    return load_parts(vod)["parts"][0]["file"] if is_parts(vod) else vod
+
+
+def vod_covers(vod: str, a: float, b: float) -> bool:
+    """¿Está ese tramo [a, b] dentro de lo descargado?"""
+    if not is_parts(vod):
+        return True
+    return any(p["start"] - 0.5 <= a and b <= p["start"] + p["dur"] + 0.5 for p in load_parts(vod)["parts"])
+
+
 # ---------------------------------------------------------------- rutas
 def app_dir() -> str:
     """Carpeta del programa (junto al .exe si está instalado, o junto a los .py)."""
@@ -659,6 +757,18 @@ def _no_window():
 
 
 def probe_vod(path: str) -> dict:
+    if is_parts(path):
+        m = load_parts(path)
+        info = _probe_file(m["parts"][0]["file"])
+        info["duration"] = float(m["duration"])
+        if m.get("start_utc"):
+            info["start_guess"] = _parse_dt(m["start_utc"])
+        info["parts"] = len(m["parts"])
+        return info
+    return _probe_file(path)
+
+
+def _probe_file(path: str) -> dict:
     ffprobe = find_tool("ffprobe")
     if not ffprobe:
         raise RuntimeError("No encuentro ffprobe. Instala ffmpeg (ver README).")
@@ -727,6 +837,7 @@ def _esc_text(t: str) -> str:
 
 
 def _has_audio(vod_path: str) -> bool:
+    vod_path = vod_first_file(vod_path)
     ffprobe = find_tool("ffprobe")
     if not ffprobe:
         return True
@@ -776,6 +887,7 @@ def resolve_encoder(enc: str) -> str:
 
 def source_video_kbps(path: str) -> int | None:
     """Bitrate de vídeo del original (para no generar más grande ni peor que el directo)."""
+    path = vod_first_file(path)
     ffprobe = find_tool("ffprobe")
     if not ffprobe:
         return None
@@ -861,8 +973,30 @@ def estimate_bytes(vod_path: str, seconds: float) -> int:
     return int((min(kbps * 1.25, max(kbps, 6000)) + 192) * 1000 / 8 * seconds)
 
 
+def _group_starts(clips) -> list[float]:
+    """Segundo (dentro de la tanda) en que empieza cada jugada: ahí se fuerza un fotograma clave
+    para poder cortar los clips sueltos después sin volver a codificar."""
+    out, t, prev = [], 0.0, None
+    for c in clips:
+        if c.group != prev:
+            out.append(t)
+            prev = c.group
+        t += c.vod_end - c.vod_start
+    return out
+
+
+def _kf_args(times: list[float], venc: list[str]) -> list[str]:
+    ts = ",".join(f"{x:.3f}" for x in times if x > 0.01)
+    if not ts:
+        return []
+    args = ["-force_key_frames", ts]
+    if "h264_nvenc" in venc:
+        args += ["-forced-idr", "1"]
+    return args
+
+
 def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, total_s,
-                  progress, should_stop):
+                  progress, should_stop, vout=None, cam=None, ass_path=None, vonly=False):
     """
     Una sola pasada de ffmpeg: cada ronda es una entrada con búsqueda precisa (-ss/-t)
     y el filtro concat las une. concat alinea audio y vídeo de cada ronda (rellena
@@ -871,7 +1005,8 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
     """
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-nostats", "-progress", "pipe:1"]
     for c in clips:
-        cmd += ["-ss", f"{c.vod_start:.3f}", "-t", f"{c.vod_end - c.vod_start:.3f}", "-i", vod_path]
+        f_, t_ = vod_resolve(vod_path, c.vod_start)
+        cmd += ["-ss", f"{t_:.3f}", "-t", f"{c.vod_end - c.vod_start:.3f}", "-i", f_]
     chains, labels = [], []
     for i, c in enumerate(clips):
         v = f"[{i}:v:0]setpts=PTS-STARTPTS"
@@ -888,13 +1023,42 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
                           f"apad,atrim=0:{dur:.3f}[a{i}]")
             labels.append(f"[a{i}]")
     n = len(clips)
-    chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[v]" + ("[a]" if audio else ""))
-    cmd += ["-filter_complex", ";".join(chains), "-map", "[v]"]
-    if audio:
-        cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-    cmd += [*venc, "-movflags", "+faststart", out]
+    kf = _kf_args(_group_starts(clips), venc)
+    if vonly:
+        # solo la vertical (p. ej. al corregir los subtítulos): una codificación desde el original
+        chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[vc]" + ("[a]" if audio else ""))
+        vf = vertical_filter(cam, os.path.basename(ass_path) if ass_path else None).replace("[0:v]", "[vc]", 1)
+        chains.append(vf)
+        cmd += ["-filter_complex", ";".join(chains), "-map", "[v]"]
+        if audio:
+            cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+        cmd += [*venc, *kf, "-movflags", "+faststart", os.path.abspath(out)]
+    elif vout:
+        # una sola lectura del VOD: la misma imagen va a la horizontal y a la vertical,
+        # cada una codificada UNA vez desde el original (sin pérdida extra)
+        chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[vc]" + ("[ac]" if audio else ""))
+        chains.append("[vc]split[vh][vv0]")
+        if audio:
+            chains.append("[ac]asplit[a][av]")
+        vf = vertical_filter(cam, os.path.basename(ass_path) if ass_path else None).replace("[0:v]", "[vv0]", 1)
+        chains.append(vf.replace("[v]", "[vv]"))
+        cmd += ["-filter_complex", ";".join(chains), "-map", "[vh]"]
+        if audio:
+            cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+        cmd += [*venc, *kf, "-movflags", "+faststart", os.path.abspath(out), "-map", "[vv]"]
+        if audio:
+            cmd += ["-map", "[av]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+        cmd += [*venc, *kf, "-movflags", "+faststart", os.path.abspath(vout)]
+    else:
+        chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[v]" + ("[a]" if audio else ""))
+        cmd += ["-filter_complex", ";".join(chains), "-map", "[v]"]
+        if audio:
+            cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+        cmd += [*venc, *kf, "-movflags", "+faststart", out]
 
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **_no_window())
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         cwd=os.path.dirname(ass_path) if ass_path and os.path.isabs(ass_path) else None,
+                         **_no_window())
     err_lines = []
 
     def read_err():
@@ -920,79 +1084,170 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
 
 
 def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x264",
-           show_label: bool = False, progress=None, should_stop=None) -> str:
-    """Recorta cada ronda y las une en un único vídeo con audio y vídeo sincronizados."""
+           show_label: bool = False, progress=None, should_stop=None,
+           vout_path: str | None = None, cam: dict | None = None, words: list | None = None,
+           highlight: bool = True, vertical_only: bool = False) -> str:
+    """
+    Recorta cada ronda y las une en un único vídeo con audio y vídeo sincronizados.
+    Con vout_path, en la MISMA lectura del VOD genera también la vertical 9:16 (con subtítulos),
+    codificada una sola vez desde el original. En las dos se fuerza un fotograma clave al
+    principio de cada jugada, para sacar luego los clips sueltos sin volver a codificar.
+    """
     ffmpeg = find_tool("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("No encuentro ffmpeg. Instala ffmpeg (ver README).")
     if not clips:
         raise RuntimeError("No hay rondas que cortar.")
+    if is_parts(vod_path):
+        fuera = [c for c in clips if not vod_covers(vod_path, c.vod_start, c.vod_end)]
+        if fuera:
+            raise RuntimeError(f"{len(fuera)} ronda(s) (p. ej. {fuera[0].label}) caen fuera de los trozos que se "
+                               "descargaron. Desmarca «Bajar solo los trozos con partidas» y vuelve a descargar "
+                               "el VOD entero.")
     QUALITY["bitrate_kbps"] = source_video_kbps(vod_path)
     venc = _venc(encoder)
     font = _font_for_drawtext() if show_label else None
     audio = _has_audio(vod_path)
     total_s = sum(c.vod_end - c.vod_start for c in clips)
     batches = [clips[i:i + BATCH] for i in range(0, len(clips), BATCH)]
+    vinfo = probe_vod(vod_path) if (vout_path or vertical_only) else {}
 
     def prog(frac):
         if progress:
-            progress(frac, f"Generando vídeo… {frac * 100:.0f}%  ({len(clips)} rondas)")
+            progress(frac, f"Generando vídeo{'s' if vout_path else ''}… {frac * 100:.0f}%  ({len(clips)} rondas)")
 
+    vkey = (vout_path is not None, cam, words, highlight, vertical_only)
     sig = _hash(os.path.abspath(vod_path), [(round(c.vod_start, 3), round(c.vod_end, 3)) for c in clips],
-                venc, bool(font), audio)
-    if _sig_get(out_path) == sig and _dur_ok(out_path, total_s, 1.5):
-        # ya estaba generado con las mismas rondas y ajustes (p.ej. se cortó después)
+                venc, bool(font), audio, vkey, 2)
+    outs_ok = _sig_get(out_path) == sig and _dur_ok(out_path, total_s, 1.5)
+    if vout_path:
+        outs_ok = outs_ok and _sig_get(vout_path) == sig and _dur_ok(vout_path, total_s, 1.5)
+    if outs_ok:
         if progress:
-            progress(1.0, "El vídeo ya estaba generado: lo reaprovecho")
+            progress(1.0, "Los vídeos ya estaban generados: los reaprovecho")
+        if vertical_only:
+            return out_path
         write_markers(clips, os.path.splitext(out_path)[0] + "_marcas.txt")
         return out_path
     _sig_set(out_path, "")
-    if len(batches) == 1:
-        tmp_out = os.path.splitext(out_path)[0] + ".generando.mp4"
-        _render_batch(ffmpeg, vod_path, clips, tmp_out, venc, font, audio, 0, total_s, prog, should_stop)
-        os.replace(tmp_out, out_path)
-    else:
-        import hashlib
-        # carpeta fija junto al vídeo: las tandas ya hechas se reaprovechan si se corta
-        tmp = os.path.splitext(out_path)[0] + " (partes en curso)"
-        os.makedirs(tmp, exist_ok=True)
-        ok_ = False
-        try:
-            parts, done = [], 0.0
-            for bi, b in enumerate(batches):
-                key = "|".join(f"{c.vod_start:.3f}-{c.vod_end:.3f}" for c in b) + f"|{venc}|{bool(font)}|{audio}"
-                h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
-                part = os.path.join(tmp, f"part_{bi:03d}_{h}.mp4")
-                bdur = sum(c.vod_end - c.vod_start for c in b)
-                if _dur_ok(part, bdur):
-                    if progress:
-                        progress((done + bdur) / total_s, f"Tanda {bi + 1} de {len(batches)} ya estaba hecha")
-                else:
-                    tpart = part[:-4] + ".tmp.mp4"
-                    _render_batch(ffmpeg, vod_path, b, tpart, venc, font, audio, done, total_s, prog, should_stop)
-                    os.replace(tpart, part)
-                done += bdur
-                parts.append(part)
-            if progress:
-                progress(1.0, "Uniendo todo en un solo vídeo…")
-            lst = os.path.join(tmp, "list.txt")
+    if vout_path:
+        _sig_set(vout_path, "")
+
+    def batch_ass(tmpdir, b, offset, bdur, tag):
+        if not ((vout_path or vertical_only) and words):
+            return None
+        import subtitles
+        y = cam_bottom_y(cam, vinfo.get("width") or 1920, vinfo.get("height") or 1080)
+        p = os.path.join(tmpdir, f"subs_{tag}.ass")
+        n = subtitles.build_ass(words, y, p, offset=offset, duration=bdur, highlight=highlight)
+        return p if n else None
+
+    import hashlib
+    # carpeta fija junto al vídeo: las tandas ya hechas se reaprovechan si se corta
+    tmp = os.path.splitext(out_path)[0] + (" (vertical en curso)" if vertical_only else " (partes en curso)")
+    os.makedirs(tmp, exist_ok=True)
+    ok_ = False
+    try:
+        parts, vparts, done = [], [], 0.0
+        for bi, b in enumerate(batches):
+            key = ("|".join(f"{c.vod_start:.3f}-{c.vod_end:.3f}" for c in b) +
+                   f"|{venc}|{bool(font)}|{audio}|{_hash(vkey, done)}")
+            h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+            part = os.path.join(tmp, f"part_{bi:03d}_{h}.mp4")
+            vpart = os.path.join(tmp, f"vert_{bi:03d}_{h}.mp4") if vout_path else None
+            bdur = sum(c.vod_end - c.vod_start for c in b)
+            if _dur_ok(part, bdur) and (not vpart or _dur_ok(vpart, bdur)):
+                if progress:
+                    progress((done + bdur) / total_s, f"Tanda {bi + 1} de {len(batches)} ya estaba hecha")
+            else:
+                tpart = part[:-4] + ".tmp.mp4"
+                tvpart = vpart[:-4] + ".tmp.mp4" if vpart else None
+                ass = batch_ass(tmp, b, done, bdur, f"{bi:03d}")
+                _render_batch(ffmpeg, vod_path, b, tpart, venc, font, audio, done, total_s, prog, should_stop,
+                              vout=tvpart, cam=cam, ass_path=ass, vonly=vertical_only)
+                os.replace(tpart, part)
+                if vpart:
+                    os.replace(tvpart, vpart)
+            done += bdur
+            parts.append(part)
+            if vpart:
+                vparts.append(vpart)
+        if progress:
+            progress(1.0, "Uniendo todo…")
+        for lst_parts, dst in ((parts, out_path), (vparts, vout_path)):
+            if not dst:
+                continue
+            if len(lst_parts) == 1:
+                shutil.copy2(lst_parts[0], dst + ".tmp.mp4")
+                os.replace(dst + ".tmp.mp4", dst)
+                continue
+            lst = os.path.join(tmp, "list_" + ("v" if dst == vout_path else "h") + ".txt")
             with open(lst, "w", encoding="utf-8") as f:
-                for p in parts:
+                for p in lst_parts:
                     f.write("file '" + p.replace("\\", "/").replace("'", r"'\''") + "'\n")
             r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                                 "-f", "concat", "-safe", "0", "-i", lst,
-                                "-c", "copy", "-movflags", "+faststart", out_path],
+                                "-c", "copy", "-movflags", "+faststart", dst],
                                capture_output=True, text=True, **_no_window())
             if r.returncode != 0:
                 raise RuntimeError("ffmpeg falló al unir:\n" + r.stderr[-800:])
-            ok_ = True
-        finally:
-            if ok_:
-                shutil.rmtree(tmp, ignore_errors=True)
+        ok_ = True
+    finally:
+        if ok_:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     _sig_set(out_path, sig)
-    write_markers(clips, os.path.splitext(out_path)[0] + "_marcas.txt")
+    if vout_path:
+        _sig_set(vout_path, sig)
+    if not vertical_only:
+        write_markers(clips, os.path.splitext(out_path)[0] + "_marcas.txt")
     return out_path
+
+
+def render_audio(vod_path: str, clips: list[Clip], out_audio: str, should_stop=None) -> str:
+    """Solo el audio de las jugadas, unidas (para transcribir los subtítulos antes de generar)."""
+    ffmpeg = find_tool("ffmpeg")
+    if not _has_audio(vod_path):
+        raise RuntimeError("El VOD no tiene audio.")
+    tmp = tempfile.mkdtemp(prefix="vortexsclips_a_")
+    try:
+        pieces = []
+        for bi in range(0, len(clips), BATCH):
+            b = clips[bi:bi + BATCH]
+            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+            for c in b:
+                f_, t_ = vod_resolve(vod_path, c.vod_start)
+                cmd += ["-ss", f"{t_:.3f}", "-t", f"{c.vod_end - c.vod_start:.3f}", "-vn", "-i", f_]
+            chains, labels = [], []
+            for i, c in enumerate(b):
+                dur = c.vod_end - c.vod_start
+                chains.append(f"[{i}:a:0]asetpts=PTS-STARTPTS,aresample=16000:async=1:first_pts=0,"
+                              f"apad,atrim=0:{dur:.3f}[a{i}]")
+                labels.append(f"[a{i}]")
+            chains.append("".join(labels) + f"concat=n={len(b)}:v=0:a=1[a]")
+            piece = os.path.join(tmp, f"a_{bi:04d}.wav")
+            cmd += ["-filter_complex", ";".join(chains), "-map", "[a]", "-ac", "1", "-ar", "16000",
+                    "-c:a", "pcm_s16le", piece]
+            if should_stop and should_stop():
+                raise RuntimeError("Cancelado.")
+            r = subprocess.run(cmd, capture_output=True, text=True, **_no_window())
+            if r.returncode != 0:
+                raise RuntimeError("No se pudo sacar el audio:\n" + r.stderr[-500:])
+            pieces.append(piece)
+        if len(pieces) == 1:
+            shutil.move(pieces[0], out_audio)
+        else:
+            lst = os.path.join(tmp, "l.txt")
+            with open(lst, "w", encoding="utf-8") as f:
+                for p in pieces:
+                    f.write("file '" + p.replace("\\", "/") + "'\n")
+            r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
+                                "-i", lst, "-c", "copy", out_audio], capture_output=True, text=True, **_no_window())
+            if r.returncode != 0:
+                raise RuntimeError("No se pudo unir el audio:\n" + r.stderr[-500:])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return out_audio
 
 
 def write_markers(clips: list[Clip], path: str) -> None:
@@ -1029,10 +1284,10 @@ def vertical_filter(cam: dict | None, ass: str | None = None) -> str:
     if not cam:
         return f"[0:v]{bg}{sub},format=yuv420p[v]"
     cx, cy, cw, ch = (float(cam[k]) for k in ("x", "y", "w", "h"))
-    return (f"[0:v]split[a][b];[a]{bg}[bg];"
-            f"[b]crop=iw*{cw:.4f}:ih*{ch:.4f}:iw*{cx:.4f}:ih*{cy:.4f},"
-            f"scale=520:-2:flags=lanczos,pad=iw+8:ih+8:4:4:color=0x111111,setsar=1[cam];"
-            f"[bg][cam]overlay=(W-w)/2:140{sub},format=yuv420p[v]")
+    return (f"[0:v]split[vta][vtb];[vta]{bg}[vtbg];"
+            f"[vtb]crop=iw*{cw:.4f}:ih*{ch:.4f}:iw*{cx:.4f}:ih*{cy:.4f},"
+            f"scale=520:-2:flags=lanczos,pad=iw+8:ih+8:4:4:color=0x111111,setsar=1[vtcam];"
+            f"[vtbg][vtcam]overlay=(W-w)/2:140{sub},format=yuv420p[v]")
 
 
 def _run_ffmpeg(cmd: list[str], total_s: float, progress=None, should_stop=None, label="", cwd=None):
@@ -1155,10 +1410,28 @@ def clip_folder(r: Round) -> str:
     return "Clutch"
 
 
+def _copy_cut(ffmpeg, src: str, t: float, d: float, out: str, should_stop=None) -> None:
+    """Corte SIN volver a codificar (copia directa). El vídeo tiene un fotograma clave forzado al
+    principio de cada jugada, así que el corte cae justo ahí."""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t + 0.02:.3f}", "-t", f"{max(0.5, d - 0.06):.3f}",
+           "-i", src, "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-avoid_negative_ts", "make_zero",
+           "-movflags", "+faststart", out]
+    if should_stop and should_stop():
+        raise RuntimeError("Cancelado.")
+    r = subprocess.run(cmd, capture_output=True, text=True, **_no_window())
+    if r.returncode != 0:
+        raise RuntimeError("ffmpeg falló al cortar un clip:\n" + r.stderr[-500:])
+
+
 def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=None, vertical=False,
                    encoder: str = "x264", progress=None, should_stop=None, words=None,
-                   highlight: bool = True, ranking: list | None = None, top_n: int = 3) -> list[str]:
-    """Un archivo por ronda, sacado del vídeo ya montado (rápido y con el mismo audio/vídeo)."""
+                   highlight: bool = True, ranking: list | None = None, top_n: int = 3,
+                   vsrc: str | None = None, channel: str = "", video_texts: dict | None = None) -> list[str]:
+    """
+    Un archivo por ronda, sacado del vídeo ya montado. Si src (y vsrc, la vertical) se generaron
+    con fotogramas clave en cada jugada, se cortan COPIANDO: al instante y sin ninguna pérdida.
+    """
+    copy_mode = bool(_sig_get(src)) and (not vertical or (vsrc and os.path.isfile(vsrc)))
     ffmpeg = find_tool("ffmpeg")
     os.makedirs(folder, exist_ok=True)
     # agrupar los trozos de una misma ronda (modo solo kills) en un único clip
@@ -1172,9 +1445,10 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
     outs, t = [], 0.0
     n = len(groups)
     rank = []
+    pub = []
     # huella de lo que se genera: si coincide con la de antes, los clips ya hechos se reaprovechan
     ssig = _hash(_sig_get(src), [(round(c.vod_start, 3), round(c.vod_end, 3)) for c in clips], vertical,
-                 vertical_cam, words, highlight, _venc(encoder))
+                 vertical_cam, words, highlight, _venc(encoder), bool(vsrc))
     same = bool(_sig_get(src)) and _sig_get(folder) == ssig
     _sig_set(folder, ssig)
     for i, (c, d) in enumerate(groups):
@@ -1187,18 +1461,24 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
         def reuse(p):
             return same and _dur_ok(p, d, 0.6)
         if not reuse(h):
-            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
-                   "-i", src, "-map", "0:v:0", "-map", "0:a?", *_venc(encoder),
-                   "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", h + ".tmp.mp4"]
-            _run_ffmpeg(cmd, d, None, should_stop)
+            if copy_mode:
+                _copy_cut(ffmpeg, src, t, d, h + ".tmp.mp4", should_stop)
+            else:
+                cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
+                       "-i", src, "-map", "0:v:0", "-map", "0:a?", *_venc(encoder),
+                       "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", h + ".tmp.mp4"]
+                _run_ffmpeg(cmd, d, None, should_stop)
             os.replace(h + ".tmp.mp4", h)
         outs.append(h)
         best = h
         if vertical:
             v = os.path.join(sub, name + " (vertical).mp4")
             if not reuse(v):
-                make_vertical(src, v + ".tmp.mp4", vertical_cam, encoder, None, should_stop, start=t, dur=d,
-                              words=words, highlight=highlight)
+                if copy_mode and vsrc:
+                    _copy_cut(ffmpeg, vsrc, t, d, v + ".tmp.mp4", should_stop)
+                else:
+                    make_vertical(src, v + ".tmp.mp4", vertical_cam, encoder, None, should_stop, start=t, dur=d,
+                                  words=words, highlight=highlight)
                 os.replace(v + ".tmp.mp4", v)
             outs.append(v)
             best = v
@@ -1208,6 +1488,14 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
             react = None
         sc, why = clip_score(c, react)
         rank.append((sc, c.label, best, why))
+        try:
+            import publish
+            tx = publish.clip_texts(c, publish.words_in(words, t, d), why, channel)
+            publish.write_clip_txt(best, tx)
+            pub.append({"file": h, "vertical": v if vertical else None, "label": c.label, "score": sc,
+                        "texts": tx})
+        except Exception:
+            pass
         t += d
     if rank:
         rank.sort(key=lambda x: -x[0])
@@ -1230,6 +1518,12 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
             pass
         if ranking is not None:
             ranking.extend(rank)
+    if pub:
+        try:
+            import publish
+            publish.write_all(folder, video_texts, sorted(pub, key=lambda x: -x["score"]))
+        except OSError:
+            pass
     if progress:
         progress(1.0, "Clips sueltos listos")
     return outs
@@ -1239,6 +1533,7 @@ def grab_crop(vod: str, at: float, out_png: str, crop: str, width: int = 300) ->
     """Un fotograma recortado (p.ej. el killfeed) para revisar la sincronización."""
     ffmpeg = find_tool("ffmpeg")
     vf = (crop + "," if crop else "") + f"scale={width}:-2"
+    vod, at = vod_resolve(vod, at)
     r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0.0, at):.2f}", "-i", vod,
                         "-frames:v", "1", "-vf", vf, out_png],
                        capture_output=True, text=True, **_no_window())
@@ -1249,6 +1544,7 @@ def grab_crop(vod: str, at: float, out_png: str, crop: str, width: int = 300) ->
 
 def grab_frame(vod: str, at: float, out_png: str, width: int = 960) -> str:
     ffmpeg = find_tool("ffmpeg")
+    vod, at = vod_resolve(vod, at)
     r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{at:.2f}", "-i", vod,
                         "-frames:v", "1", "-vf", f"scale={width}:-2", out_png],
                        capture_output=True, text=True, **_no_window())

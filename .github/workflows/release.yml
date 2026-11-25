@@ -54,7 +54,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip pyinstaller numpy
           pyinstaller --noconfirm --clean --windowed --onedir --name VortexsClips `
-            --icon icon.ico --add-data "icon.ico;." --hidden-import numpy app.py
+            --icon icon.ico --add-data "icon.ico;." --hidden-import numpy --hidden-import publish app.py
           if (!(Test-Path dist\VortexsClips\VortexsClips.exe)) { throw "No se generó el .exe" }
 
       - name: Descargar ffmpeg
@@ -96,7 +96,12 @@ jobs:
           $es = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -like "es*" } | Select-Object -First 1
           if ($es) { $s.SelectVoice($es.VoiceInfo.Name) }
           $s.SetOutputToWaveFile("$pwd\voz.wav")
-          $s.Speak("Hola, esto es una prueba de los subtitulos de Vortexs Clips. Mira esta jugada, tres kills seguidas.")
+          $pb = New-Object System.Speech.Synthesis.PromptBuilder
+          $pb.AppendBreak([TimeSpan]::FromSeconds(2))
+          $pb.AppendText("Hola, esto es una prueba de los subtitulos de Vortexs Clips.")
+          $pb.AppendBreak([TimeSpan]::FromSeconds(4))
+          $pb.AppendText("Mira esta jugada, tres kills seguidas.")
+          $s.Speak($pb)
           $s.Dispose()
           $p = Start-Process dist\VortexsClips\VortexsClips.exe -ArgumentList "--selftest-subs","$pwd\voz.wav","$pwd\subs.txt" -PassThru -Wait
           Get-Content subs.txt

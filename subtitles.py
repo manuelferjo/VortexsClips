@@ -110,25 +110,56 @@ def transcribe(video: str, progress=None, should_stop=None) -> list[dict]:
             progress(None, "Transcribiendo lo que dices (subtítulos)…")
         threads = str(max(2, (os.cpu_count() or 4) - 1))
         base = os.path.join(tmp, "out")
-        p = subprocess.Popen([cli, "-m", model, "-f", wav, "-l", "es", "-t", threads,
-                              "-ml", "1", "-sow", "-oj", "-of", base, "-np"],
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                             encoding="utf-8", errors="replace", **core._no_window())
-        out_tail = []
-        for line in p.stdout:
-            out_tail = (out_tail + [line])[-10:]
-            if should_stop and should_stop():
-                p.kill()
-                raise RuntimeError("Cancelado.")
-        p.wait()
         jpath = base + ".json"
-        if p.returncode != 0 or not os.path.isfile(jpath):
+        # 1º con alineación precisa por palabra (DTW) y sin arrastrar contexto entre trozos
+        #    (en audios largos el contexto hace que los tiempos se vayan desplazando);
+        # si esta versión del transcriptor no lo admite, como antes
+        common = [cli, "-m", model, "-f", wav, "-l", "es", "-t", threads, "-ml", "1", "-sow", "-np", "-of", base]
+        out_tail = []
+        for extra in (["-mc", "0", "-dtw", DTW_PRESET, "-ojf"], ["-mc", "0", "-oj"], ["-oj"]):
+            try:
+                os.remove(jpath)
+            except OSError:
+                pass
+            p = subprocess.Popen(common + extra, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                 encoding="utf-8", errors="replace", **core._no_window())
+            out_tail = []
+            for line in p.stdout:
+                out_tail = (out_tail + [line])[-10:]
+                if should_stop and should_stop():
+                    p.kill()
+                    raise RuntimeError("Cancelado.")
+            p.wait()
+            if p.returncode == 0 and os.path.isfile(jpath):
+                global LAST_MODE
+                LAST_MODE = " ".join(extra)
+                break
+        if not os.path.isfile(jpath):
             raise RuntimeError("El transcriptor falló:\n" + "".join(out_tail)[-400:])
         with open(jpath, encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         return parse_whisper_json(data)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+LAST_MODE = ""
+DTW_PRESET = "small"          # el modelo es «small» (cuantizado q5_1)
+MAX_WORD_S = 0.9              # una palabra hablada casi nunca dura más
+MIN_WORD_S = 0.12
+
+
+def _seg_dtw_start(seg: dict) -> float | None:
+    """Inicio de la palabra según la alineación DTW (si el transcriptor la calculó)."""
+    for tk in seg.get("tokens") or []:
+        txt = (tk.get("text") or "").strip()
+        if not txt or txt.startswith("[_") or txt.startswith("<|"):
+            continue
+        t = tk.get("t_dtw")
+        if isinstance(t, (int, float)) and t >= 0:
+            return t / 100.0           # en centésimas
+        return None
+    return None
 
 
 def parse_whisper_json(data: dict) -> list[dict]:
@@ -143,8 +174,33 @@ def parse_whisper_json(data: dict) -> list[dict]:
         a, b = off.get("from"), off.get("to")
         if a is None or b is None:
             continue
-        words.append({"start": a / 1000.0, "end": max(b, a + 120) / 1000.0, "text": text})
-    return words
+        w = {"start": a / 1000.0, "end": max(b, a + 120) / 1000.0, "text": text}
+        d = _seg_dtw_start(seg)
+        if d is not None and abs(d - w["start"]) < 3.0:
+            w["start"] = d
+        words.append(w)
+    return fix_timing(words)
+
+
+def fix_timing(words: list[dict]) -> list[dict]:
+    """
+    Corrige los desfases típicos del transcriptor:
+    - tras una pausa, la palabra «empieza» al final de la pausa anterior (el texto salía antes de
+      decirlo): si dura más de lo normal, se recorta por el principio (el final es lo fiable);
+    - tiempos que se solapan o van hacia atrás.
+    """
+    out = []
+    for w in sorted(words, key=lambda x: x["start"]):
+        w = dict(w)
+        if w["end"] - w["start"] > MAX_WORD_S:
+            w["start"] = w["end"] - MAX_WORD_S
+        if out and w["start"] < out[-1]["start"] + 0.02:
+            w["start"] = out[-1]["start"] + 0.02
+        if out and out[-1]["end"] > w["start"]:
+            out[-1]["end"] = max(out[-1]["start"] + MIN_WORD_S, w["start"])
+        w["end"] = max(w["end"], w["start"] + MIN_WORD_S)
+        out.append(w)
+    return out
 
 
 # ------------------------------------------------------------------ ASS
