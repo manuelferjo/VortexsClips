@@ -791,3 +791,65 @@ class GradBar(tk.Canvas):
         if key == "value":
             return self._val
         return super().cget(key)
+
+
+# ---------------------------------------------------------------- zona con desplazamiento
+_SCROLLS = []
+
+
+class ScrollArea(ttk.Frame):
+    """Contenido que ocupa todo el alto disponible; si la ventana es más baja que lo que necesita,
+    aparece una barra para desplazarse (y la rueda del ratón funciona fuera de las tablas)."""
+
+    def __init__(self, parent, bg=BG):
+        super().__init__(parent, style="TFrame")
+        self.cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.sb = ttk.Scrollbar(self, orient="vertical", command=self.cv.yview)
+        self.cv.configure(yscrollcommand=self.sb.set)
+        self.cv.pack(side="left", fill="both", expand=True)
+        self.inner = ttk.Frame(self.cv, style="TFrame")
+        self._win = self.cv.create_window(0, 0, window=self.inner, anchor="nw")
+        self._sb_on = False
+        self.cv.bind("<Configure>", lambda e: self.sync())
+        self.inner.bind("<Configure>", lambda e: self.cv.configure(scrollregion=(0, 0, e.width, e.height)))
+        self.bind_all("<MouseWheel>", self._wheel, add="+")
+        _SCROLLS.append(self)
+
+    def sync(self):
+        try:
+            cw, ch = self.cv.winfo_width(), self.cv.winfo_height()
+            if cw < 2 or ch < 2:
+                return
+            rh = self.inner.winfo_reqheight()
+            h = max(ch, rh)
+            self.cv.itemconfigure(self._win, width=cw, height=h)
+            self.cv.configure(scrollregion=(0, 0, cw, h))
+            need = rh > ch + 2
+            if need != self._sb_on:
+                self._sb_on = need
+                if need:
+                    self.sb.pack(side="right", fill="y")
+                else:
+                    self.sb.pack_forget()
+                    self.cv.yview_moveto(0)
+        except tk.TclError:
+            pass
+
+    def _wheel(self, e):
+        if not self._sb_on:
+            return
+        w = e.widget
+        try:
+            if str(w).startswith(str(self)) is False:
+                return
+            if w.winfo_class() in ("Treeview", "Text", "Listbox", "TCombobox", "TSpinbox"):
+                return
+        except Exception:
+            return
+        self.cv.yview_scroll(int(-e.delta / 120) * 3, "units")
+
+
+def keep_scroll_in_sync(root):
+    for s in list(_SCROLLS):
+        s.sync()
+    root.after(400, lambda: keep_scroll_in_sync(root))

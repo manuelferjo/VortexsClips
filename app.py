@@ -125,6 +125,13 @@ class App(tk.Tk):
         self._style()
         self._build()
         ui.keep_cards_in_sync(self)
+        ui.keep_scroll_in_sync(self)
+        self.after(300, self._relayout)
+
+        def _relay_loop():
+            self._relayout()
+            self.after(1000, _relay_loop)
+        self.after(1500, _relay_loop)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(1500, lambda: self.check_update(silent=True))
         self.load_delay()
@@ -198,7 +205,9 @@ class App(tk.Tk):
         self.pill = ui.status_pill(head)
         self.pill.pack(side="right", padx=12)
 
-        top = ttk.Frame(self, padding=(16, 12, 16, 0))
+        # todo lo de en medio va en una zona que se desplaza si la ventana es baja
+        self.body = ui.ScrollArea(self)
+        top = ttk.Frame(self.body.inner, padding=(16, 12, 16, 0))
         top.pack(fill="x")
         top.columnconfigure(0, weight=1)
         top.columnconfigure(1, weight=1)
@@ -434,7 +443,7 @@ class App(tk.Tk):
         ui.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
 
         # --- 3. partidas
-        mid = ttk.Frame(self, padding=(16, 12, 16, 10))
+        mid = ttk.Frame(self.body.inner, padding=(16, 12, 16, 10))
         mid.columnconfigure(0, weight=3)
         mid.columnconfigure(1, weight=2)
         mid.rowconfigure(0, weight=1)
@@ -485,7 +494,8 @@ class App(tk.Tk):
         self.tab_prev = ttk.Frame(self.nb4, style="Panel.TFrame", padding=6)
         self.nb4.add(p4, text="  Rondas que se van a cortar  ")
         self.nb4.add(self.tab_prev, text="  Vista previa  ")
-        self.player = player.Player(self.tab_prev, lambda: self.v_vod.get())
+        self.player = player.Player(self.tab_prev, lambda: self.v_vod.get(), fit=True,
+                                    on_expand=self.big_preview)
         self.player.pack(anchor="n")
         p4.rowconfigure(1, weight=1)
         p4.columnconfigure(0, weight=1)
@@ -511,7 +521,10 @@ class App(tk.Tk):
         # el panel de progreso se coloca primero abajo para que nunca quede cortado;
         # si falta sitio, encogen las listas del medio
         foot.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
+        self.body.pack(fill="both", expand=True)
         mid.pack(fill="both", expand=True)
+        self._lay = {"top": top, "mid": mid, "p": (p1, p2, p3, p4o), "mode": None, "maxw": [0, 0, 0, 0]}
+        self.bind("<Configure>", lambda e: self._relayout() if e.widget is self else None, add="+")
         chips = ttk.Frame(foot, style="Panel.TFrame")
         chips.pack(fill="x")
         self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sincronizar",
@@ -545,6 +558,70 @@ class App(tk.Tk):
         self.btn_subs = ui.Button(row, text="Corregir subtítulos…", style="Ghost.TButton",
                                    command=self.fix_subtitles_later)
         self.btn_subs.pack(side="right")
+
+    def big_preview(self):
+        """La vista previa en una ventana grande (se puede agrandar o maximizar)."""
+        p = self.player
+        was = p.playing
+        pos = p._now() if was else p.pos
+        p.pause()
+        dlg = tk.Toplevel(self)
+        dlg.title("Vista previa")
+        dlg.configure(bg=PANEL)
+        dlg.geometry("1180x760")
+        fr = ttk.Frame(dlg, style="Panel.TFrame", padding=12)
+        fr.pack(fill="both", expand=True)
+        big = player.Player(fr, lambda: self.v_vod.get(), fit=True)
+        big.pack(anchor="n")
+        a, b = p.range
+        big.open(a + 30, max(a + 31, b - 30), autoplay=False)
+        dlg.after(350, lambda: (big.seek(pos), big.play() if was else None))
+
+        def close():
+            big.stop()
+            dlg.destroy()
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        return dlg
+
+    # ------------------------------------------------------------ ventana adaptable
+    def _relayout(self):
+        """Si la ventana es estrecha, las tarjetas van una debajo de otra en vez de recortarse."""
+        L = getattr(self, "_lay", None)
+        if not L:
+            return
+        try:
+            w = self.body.cv.winfo_width()
+            if w < 100:
+                return
+            mw = L["maxw"]
+            for i, p in enumerate(L["p"]):
+                mw[i] = max(mw[i], p._cv.winfo_reqwidth())
+            top_wide = w >= mw[0] + mw[1] + 60
+            mid_wide = w >= mw[2] + mw[3] + 60
+            mode = (top_wide, mid_wide)
+            if mode == L["mode"]:
+                return
+            L["mode"] = mode
+            p1, p2, p3, p4o = L["p"]
+            top, mid = L["top"], L["mid"]
+            if top_wide:
+                p1.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 12), pady=0)
+                p2.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=0, pady=0)
+            else:
+                p1.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, 12))
+                p2.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=0, pady=0)
+            if mid_wide:
+                p3.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 12), pady=0)
+                p4o.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=0, pady=0)
+                mid.rowconfigure(0, weight=1, minsize=300)
+                mid.rowconfigure(1, weight=0, minsize=0)
+            else:
+                p3.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, 12))
+                p4o.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=0, pady=0)
+                mid.rowconfigure(0, weight=1, minsize=300)
+                mid.rowconfigure(1, weight=1, minsize=420)
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------ util
     def status(self, txt):
@@ -2008,8 +2085,8 @@ class App(tk.Tk):
                         pl.cv.delete(it)
                         widths.append((b[2] - b[0]) if b else 10 * len(w))
                     gap = 10
-                    x = player.VW / 2 - (sum(widths) + gap * (len(widths) - 1)) / 2
-                    y = player.VH * 0.78
+                    x = pl.vw / 2 - (sum(widths) + gap * (len(widths) - 1)) / 2
+                    y = pl.vh * 0.78
                     for (w, c), wd in zip(txts, widths):
                         for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (2, 2)):
                             ov["items"].append(pl.cv.create_text(x + dx, y + dy, text=w, font=fnt, fill="#000000",
@@ -3383,6 +3460,23 @@ def demo_screenshot(out_png):
         d.geometry("760x640+80+80")
         app.after(900, lambda: (grab(d, "6_subtitulos.png"), d.destroy()))
     steps.append(subs)
+
+    def prev():
+        app.nb2.select(0)
+        app.nb4.select(app.tab_prev)
+        app.after(900, lambda: grab(app, "7_vista_previa.png"))
+    steps.append(prev)
+
+    def small():
+        try:
+            app.state("normal")
+        except Exception:
+            pass
+        app.geometry("1165x832+0+0")
+        app.nb2.select(1)
+        app.nb4.select(0)
+        app.after(1500, lambda: grab(app, "8_ventana_pequena.png"))
+    steps.append(small)
     steps.append(app.destroy)
 
     def run(i=0):

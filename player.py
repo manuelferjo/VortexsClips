@@ -21,8 +21,9 @@ MUTED = "#9a91a8"
 
 
 class Player(ttk.Frame):
-    def __init__(self, master, get_vod, on_pick=None, style="Panel.TFrame"):
+    def __init__(self, master, get_vod, on_pick=None, style="Panel.TFrame", fit=False, on_expand=None):
         super().__init__(master, style=style)
+        self.vw, self.vh = VW, VH
         self.get_vod = get_vod
         self.on_pick = on_pick
         self.range = (0.0, 60.0)
@@ -37,7 +38,7 @@ class Player(ttk.Frame):
         self.on_time = None          # función(t) en cada fotograma (p. ej. para pintar subtítulos encima)
 
         self.cv = tk.Canvas(self, width=VW, height=VH, bg="black", highlightthickness=0)
-        self.cv.pack(fill="both", expand=False)
+        self.cv.pack(fill="none", expand=False)
         self.img_id = self.cv.create_image(0, 0, anchor="nw")
         self.clock_bg = self.cv.create_rectangle(VW / 2 - 95, 8, VW / 2 + 95, 44, fill="#000000",
                                                  outline="", stipple="gray50")
@@ -45,6 +46,10 @@ class Player(ttk.Frame):
                                          font=("Segoe UI Black", 18))
         self.msg = self.cv.create_text(VW / 2, VH / 2, text="Elige una ronda para verla aquí",
                                        fill=MUTED, font=("Segoe UI", 12))
+        self._fit_id = None
+        if fit:
+            # el vídeo se ajusta al sitio que tenga (16:9), sin que se corten los controles
+            master.bind("<Configure>", lambda e: self._schedule_fit(), add="+")
 
         self.v_scale = tk.DoubleVar(value=0)
         self.scale = ttk.Scale(self, from_=0, to=60, variable=self.v_scale, orient="horizontal")
@@ -53,6 +58,7 @@ class Player(ttk.Frame):
 
         bar = ttk.Frame(self, style=style)
         bar.pack(fill="x")
+        self._bar = bar
         for txt, d in (("−1 min", -60), ("−10 s", -10)):
             ttk.Button(bar, text=txt, width=7, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
         self.btn_play = ttk.Button(bar, text="▶  Reproducir", width=14, style="Purple.TButton", command=self.toggle)
@@ -62,6 +68,8 @@ class Player(ttk.Frame):
         if on_pick:
             ttk.Button(bar, text="✔ Usar este momento", style="Accent.TButton",
                        command=lambda: on_pick(self.pos)).pack(side="right")
+        if on_expand:
+            ttk.Button(bar, text="⤢ Ampliar", command=on_expand).pack(side="right")
         self.lbl_range = ttk.Label(bar, text="", style="Muted.TLabel")
         self.lbl_range.pack(side="right", padx=8)
 
@@ -73,6 +81,37 @@ class Player(ttk.Frame):
             w.bind("<Down>", lambda e: self.seek(self.pos - 60))
         self.cv.bind("<Button-1>", lambda e: (self.cv.focus_set(), self.toggle()))
         self.bind("<Destroy>", lambda e: self._kill() if e.widget is self else None)
+
+    # ------------------------------------------------------------------ tamaño
+    def _schedule_fit(self):
+        if self._fit_id:
+            self.after_cancel(self._fit_id)
+        self._fit_id = self.after(150, self._fit)
+
+    def _fit(self):
+        self._fit_id = None
+        m = self.master
+        aw, ah = m.winfo_width(), m.winfo_height()
+        if aw < 50 or ah < 50:
+            return
+        ctrl = self.scale.winfo_reqheight() + self._bar.winfo_reqheight() + 14
+        w = min(aw - 4, (ah - ctrl) * 16 / 9)
+        w = max(256, int(w) // 4 * 4)
+        self.set_size(w, w * 9 // 16 // 2 * 2)
+
+    def set_size(self, w, h):
+        w, h = int(w), int(h)
+        if (w, h) == (self.vw, self.vh):
+            return
+        self.vw, self.vh = w, h
+        self.cv.configure(width=w, height=h)
+        self.cv.coords(self.clock_bg, w / 2 - 95, 8, w / 2 + 95, 44)
+        self.cv.coords(self.clock, w / 2, 26)
+        self.cv.coords(self.msg, w / 2, h / 2)
+        if self.playing:
+            self._start(self._now(), audio=True)
+        elif self._img is not None:
+            self._start(self.pos, audio=False, single=True)
 
     # ------------------------------------------------------------------ API
     def open(self, start, end=None, autoplay=True):
@@ -147,8 +186,10 @@ class Player(ttk.Frame):
             return
         gen = self.gen
         vod, t_local = core.vod_resolve(vod, t)
-        vf = (f"fps={FPS},scale={VW}:{VH}:force_original_aspect_ratio=decrease,"
-              f"pad={VW}:{VH}:(ow-iw)/2:(oh-ih)/2")
+        vw, vh = self.vw, self.vh
+        self._dims = (vw, vh)
+        vf = (f"fps={FPS},scale={vw}:{vh}:force_original_aspect_ratio=decrease,"
+              f"pad={vw}:{vh}:(ow-iw)/2:(oh-ih)/2")
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{t_local:.3f}", "-i", vod,
                "-an", "-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo"]
         if single:
@@ -170,7 +211,8 @@ class Player(ttk.Frame):
         self._tick_id = self.after(10, self._tick, gen, single)
 
     def _reader(self, p, gen):
-        size = VW * VH * 3
+        vw, vh = getattr(self, "_dims", (VW, VH))
+        size = vw * vh * 3
         i = 0
         while gen == self.gen:
             b = p.stdout.read(size)
@@ -220,7 +262,10 @@ class Player(ttk.Frame):
         self._tick_id = self.after(12, self._tick, gen, single)
 
     def _paint(self, rgb: bytes):
-        header = f"P6 {VW} {VH} 255 ".encode()
+        vw, vh = getattr(self, "_dims", (VW, VH))
+        if len(rgb) != vw * vh * 3:
+            return
+        header = f"P6 {vw} {vh} 255 ".encode()
         try:
             if self._raw_ok:
                 img = tk.PhotoImage(data=header + rgb, format="PPM")
