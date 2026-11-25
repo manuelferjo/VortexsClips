@@ -151,19 +151,23 @@ Mientras trabaja, el PC no se suspende (la pantalla sí puede apagarse o bloquea
 
 **Top de la semana:** en la pestaña **Automático**, «Top de la semana cada lunes» junta las 10 mejores jugadas (por nota) de los directos de la semana pasada en un vídeo con cuenta atrás (#10 … #1), en horizontal y en vertical, con `publicar.txt` (título, capítulos y hashtags). «Hacer el top ahora…» lo hace al momento.
 
-## 5. Qué sale al final (en la carpeta del VOD)
+## 5. Qué sale al final (una carpeta por directo, junto al VOD)
 
-| Archivo / carpeta | Qué es |
-|---|---|
-| `… - rondas 3K+.mp4` | Todas las jugadas en horizontal. |
-| `… - rondas 3K+ (vertical).mp4` | Lo mismo en 9:16 para TikTok, Reels y Shorts, con subtítulos. |
-| `… - clips sueltos\3K`, `\4K`, `\ACE`, `\Clutch` | Un archivo por jugada (horizontal y vertical). |
-| `… - clips sueltos\TOP` | Las 3 mejores jugadas del directo. |
-| `… - clips sueltos\ranking.txt` | Todas las jugadas ordenadas por nota. |
-| `… - rondas 3K+_marcas.txt` | Minuto de cada jugada en el VOD y en el vídeo, con su nota. Para tu editor. |
-| `… - rondas 3K+ - publicar.txt` | Título, descripción con capítulos y hashtags para subir el vídeo completo a YouTube. |
-| `… - clips sueltos\publicar.txt` | Título, descripción y hashtags de cada clip, el mejor primero (copiar y pegar). |
-| `… - clips sueltos\…\<clip>.txt` | Lo mismo al lado de cada clip. `publicar.json` lleva lo mismo para programas de subida (Vortexs Post). |
+Todo lo de un directo queda junto en **una carpeta** `2026-11-21 Twitch … - rondas 3K+`:
+
+```
+2026-11-21 Twitch … - rondas 3K+\
+├─ 2026-11-21 Twitch … - rondas 3K+.mp4              ← vídeo completo en horizontal (YouTube)
+├─ 2026-11-21 Twitch … - rondas 3K+ (vertical).mp4   ← vídeo completo en 9:16 con subtítulos
+├─ 2026-11-21 Twitch … - rondas 3K+ - publicar.txt   ← título, capítulos y hashtags del vídeo completo
+├─ 2026-11-21 Twitch … - rondas 3K+_marcas.txt       ← minuto de cada jugada (para tu editor)
+├─ 3K\  4K\  ACE\  Clutch\                            ← un clip por jugada (horizontal y vertical) + su .txt
+├─ TOP\                                               ← las 3 mejores del directo
+├─ ranking.txt                                        ← todas las jugadas por nota
+└─ publicar.txt / publicar.json                       ← textos de cada clip, el mejor primero
+```
+
+Al generar a mano, el programa propone esa misma carpeta. Si eliges otra, los clips van en una subcarpeta `… - clips sueltos` al lado del vídeo, para no desordenarla. Los vídeos de versiones anteriores se quedan donde estaban.
 
 **Rápido y sin perder calidad:** la horizontal y la vertical salen en **una sola lectura del VOD**, cada una codificada una única vez desde el original. Los clips sueltos se cortan de esos vídeos **copiando, sin volver a codificar** (tardan segundos y son idénticos).
 

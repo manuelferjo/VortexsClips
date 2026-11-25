@@ -1696,10 +1696,7 @@ class App(tk.Tk):
                                               f"{self.settings().min_kills} kills o más.")
             self.flow_done("Sin rondas para cortar en este VOD.")
             return
-        vod = self.v_vod.get()
-        base = core.vod_display_base(vod)
-        out = os.path.join(os.path.dirname(vod), f"{base} - rondas {self.settings().min_kills}K+.mp4")
-        self.render(out)
+        self.render(self.default_out())
 
     # ------------------------------------------------------------ sincronización automática
     def sync_workers(self) -> int:
@@ -2571,19 +2568,37 @@ class App(tk.Tk):
         self.fill_clips()
 
     # ------------------------------------------------------------ render
+    def stream_folder(self) -> str:
+        """Carpeta de este directo: el vídeo completo, la vertical y los clips (3K, 4K, ACE…) juntos."""
+        vod = self.v_vod.get()
+        base = core.vod_display_base(vod)
+        return os.path.join(os.path.dirname(os.path.abspath(vod)), f"{base} - rondas {self.settings().min_kills}K+")
+
+    def default_out(self) -> str:
+        d = self.stream_folder()
+        return os.path.join(d, os.path.basename(d) + ".mp4")
+
     def render(self, out=None):
         if not self.clips:
             self.compute()
             if not self.clips:
                 return
         vod = self.v_vod.get()
-        base = core.vod_display_base(vod)
-        out = out or filedialog.asksaveasfilename(title="Guardar vídeo", defaultextension=".mp4",
-                                           initialdir=os.path.dirname(vod),
-                                           initialfile=f"{base}_rondas_{self.settings().min_kills}K+.mp4",
-                                           filetypes=[("MP4", "*.mp4")])
+        if not out:
+            d = self.stream_folder()
+            made_dir = not os.path.isdir(d)
+            os.makedirs(d, exist_ok=True)
+            out = filedialog.asksaveasfilename(title="Guardar vídeo", defaultextension=".mp4",
+                                               initialdir=d, initialfile=os.path.basename(self.default_out()),
+                                               filetypes=[("MP4", "*.mp4")])
+            if not out and made_dir:
+                try:
+                    os.rmdir(d)
+                except OSError:
+                    pass
         if not out:
             return
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         if self.v_vertical.get() and not self.cam and not self.cfg.get("cam_asked") and not self.unattended():
             self.cfg["cam_asked"] = True
             if messagebox.askyesno(APP_NAME, "Para la versión vertical como tus TikToks tengo que saber dónde está "
@@ -2671,7 +2686,11 @@ class App(tk.Tk):
                     if os.path.abspath(p_) not in outs_:
                         outs_.append(os.path.abspath(p_))
                 self.after(0, self.persist)
-                folder = base + " - clips sueltos" if singles else None
+                # todo junto en la carpeta del directo (si el vídeo se guardó en ella); si se eligió
+                # otra carpeta a mano, los clips van en su propia subcarpeta para no desordenarla
+                od_ = os.path.dirname(os.path.abspath(out))
+                in_own = os.path.basename(od_) == os.path.basename(base)
+                folder = (od_ if in_own else base + " - clips sueltos") if singles else None
                 import publish
                 chan = (self.v_channel.get() or "").strip().lstrip("@")
                 try:
