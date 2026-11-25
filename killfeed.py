@@ -81,6 +81,16 @@ def own_marker(band, src_h: int = 1080):
     for xt in cands:
         r = _marker_at(core_, pure, yel, xt, lh)
         if r is not None:
+            # en tus kills el que muere es un rival: la línea ACABA en rojo. Si acaba en verde, la víctima
+            # eres tú («X → Me») y el amarillo era el de tu retrato o el del retrato del que te mata
+            rc = red.mean(axis=0) > 0.5
+            tc = teal.mean(axis=0) > 0.5
+            cols = np.flatnonzero(rc | tc)
+            if len(cols):
+                e = cols[-1] + 1
+                b0 = max(0, e - int(2 * lh))
+                if int(tc[b0:e].sum()) > int(rc[b0:e].sum()):
+                    continue
             return r
     return None
 
