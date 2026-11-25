@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           python -m pip install -q yt-dlp numpy pillow
       - name: Prueba
-        run: python tools/prueba_kf.py https://www.twitch.tv/videos/2939461539 4 0 2938474894,2937387599,2936050309,2935116647
+        run: bash tools/trozo.sh 2938474894 9334-9344
       - name: Guardar
         if: always()
         run: |
