@@ -435,7 +435,7 @@ class App(tk.Tk):
         cols = ("use", "date", "map", "agent", "score", "hl", "invod", "sync")
         self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse", height=5)
         for c, t, w in zip(cols, ("", "Fecha", "Mapa", "Agente", "Resultado", "Rondas", "¿En el VOD?", "Sincro"),
-                           (34, 130, 80, 80, 70, 60, 90, 120)):
+                           (34, 130, 80, 80, 88, 64, 96, 120)):
             self.tv_m.heading(c, text=t, anchor="w" if c == "date" else "center")
             self.tv_m.column(c, width=w, anchor="center" if c != "date" else "w", stretch=c in ("date", "sync"))
         self.tv_m.grid(row=1, column=0, sticky="nsew")
