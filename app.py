@@ -694,10 +694,11 @@ class App(tk.Tk):
             cmin = 2 if self.v_clutch.get() else 0
         return core.CutSettings(min_kills=int(self.v_min.get() or 3), clutch_min=cmin,
                                 skip_buy_phase=self.v_skipbuy.get(),
-                                pre_roll_s=f(self.v_pre, 3), post_roll_s=f(self.v_post, 4),
+                                pre_roll_s=max(0.0, f(self.v_pre, 3)), post_roll_s=max(0.0, f(self.v_post, 4)),
                                 global_adjust_s=f(self.v_delay, 0),
-                                mode=self.v_mode.get(), kill_pre_s=f(self.v_kpre, 2.5),
-                                kill_post_s=f(self.v_kpost, 1.5),
+                                # sin negativos: cortarían la propia kill
+                                mode=self.v_mode.get(), kill_pre_s=max(0.0, f(self.v_kpre, 2.5)),
+                                kill_post_s=max(0.0, f(self.v_kpost, 1.5)),
                                 merge_gap_s=f(self.v_kgap, 4.0),
                                 residual_s=float(self.cfg.get("residual_s", 0.0)))
 
