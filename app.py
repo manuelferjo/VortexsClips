@@ -426,7 +426,7 @@ class App(tk.Tk):
         ttk.Entry(rf, textvariable=self.v_pre, width=4).pack(side="left", padx=4)
         ttk.Entry(rf, textvariable=self.v_post, width=4).pack(side="left")
         ttk.Separator(t_cut).grid(row=5, column=0, columnspan=5, sticky="we", pady=8)
-        ttk.Checkbutton(t_cut, text="Sincronizar solo cada partida (busca el killfeed en el VOD)",
+        ttk.Checkbutton(t_cut, text="Sincronizar solo cada partida (cartel de fin de ronda, marcador y killfeed)",
                         variable=self.v_autosync).grid(row=6, column=0, columnspan=5, sticky="w")
         ttk.Label(t_cut, text="Desfase (s)").grid(row=7, column=0, sticky="w", pady=(6, 0))
         ttk.Label(t_cut, text="≈115 s: selección de agente + carga. Se ajusta solo al sincronizar.",
