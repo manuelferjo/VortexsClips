@@ -109,7 +109,10 @@ class App(tk.Tk):
         self.cfg = load_cfg()
         self.matches: dict[str, core.Match] = {}
         self.checked: set[str] = set()
-        self.calib: dict = self.cfg.get("calib", {})
+        # sincronizaciones POR VOD: el desfase de una partida solo vale para el vídeo en el que se midió
+        # (antes era una lista común y las partidas de otros días se «colaban» en el VOD abierto)
+        self._calib_by_vod: dict = self.cfg.get("calib_by_vod", {})
+        self._calib_legacy: dict = self.cfg.get("calib", {})
         self.vod_info = None
         self.clips: list[core.Clip] = []
         self.next_start = 0
@@ -898,6 +901,54 @@ class App(tk.Tk):
     def delay_fn_for_vod(self):
         return getattr(self, "delay_fn", None)
 
+    def _vod_key(self) -> str:
+        try:
+            return os.path.basename(self.v_vod.get() or "")
+        except Exception:
+            return ""
+
+    @property
+    def calib(self) -> dict:
+        """Sincronizaciones de las partidas para el VOD abierto."""
+        key = self._vod_key()
+        d = self._calib_by_vod.setdefault(key, {})
+        mig = self.__dict__.setdefault("_calib_migrated", set())
+        if key and key not in mig and self.matches and self.vod_info:
+            mig.add(key)
+            for mid, c in self._migrate_legacy(key).items():
+                d.setdefault(mid, c)
+        return d
+
+    @calib.setter
+    def calib(self, value):
+        self._calib_by_vod[self._vod_key()] = value
+
+    def _migrate_legacy(self, key) -> dict:
+        """De la lista común antigua, solo las sincronizaciones que de verdad son de este VOD: su sitio
+        tiene que cuadrar con la hora de la partida (± unos minutos de delay); las de otros días no."""
+        out = {}
+        if not self._calib_legacy:
+            return out
+        try:
+            vs = self.vod_start_utc()
+            dur = float((self.vod_info or {}).get("duration") or 0)
+        except Exception:
+            return out
+        for mid, c in self._calib_legacy.items():
+            m = self.matches.get(mid)
+            if m is None or not isinstance(c, dict):
+                continue
+            try:
+                off = core.match_offset_s(m, vs, {mid: c})
+                hora = core.match_offset_s(m, vs, {})
+            except Exception:
+                continue
+            if c.get("failed"):
+                continue
+            if abs(off - hora) <= 420 and (not dur or -60 <= off <= dur + 60):
+                out[mid] = dict(c)
+        return out
+
     def vod_start_utc(self):
         txt = self.v_start.get().strip()
         for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
@@ -914,7 +965,8 @@ class App(tk.Tk):
                          "clutch_on": self.v_clutch.get(), "clutch_min": self.settings().clutch_min or 2,
                          "pre": self.v_pre.get(), "post": self.v_post.get(),
                          "encoder": ENCODERS[self.v_enc.get()],
-                         "calib": self.calib, "out_dir": self.v_outdir.get(),
+                         "calib_by_vod": {k: v for k, v in self._calib_by_vod.items() if k and v},
+                         "out_dir": self.v_outdir.get(),
                          "auto_process": self.v_auto.get(), "auto_sync": self.v_autosync.get(),
                          "vertical": self.v_vertical.get(), "singles": self.v_singles.get(),
                          "cam": self.cam, "subtitles": self.v_subs.get(), "mode": self.v_mode.get(),

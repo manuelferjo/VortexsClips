@@ -585,10 +585,10 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
             if settings.mode == "kills":
                 c_ = calib.get(m.match_id) or {}
                 precise = uses_calib and not c_.get("approx")
+                # también los clutches: solo los trozos de tus kills (no la ronda entera desde que te
+                # quedas solo), igual que el resto de jugadas
                 segs = _kill_segments(m, r, base, settings, vod_duration_s, synced=precise) \
-                    if r.my_kills >= settings.min_kills else []
-                if is_clutch(r, settings.clutch_min) and r.clutch_from_ms is not None:
-                    segs = _with_clutch(m, r, base, settings, vod_duration_s, segs, precise)
+                    if (r.my_kills >= settings.min_kills or is_clutch(r, settings.clutch_min)) else []
                 if segs and (segs[0][0] < (vod_duration_s or 1e12)) and segs[-1][1] > 0:
                     for i, (a, b) in enumerate(segs):
                         clips.append(Clip(m, r, a, b, i, len(segs), base))
