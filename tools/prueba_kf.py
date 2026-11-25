@@ -104,9 +104,10 @@ for v in vods:
             for u, t in zip(g, T):
                 if round(t, 2) not in got:
                     report.append(f"{vid} {a}+{u[0] / FPS:.1f}s: FALTA (no se coloca)")
+                    sheet([x for x in seq], f"{OUT}/falta_{vid}_{a}_{u[0]}.png")
                     continue
                 box, ap = got[round(t, 2)]
-                ok = kf.same_line(src, box[1], box[3], u[2], u[1][0], u[1][1])
+                ok = kf.same_line(src, box[1], box[3], u[5], u[4][0], u[4][1])
                 err = ap - (u[0] / FPS)
                 report.append(f"{vid} {a}+{u[0] / FPS:.1f}s: {'OK ' if ok else 'MAL (otra línea)'} "
                               f"entra {err:+.2f}s")
