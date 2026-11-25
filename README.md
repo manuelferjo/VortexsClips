@@ -207,6 +207,12 @@ Si dos métodos coinciden en el mismo segundo, la partida se da por buena. Despu
 - Estilo de tus TikToks: blanco con borde negro, en minúsculas y en grande, en el borde de abajo de la cámara, una palabra cada vez.
 - **Revisar viendo el vídeo:** con **Revisar y editar los subtítulos** marcada, al terminar se abre el editor con el vídeo ya generado dentro. Clic en una palabra y el vídeo salta ahí; **▶ Escuchar desde aquí** lo reproduce con sonido, y el subtítulo se pinta encima tal cual quedará, **cada cambio se ve al momento**. Puedes corregir una palabra (doble clic), cambiar su color (amarillo, morado, sin color o automático), borrarla o quitar todos. **Varias a la vez:** arrastra con el ratón por la lista (o Ctrl/Mayús+clic), o usa **Toda la frase** / **Todo (Ctrl+A)**; luego cambia el color, bórralas o escribe un texto para **juntarlas en una**. Clic derecho abre un menú, y hay teclas rápidas: Supr borrar · A amarillo · M morado · S sin color · Z automático. Al pulsar **Guardar y rehacer la vertical** se rehace solo la vertical (desde el VOD, sin perder calidad) y sus clips. Si no cambias nada, no se rehace nada.
 - ¿Lo ves más tarde? Botón **Corregir subtítulos…** (abajo): reabre el último vídeo.
+- **Subtítulos para CapCut** (Salida): la vertical y sus clips salen **sin subtítulos pegados** y al lado de cada uno va:
+  - `… (vertical).srt`: los subtítulos palabra a palabra, con las palabras clave marcadas en amarillo y morado;
+  - `… (vertical) - sin colores.srt`: lo mismo sin colores, por si CapCut enseña las marcas de color como texto;
+  - `… (vertical) - palabras en color.txt`: la lista de palabras clave con su momento y su color, para colorearlas a mano si hace falta.
+
+  En CapCut para PC: abre la vertical, **Subtítulos → Añadir subtítulos → Importar archivo** y elige el `.srt`. Quedan editables ahí: texto, fuente, tamaño, color y animación. Con esta opción no se abre el editor de subtítulos del programa.
 - **Palabra a palabra:** en la vertical sale una sola palabra cada vez (estilo TikTok). Si juntas varias en una en el editor, salen juntas.
 - **Ajuste de tiempo:** en el editor, **◀ −0,1 s / +0,1 s ▶** mueve todos los subtítulos y lo ves al momento en el vídeo. Marca **Usar este ajuste en los próximos vídeos** para guardarlo. También está en **Salida → Ajuste de tiempo (s)** (+ salen más tarde, − antes).
 - **Diccionario:** cada palabra que corriges se apunta sola (p. ej. «vortex» → «Vortexs», «tres kills» → «3K») y en los siguientes vídeos ya sale corregida. Se ve y se edita en **Salida → Diccionario…**.

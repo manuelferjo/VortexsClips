@@ -683,3 +683,59 @@ def words_for_clips(vod: str, clips) -> list[dict] | None:
                             "end": round(min(w["end"], c.vod_end) - c.vod_start + t, 3)})
         t += c.vod_end - c.vod_start
     return out
+
+
+# ---------------------------------------------------------------- subtítulos para CapCut (.srt)
+# CapCut para PC importa .srt (Subtítulos > Añadir subtítulos > Importar archivo) y los deja editables.
+_SRT_COLORS = {ASS_YELLOW: "#FFD21F", ASS_PURPLE: "#C7A6FF"}
+
+
+def _srt_ts(t: float) -> str:
+    t = max(0.0, t)
+    ms = int(round(t * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def write_srt(words: list[dict], base_path: str, offset: float = 0.0, duration: float | None = None,
+              highlight: bool = True) -> list[str]:
+    """
+    Escribe, para un vídeo (o un trozo: offset/duration), palabra a palabra:
+      «<base>.srt»               con las palabras clave en amarillo / morado (etiquetas de color)
+      «<base> - sin colores.srt» lo mismo sin colores (por si CapCut enseña las etiquetas)
+      «<base> - palabras en color.txt» lista de las palabras clave con su momento y color
+    """
+    sel = []
+    for w in words or []:
+        a, b = w["start"] - offset, w["end"] - offset
+        if b <= 0 or (duration is not None and a >= duration):
+            continue
+        sel.append({**w, "start": max(0.0, a), "end": b if duration is None else min(duration, b)})
+    lines = chunk_words_rich(sel, highlight=highlight)
+    col, plain, keys = [], [], []
+    for i, (a, b, items) in enumerate(lines, 1):
+        t = f"{_srt_ts(a)} --> {_srt_ts(b)}"
+        txt_c = " ".join(f'<font color="{_SRT_COLORS[c]}">{w}</font>' if c in _SRT_COLORS else w
+                         for w, c in items)
+        txt_p = " ".join(w for w, _c in items)
+        col.append(f"{i}\n{t}\n{txt_c}\n")
+        plain.append(f"{i}\n{t}\n{txt_p}\n")
+        for w, c in items:
+            if c in _SRT_COLORS:
+                name = "AMARILLO" if c == ASS_YELLOW else "MORADO"
+                keys.append(f"{_srt_ts(a)[3:]}  {name:<8}  {w}")
+    out = []
+    if not lines:
+        return out
+    for path, rows in ((base_path + ".srt", col), (base_path + " - sin colores.srt", plain)):
+        with open(path, "w", encoding="utf-8-sig") as f:
+            f.write("\n".join(rows))
+        out.append(path)
+    p = base_path + " - palabras en color.txt"
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("Palabras clave para poner en color en CapCut (minuto:segundo,milésimas · color · palabra)\n\n")
+        f.write("\n".join(keys) + ("\n" if keys else "(ninguna)\n"))
+    out.append(p)
+    return out

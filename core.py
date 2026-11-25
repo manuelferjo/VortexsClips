@@ -1440,7 +1440,8 @@ def _copy_cut(ffmpeg, src: str, t: float, d: float, out: str, should_stop=None) 
 def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=None, vertical=False,
                    encoder: str = "x264", progress=None, should_stop=None, words=None,
                    highlight: bool = True, ranking: list | None = None, top_n: int = 3,
-                   vsrc: str | None = None, channel: str = "", video_texts: dict | None = None) -> list[str]:
+                   vsrc: str | None = None, channel: str = "", video_texts: dict | None = None,
+                   srt: bool = False) -> list[str]:
     """
     Un archivo por ronda, sacado del vídeo ya montado. Si src (y vsrc, la vertical) se generaron
     con fotogramas clave en cada jugada, se cortan COPIANDO: al instante y sin ninguna pérdida.
@@ -1492,10 +1493,17 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
                     _copy_cut(ffmpeg, vsrc, t, d, v + ".tmp.mp4", should_stop)
                 else:
                     make_vertical(src, v + ".tmp.mp4", vertical_cam, encoder, None, should_stop, start=t, dur=d,
-                                  words=words, highlight=highlight)
+                                  words=None if srt else words, highlight=highlight)
                 os.replace(v + ".tmp.mp4", v)
             outs.append(v)
             best = v
+            if srt and words:
+                # para CapCut: la vertical va sin subtítulos y al lado su .srt para editarlos allí
+                try:
+                    import subtitles
+                    subtitles.write_srt(words, os.path.splitext(v)[0], offset=t, duration=d, highlight=highlight)
+                except OSError:
+                    pass
         try:
             react = reaction_lu(src, t, d)
         except Exception:

@@ -298,6 +298,7 @@ class App(tk.Tk):
         self.v_subedit = tk.BooleanVar(value=cfg.get("sub_edit", True))
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
         self.v_suboff = tk.StringVar(value=f"{float(cfg.get('sub_offset', 0.0)):.1f}")
+        self.v_capcut = tk.BooleanVar(value=cfg.get("capcut_subs", False))
         self.v_topweek = tk.BooleanVar(value=cfg.get("top_week", True))
         self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
         self.v_autodel = tk.BooleanVar(value=cfg.get("auto_delete_vod", True))
@@ -412,8 +413,11 @@ class App(tk.Tk):
                     format="%.1f").pack(side="left", padx=4)
         ttk.Label(sf_, text="+ salen más tarde · − salen antes", style="Muted.TLabel").pack(side="left", padx=(2, 12))
         ui.Button(sf_, text="Diccionario…", command=self.edit_sub_dict).pack(side="left")
+        ui.Toggle(t_out, text="    Subtítulos para CapCut: la vertical sin subtítulos pegados y al lado su archivo .srt "
+                              "(palabra a palabra) para editarlos en CapCut",
+                  variable=self.v_capcut).grid(row=8, column=0, columnspan=4, sticky="w", pady=(2, 0))
         ui.Toggle(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
-                        variable=self.v_singles).grid(row=8, column=0, columnspan=4, sticky="w", pady=(6, 0))
+                        variable=self.v_singles).grid(row=9, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         # ---- pestaña Automático
         ttk.Label(t_auto, text="Tu canal de Twitch").grid(row=0, column=0, sticky="w")
@@ -831,7 +835,7 @@ class App(tk.Tk):
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
                          "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset(),
-                         "top_week": self.v_topweek.get()})
+                         "top_week": self.v_topweek.get(), "capcut_subs": self.v_capcut.get()})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -2709,7 +2713,9 @@ class App(tk.Tk):
         vertical, singles, cam = self.v_vertical.get(), self.v_singles.get(), self.cam
         subs = vertical and self.v_subs.get()
         sub_hl = self.v_subhl.get()
-        sub_edit = subs and self.v_subedit.get() and not self.unattended()
+        capcut = subs and self.v_capcut.get()
+        # con CapCut los subtítulos se editan allí: no se pegan en el vídeo ni se abre el editor
+        sub_edit = subs and self.v_subedit.get() and not self.unattended() and not capcut
         warnings = []
         ranking = []
 
@@ -2755,8 +2761,10 @@ class App(tk.Tk):
                 v = base + " (vertical).mp4" if vertical else None
                 sub("Generando el vídeo horizontal" + (" y el vertical a la vez…" if vertical else "…"))
                 core.render(vod, clips, out, encoder=enc, show_label=False, progress=prog, should_stop=stop,
-                            vout_path=v, cam=cam, words=words, highlight=sub_hl)
+                            vout_path=v, cam=cam, words=None if capcut else words, highlight=sub_hl)
                 made = [out] + ([v] if v else [])
+                if capcut and v and words:
+                    subtitles.write_srt(words, os.path.splitext(v)[0], highlight=sub_hl)
                 self.cfg.setdefault("generated_vods", {})[os.path.abspath(vod)] = time.time()
                 outs_ = self.cfg.setdefault("generated_outputs", {}).setdefault(os.path.abspath(vod), [])
                 for p_ in made:
@@ -2784,13 +2792,14 @@ class App(tk.Tk):
                     core.export_singles(out, clips, folder, vertical_cam=cam, vertical=vertical,
                                         encoder=enc, progress=cb, should_stop=stop, words=words,
                                         highlight=sub_hl, ranking=ranking, vsrc=v, channel=chan,
-                                        video_texts=vtx)
+                                        video_texts=vtx, srt=capcut)
                     made.append(folder)
                     try:                       # para el top de la semana
                         semana.record(folder, self.vod_start_utc())
                     except Exception:
                         pass
                 proj = {"vod": vod, "clips": clips, "out": out, "vertical": v, "cam": cam, "words": words,
+                        "capcut": capcut,
                         "highlight": sub_hl, "encoder": enc, "singles": folder}
                 self.save_project(proj)
                 if words and sub_edit and v:
@@ -2890,6 +2899,11 @@ class App(tk.Tk):
     def fix_subtitles_later(self):
         """Botón «Corregir subtítulos…»: reabre el último vídeo generado."""
         proj = self.load_project()
+        if proj and proj.get("capcut"):
+            messagebox.showinfo(APP_NAME, "El último vídeo se hizo con «Subtítulos para CapCut»: sus subtítulos "
+                                          "se corrigen en CapCut, importando el archivo .srt que hay al lado de "
+                                          "la vertical (Subtítulos > Añadir subtítulos > Importar archivo).")
+            return
         if not proj or not proj.get("words") or not proj.get("vertical"):
             messagebox.showinfo(APP_NAME, "Todavía no hay un vídeo con subtítulos para corregir.\n\n"
                                           "Genera uno con «Versión vertical» y «Subtítulos» activados.")
@@ -3151,6 +3165,10 @@ def selftest(out_path):
                 f"top de la semana ({len(it_)} jugadas, {ih2['duration']:.1f} s)")
         else:
             log(False, f"top de la semana: solo {len(it_)} jugadas en el historial")
+        # subtítulos para CapCut: .srt palabra a palabra (con y sin colores) y lista de palabras clave
+        srts_ = subtitles.write_srt(words, os.path.join(tmp, "capcut"))
+        ok_srt = len(srts_) == 3 and "00:00:00,500 --> " in open(srts_[1], encoding="utf-8-sig").read()
+        log(ok_srt, "subtítulos para CapCut (.srt con y sin colores + palabras clave)")
         vsolo = os.path.join(tmp, "solo (vertical).mp4")
         core.render(vid, rclips, vsolo, encoder="auto", cam=cam, words=words[:2], vertical_only=True)
         log(core.probe_vod(vsolo)["height"] == 1920, "rehacer solo la vertical (subtítulos corregidos)")
