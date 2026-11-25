@@ -149,5 +149,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ needs.check.outputs.tag }}" dist/VortexsClips.zip out/VortexsClips-Setup.exe \
-            --target "$GITHUB_SHA" --title "Vortexs Clips ${{ needs.check.outputs.tag }}" --generate-notes
+          # GitHub a veces da error 500/502 al crearla: se reintenta (y si llegó a crearse, se completa)
+          T="${{ needs.check.outputs.tag }}"
+          for i in 1 2 3 4 5 6; do
+            if gh release view "$T" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$T" dist/VortexsClips.zip out/VortexsClips-Setup.exe --clobber -R "$GITHUB_REPOSITORY" && exit 0
+            elif gh release create "$T" dist/VortexsClips.zip out/VortexsClips-Setup.exe \
+                --target "$GITHUB_SHA" --title "Vortexs Clips $T" --generate-notes; then
+              exit 0
+            fi
+            echo "Reintento $i…"; sleep 30
+          done
+          exit 1
