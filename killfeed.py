@@ -189,7 +189,7 @@ def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
     return float(np.abs(pa - pb).mean()) < tol
 
 
-def find_new_lines(before, after, src_h: int = 1080, n: int = 1) -> list:
+def find_new_lines(before, after, src_h: int = 1080, n: int = 1, known=()) -> list:
     """
     Las n líneas TUYAS (marcador amarillo) más bajas del killfeed «después» que no estaban ya igual
     «antes», ordenadas de arriba a abajo (= en el orden en que salieron). Cada una: (x0, y0, x1, y1, alpha).
@@ -205,7 +205,9 @@ def find_new_lines(before, after, src_h: int = 1080, n: int = 1) -> list:
         if mx is None:
             continue
         # ¿ya estaba antes (en cualquier altura: cuando caduca una de arriba, todas suben)?
-        if any(same_line(before, b0, b1, after, y0, y1) for b0, b1, _bmx in olds):
+        # (y también las tuyas de esta ronda ya colocadas, aunque entraran después de «antes»)
+        if any(same_line(before, b0, b1, after, y0, y1) for b0, b1, _bmx in olds) or \
+                any(same_line(img, k0, k1, after, y0, y1) for img, k0, k1 in known):
             break                       # por encima de una que ya estaba, todo es anterior
         news.append((y0, y1, mx))
         if len(news) >= n:
@@ -267,6 +269,50 @@ GAP = 10
 SEQ_FPS = 10
 
 
+def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS):
+    """
+    En los fotogramas seq (desde t0, fps por segundo): las líneas de las kills cl [(t_vod, t_vídeo)].
+    Devuelve ([((t_vod, t_vídeo), caja, momento en que entra)], fotograma del que se recortan).
+    known: tus líneas de la ronda ya colocadas, que no cuentan como nuevas.
+    """
+    n = len(cl)
+    before = seq[0]
+
+    def new(i):
+        return find_new_lines(before, seq[i], H, n, known)
+    # la imagen «después»: el primer momento en que tus líneas nuevas están enteras (y estables);
+    # no un fotograma fijo, que puede caer cuando el killfeed está tapado (destello, muerte…)
+    best_i, boxes = None, []
+    for i in range(1, len(seq)):
+        got = new(i)
+        if len(got) > len(boxes):
+            best_i, boxes = i, got
+        if len(boxes) == n and i >= best_i + 2:
+            break
+    if not boxes:
+        return [], None
+    # se recorta un par de fotogramas después de que entre (ya con su amarillo pleno)
+    src_i = min(len(seq) - 1, best_i + 2)
+    again = new(src_i)
+    if len(again) == len(boxes):
+        boxes = again
+    else:
+        src_i = best_i
+    found = []
+    for (tv, tout), box in zip(cl[n - len(boxes):], boxes):
+        appear = None
+        for i in range(1, src_i + 1):
+            # primer fotograma en que esta línea ya se reconoce como TUYA y nueva, en su sitio
+            # (comparando su contenido: con varias seguidas, cada una con la suya)
+            if any(same_line(seq[i], b[1], b[3], seq[src_i], box[1], box[3]) for b in new(i)):
+                appear = t0 + i / fps - 0.1      # el amarillo llega ~0,1 s después de la línea
+                break
+        if appear is None:
+            appear = t0 + best_i / fps
+        found.append(((tv, tout), box, appear))
+    return found, seq[src_i]
+
+
 def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             log_path: str | None = None) -> list[dict]:
     """
@@ -300,6 +346,18 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 continue
             seen.add(key)
             by_group.setdefault(c.group, []).append((tv, t0 + (tv - c.vod_start)))
+    # kills tuyas de esas rondas que no caen dentro de ningún corte (no pueden salir)
+    fuera = []
+    rounds_done = set()
+    for c, _t0 in spans:
+        if c.base is None or c.group in rounds_done:
+            continue
+        rounds_done.add(c.group)
+        m, r = c.match, c.round
+        for k in m.kills:
+            if k.round == r.index and k.killer == m.my_puuid and (c.group, k.t_match) not in seen:
+                fuera.append(f"{core.fmt_ts(c.base + k.t_match / 1000.0)}  ronda {r.index + 1}: "
+                             f"esta kill cae fuera del corte (no sale en el vídeo)")
     # rondas del vídeo en las que no se encontró ninguna kill tuya (para el registro)
     sin = []
     for c, _t0 in spans:
@@ -313,7 +371,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
         pre_log.append(f"{core.fmt_ts(c.vod_start)}  ronda {c.round.index + 1}: sin línea ({why})")
     # justo debajo de la cámara y de los subtítulos (que van en su borde de abajo), pegadas a la derecha
     y_top = core.cam_bottom_y(cam, W, H) + 95 if cam else 700
-    out, log = [], list(pre_log)
+    out, log = [], list(pre_log) + fuera
     groups = list(by_group.items())
     for gi, (g, ks) in enumerate(groups):
         if should_stop and should_stop():
@@ -331,6 +389,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
         if cur:
             clusters.append(cur)
         slot = 0
+        known = []                      # tus líneas de esta ronda ya colocadas
         for cl in clusters:
             # se mira el directo 10 veces por segundo alrededor de la(s) kill(s): la línea sale en el
             # instante exacto en que entra en el killfeed (no en la hora de Riot, que puede ir desfasada)
@@ -339,40 +398,13 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             if len(seq) < 4:
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: no se pudo leer el vídeo")
                 continue
-            # la imagen «después»: el primer momento en que tus líneas nuevas están enteras (y estables);
-            # no un fotograma fijo, que puede caer cuando el killfeed está tapado (destello, muerte…)
-            before = seq[0]
-            best_i, boxes = None, []
-            for i in range(1, len(seq)):
-                got = find_new_lines(before, seq[i], H, len(cl))
-                if len(got) > len(boxes) or (best_i is not None and len(got) == len(boxes) == len(cl)
-                                             and i <= best_i + 2):
-                    if len(got) > len(boxes):
-                        best_i, boxes = i, got
-                if len(boxes) == len(cl) and i >= best_i + 2:
-                    break
-            if not boxes:
+            found, src = locate(seq, t0, cl, H, known, SEQ_FPS)
+            if not found:
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: NO se ve tu línea en el killfeed "
                            f"({len(cl)} kill(s))")
                 continue
-            # se recorta un par de fotogramas después de que entre (ya con su amarillo pleno)
-            src_i = min(len(seq) - 1, best_i + 2)
-            if len(find_new_lines(before, seq[src_i], H, len(cl))) == len(boxes):
-                boxes = find_new_lines(before, seq[src_i], H, len(cl))
-            else:
-                src_i = best_i
-            src = seq[src_i]
-            pairs = list(zip(cl[len(cl) - len(boxes):], boxes))
-            for (tv, tout), box in pairs:
-                x0, y0, x1, y1, _a = box
-                appear = None
-                for i in range(1, src_i + 1):
-                    # primer fotograma en que esta línea ya se reconoce como TUYA y nueva, en su sitio
-                    if any(abs(b[1] - y0) <= 4 for b in find_new_lines(before, seq[i], H, len(cl))):
-                        appear = t0 + i / SEQ_FPS - 0.1      # el amarillo llega ~0,1 s después de la línea
-                        break
-                if appear is None:
-                    appear = t0 + best_i / SEQ_FPS
+            for (tv, tout), box, appear in found:
+                known.append((src, box[1], box[3]))
                 png = os.path.join(folder, f"kf_{len(out):03d}.png")
                 ww, hh = save_rgba(src, box, png)
                 sc = OUT_LINE_H / max(1, hh)
