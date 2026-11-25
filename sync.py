@@ -573,6 +573,17 @@ def _supports(x: dict, p: float) -> bool:
     return lo <= d <= hi
 
 
+def _alias_from_halves(r) -> float | None:
+    """Si las dos mitades coinciden entre sí y el pico global está un «eco» (5–8,5 s) DESPUÉS de ellas,
+    devuelve el segundo que señalan las mitades (el bueno)."""
+    h = r.get("halves")
+    if not h or len(h) < 2 or abs(h[0] - h[1]) > 1.0:
+        return None
+    m = round(sum(h) / len(h) * 4) / 4
+    lo, hi = LATE["cartel"]
+    return m if lo <= r["shift"] - m <= hi else None
+
+
 def _decide(results: list):
     pareja = next((r for r in results if r.get("set") == "cartel(pareja)"), None)
     if pareja is not None and pareja["ok"]:
@@ -592,6 +603,19 @@ def _decide(results: list):
         return b
     if pareja is not None and pz >= 4.0 and pareja.get("ratio", 0) >= 1.15 \
             and abs(pareja["shift"]) < SEARCH_S - 2:
+        # ¿el pico es el «eco» (segundo texto / marcador, ~6,75 s después del final de ronda)?
+        # Si las dos mitades de la partida coinciden entre ellas justo un eco ANTES, mandan ellas.
+        m = _alias_from_halves(pareja)
+        if m is not None:
+            sup_m = [x for x in results if x is not pareja and (
+                (x.get("family") in ("killfeed", "aviso") and abs(x["shift"] - m) <= 1.25) or
+                (x.get("family") in LATE and x.get("zpeak", 0) >= 5.0 and
+                 LATE[x["family"]][0] <= x["shift"] - m <= LATE[x["family"]][1]))]
+            if sup_m:
+                out = dict(pareja)
+                out.update(ok=True, conf=0.65, family="acuerdo", shift=float(m),
+                           set="cartel(pareja, mitades; el pico era el eco)+" + "+".join(x["set"] for x in sup_m))
+                return out
         sup = [x for x in results if x is not pareja and _supports(x, pareja["shift"])]
         if sup:
             out = dict(pareja)
