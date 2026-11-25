@@ -14,7 +14,7 @@ import subprocess
 import core
 
 # zona del killfeed en la imagen del directo (fracciones del ancho / alto)
-KF_X, KF_Y, KF_W, KF_H = 0.685, 0.035, 0.31, 0.22
+KF_X, KF_Y, KF_W, KF_H = 0.685, 0.035, 0.31, 0.27
 LINE_H_1080 = 34          # alto de una línea a 1080p
 
 
@@ -122,9 +122,10 @@ def _chevron(pure, yel, w0, w1):
     ym = yel.mean(axis=0)
     n = len(pm)
     best = None
-    for a, b in _segs(pm[w0:w1] >= 0.9):
+    # la raya: amarillo casi de arriba abajo, con buena parte puro (la compresión del directo lo ensucia)
+    for a, b in _segs((ym[w0:w1] >= 0.85) & (pm[w0:w1] >= 0.5)):
         a, b = w0 + a, w0 + b
-        if b - a > 4:
+        if b - a > 5:
             continue
         right = ym[b:min(n, b + 14)]
         left = ym[max(0, a - 8):a]
