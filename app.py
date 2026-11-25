@@ -1213,13 +1213,34 @@ class App(tk.Tk):
 
         def target():
             try:
-                rows = sync.learn_from_manual(vod, m, offset_s, dur)
+                rows, sug = sync.learn_from_manual(vod, m, offset_s, dur)
+                if sug is not None:
+                    self.after(0, lambda: self._manual_suspicious(m, offset_s, sug))
+                    return
                 good = sum(1 for r in rows if r["true"])
                 self.after(0, lambda: self.status(f"Aprendido de tu sincronización de {m.map_name}: "
                                                   f"{good} método(s) lo veían bien. Se ajustará solo."))
             except Exception:
                 pass
         threading.Thread(target=target, daemon=True).start()
+
+    def _manual_suspicious(self, m, offset_s, sug):
+        """Tu sincronización a mano no cuadra con lo que se ve clarísimo en el vídeo: ofrecer corregirla."""
+        if not messagebox.askyesno(
+                APP_NAME, f"En {m.map_name} {m.started_at.astimezone():%d/%m %H:%M} el momento que has puesto a mano "
+                          f"parece {abs(sug):.1f} s {'adelantado' if sug > 0 else 'atrasado'}: los finales de ronda "
+                          f"y el marcador se ven con mucha claridad {sug:+.1f} s respecto a él.\n\n"
+                          "¿Lo corrijo a ese sitio? (Si estás seguro de tu momento, pulsa No y se queda como está.)"):
+            return
+        c = self.calib.get(m.match_id) or {}
+        new = offset_s + sug
+        self.calib[m.match_id] = {"offset_s": new, "auto": True, "conf": 0.9, "approx": False,
+                                  "extra_s": c.get("extra_s", 0.0)}
+        self.persist()
+        self.refresh_matches()
+        if self.clips or self.checked:
+            self.compute()
+        self.status(f"{m.map_name}: corregida {sug:+.1f} s.")
 
     def clear_calib(self):
         m = self.selected_match()

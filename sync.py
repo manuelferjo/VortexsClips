@@ -899,9 +899,17 @@ def learn_file() -> str:
 def _load_learn() -> list:
     try:
         with open(learn_file(), encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
         return []
+    # fuera las partidas en las que NINGÚN método veía bien tu momento y alguno lo veía clarísimo en
+    # otro sitio: casi seguro que esa sincronización a mano estaba desplazada (no enseña nada bueno)
+    by = {}
+    for d in data:
+        by.setdefault(d.get("match"), []).append(d)
+    bad = {m for m, ds in by.items() if not any(d.get("true") for d in ds)
+           and max((d.get("z") or 0) for d in ds) >= 8 and sum(1 for d in ds if d.get("halves_ok")) >= 2}
+    return [d for d in data if d.get("match") not in bad]
 
 
 def learned_thr(mode: str):
@@ -943,12 +951,20 @@ def compute_thresholds(samples: list) -> dict:
 
 
 def learn_from_manual(vod: str, match: core.Match, true_offset_s: float, vod_duration: float = 0.0,
-                      should_stop=None) -> list:
+                      should_stop=None):
     """
     Tras una sincronización a mano: analiza la partida tomando tu momento como el bueno y apunta
-    qué vio cada método ahí (pico bueno) o lejos de ahí (pico falso). Devuelve lo apuntado.
+    qué vio cada método ahí (pico bueno) o lejos de ahí (pico falso). Devuelve (lo apuntado, sugerencia):
+    si NINGÚN método lo ve en tu momento y la detección automática lo ve clarísimo en otro sitio, lo
+    más probable es que el momento elegido a mano esté desplazado: no se aprende nada (aprenderlo
+    estropearía las sincronizaciones automáticas) y se devuelve el desfase sugerido.
     """
     r = sync_match(vod, match, true_offset_s, vod_duration, None, should_stop)
+    if r.ok and not r.approx and r.confidence >= 0.6 and abs(r.shift_s) > 1.5 and not any(
+            abs(x.get("shift", 99)) <= 1.0 and x.get("z", 0) >= 3 for x in (getattr(r, "methods", None) or [])):
+        _log_line(f"NO aprendido de tu sincronización a mano en {match.map_name}: la partida se ve clara "
+                  f"{r.shift_s:+.2f} s respecto a tu momento (conf {r.confidence:.2f})")
+        return [], r.shift_s
     rows = []
     for x in getattr(r, "methods", None) or []:
         if not x.get("mode"):
@@ -967,7 +983,7 @@ def learn_from_manual(vod: str, match: core.Match, true_offset_s: float, vod_dur
             pass
         _log_line(f"aprendido de tu sincronización a mano en {match.map_name}: " +
                   ", ".join(f"{x['set']} {'bien' if x['true'] else 'falso'} z {x['z']:.1f}" for x in rows))
-    return rows
+    return rows, None
 
 
 # ---------------------------------------------------------------- consenso entre partidas
