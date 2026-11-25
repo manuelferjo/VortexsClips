@@ -88,17 +88,22 @@ def own_marker(band, src_h: int = 1080):
 def _marker_at(core_, pure, yel, xt, lh):
     import numpy as np
     # tu marcador es un bloque de amarillo PURO (≈240,244,9) casi de arriba abajo; en las líneas de
-    # compañeros ahí hay su retrato o fondo, nunca ese amarillo (medido: 13–16 columnas frente a 0)
-    w0, w1 = max(0, int(xt - 5.4 * lh)), max(0, int(xt - 3.4 * lh))
+    # compañeros ahí hay su retrato o fondo, nunca ese amarillo (medido: 13–16 columnas frente a 0).
+    # Su distancia a la franja verde depende del agente (algunos retratos y el fondo del nombre no
+    # dan verde): entre ~1,5 y ~5,6 líneas de alto a la izquierda.
+    w0, w1 = max(0, int(xt - 5.6 * lh)), max(0, int(xt - 1.5 * lh))
     if w1 <= w0:
         return None
     full = pure[:, w0:w1].mean(axis=0) >= 0.5
-    if int(full.sum()) < 0.3 * lh:
+    segs = [(w0 + a, w0 + b) for a, b in _segs(full) if 0.3 * lh <= b - a <= 1.3 * lh]
+    if not segs:
         return None
-    for a, b in _segs(yel.mean(axis=0) > 0.15, 2):
-        if 4.4 * lh <= xt - b <= 5.3 * lh and (b - a) <= 1.3 * lh:
-            return a
-    return w0 + int(np.flatnonzero(full)[0])
+    a, b = segs[-1]                          # el más cercano al nombre
+    # que el amarillo empiece donde empieza el marcador (a veces hay un borde algo menos puro)
+    ycols = yel.mean(axis=0) > 0.15
+    while a > 0 and ycols[a - 1] and (b - a) < 1.3 * lh:
+        a -= 1
+    return a
 
 
 def lines(img, src_h: int = 1080):
