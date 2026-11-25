@@ -989,16 +989,38 @@ def estimate_bytes(vod_path: str, seconds: float) -> int:
     return int((min(kbps * 1.25, max(kbps, 6000)) + 192) * 1000 / 8 * seconds)
 
 
-def _group_starts(clips) -> list[float]:
+def _nframes(c, fr: float) -> int:
+    """Fotogramas que ocupa un trozo en el vídeo montado."""
+    return max(1, int(round((c.vod_end - c.vod_start) * fr)))
+
+
+def snap_clips(clips, fr: float) -> None:
+    """Ajusta el final de cada corte para que dure un número exacto de fotogramas: así todo lo que se
+    calcula en segundos (subtítulos, killfeed, clips sueltos) cae justo en el fotograma del vídeo montado."""
+    for c in clips:
+        c.vod_end = c.vod_start + _nframes(c, fr) / fr
+
+
+def _group_starts(clips, fr: float | None = None) -> list[float]:
     """Segundo (dentro de la tanda) en que empieza cada jugada: ahí se fuerza un fotograma clave
-    para poder cortar los clips sueltos después sin volver a codificar."""
-    out, t, prev = [], 0.0, None
+    para poder cortar los clips sueltos después sin volver a codificar. Con fr, contando fotogramas."""
+    out, n, t, prev = [], 0, 0.0, None
     for c in clips:
         if c.group != prev:
-            out.append(t)
+            out.append(n / fr if fr else t)
             prev = c.group
+        n += _nframes(c, fr) if fr else 0
         t += c.vod_end - c.vod_start
     return out
+
+
+def _fps_of(path: str) -> float:
+    try:
+        n, _, d = str(probe_vod(path).get("fps") or "60/1").partition("/")
+        f = float(n) / float(d or 1)
+        return f if 10 <= f <= 240 else 60.0
+    except Exception:
+        return 60.0
 
 
 def _kf_args(times: list[float], venc: list[str]) -> list[str]:
@@ -1006,8 +1028,11 @@ def _kf_args(times: list[float], venc: list[str]) -> list[str]:
     if not ts:
         return []
     args = ["-force_key_frames", ts]
-    if "h264_nvenc" in venc:
+    # que sean IDR (nada de después mira hacia atrás): así cortar copiando empieza limpio en la jugada
+    if "h264_nvenc" in venc or "libx264" in venc:
         args += ["-forced-idr", "1"]
+    if "h264_qsv" in venc:
+        args += ["-idr_interval", "0"]
     return args
 
 
@@ -1052,26 +1077,31 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
     acumulado por muchas rondas que se junten.
     """
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-nostats", "-progress", "pipe:1"]
+    fr = _fps_of(vod_path)
     for c in clips:
         f_, t_ = vod_resolve(vod_path, c.vod_start)
         cmd += ["-ss", f"{t_:.3f}", "-t", f"{c.vod_end - c.vod_start:.3f}", "-i", f_]
     chains, labels = [], []
     for i, c in enumerate(clips):
-        v = f"[{i}:v:0]setpts=PTS-STARTPTS"
+        # cada trozo con un número EXACTO de fotogramas: así se sabe al fotograma dónde empieza cada
+        # jugada en el vídeo montado (para cortar los clips sueltos justo ahí)
+        v = f"[{i}:v:0]setpts=PTS-STARTPTS,fps={fr:.6g}"
         if font:
             v += (f",drawtext=fontfile='{_esc_filter_path(font)}':text='{_esc_text(c.label)}'"
                   ":fontcolor=0xFFD21F:fontsize=h/22:borderw=3:bordercolor=0x1a1a1a"
                   ":x=w/40:y=h/18:enable='lt(t,4)'")
-        v += f",format=yuv420p[v{i}]"
+        v += f",format=yuv420p,tpad=stop_mode=clone:stop=3,trim=end_frame={_nframes(c, fr)},setpts=PTS-STARTPTS[v{i}]"
         chains.append(v)
         labels.append(f"[v{i}]")
         if audio:
-            dur = c.vod_end - c.vod_start
+            dur = _nframes(c, fr) / fr
             chains.append(f"[{i}:a:0]asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,"
                           f"apad,atrim=0:{dur:.3f}[a{i}]")
             labels.append(f"[a{i}]")
     n = len(clips)
-    kfa = _kf_args(_group_starts(clips), venc)
+    # el fotograma clave, un fotograma DESPUÉS del inicio de cada jugada: con el redondeo a fotogramas
+    # podría caer en el último de la anterior y el clip suelto empezaría con un destello del anterior
+    kfa = _kf_args([max(0.0, x - 0.5 / fr) for x in _group_starts(clips, fr)], venc)
     if vonly:
         # solo la vertical (p. ej. al corregir los subtítulos): una codificación desde el original
         chains.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[vc]" + ("[a]" if audio else ""))
@@ -1171,7 +1201,7 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
     vkey = (vout_path is not None, cam, words, highlight, vertical_only,
             [(round(k["start"], 2), round(k["end"], 2), k["png"]) for k in (kf_lines or [])])
     sig = _hash(os.path.abspath(vod_path), [(round(c.vod_start, 3), round(c.vod_end, 3)) for c in clips],
-                venc, bool(font), audio, vkey, 2)
+                venc, bool(font), audio, vkey, 3)
     outs_ok = _sig_get(out_path) == sig and _dur_ok(out_path, total_s, 1.5)
     if vout_path:
         outs_ok = outs_ok and _sig_get(vout_path) == sig and _dur_ok(vout_path, total_s, 1.5)
@@ -1204,7 +1234,7 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
         parts, vparts, done = [], [], 0.0
         for bi, b in enumerate(batches):
             key = ("|".join(f"{c.vod_start:.3f}-{c.vod_end:.3f}" for c in b) +
-                   f"|{venc}|{bool(font)}|{audio}|{_hash(vkey, done)}")
+                   f"|{venc}|{bool(font)}|{audio}|{_hash(vkey, done)}|f3")
             h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
             part = os.path.join(tmp, f"part_{bi:03d}_{h}.mp4")
             vpart = os.path.join(tmp, f"vert_{bi:03d}_{h}.mp4") if vout_path else None
@@ -1466,14 +1496,54 @@ def clip_folder(r: Round) -> str:
     return "Clutch"
 
 
-def _copy_cut(ffmpeg, src: str, t: float, d: float, out: str, should_stop=None) -> None:
-    """Corte SIN volver a codificar (copia directa). El vídeo tiene un fotograma clave forzado al
-    principio de cada jugada, así que el corte cae justo ahí."""
-    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t + 0.02:.3f}", "-t", f"{max(0.5, d - 0.06):.3f}",
-           "-i", src, "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-avoid_negative_ts", "make_zero",
-           "-movflags", "+faststart", out]
+_KF_CACHE: dict = {}
+
+
+def _keyframes(src: str) -> list[float]:
+    """Momentos (s) de los fotogramas clave del vídeo, leyendo solo el índice (rápido)."""
+    key = (os.path.abspath(src), os.path.getmtime(src))
+    if key not in _KF_CACHE:
+        ffprobe = find_tool("ffprobe")
+        r = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,flags",
+                            "-of", "csv=p=0", src], capture_output=True, text=True, **_no_window())
+        ks = []
+        for line in r.stdout.splitlines():
+            p = line.split(",")
+            if len(p) >= 2 and "K" in p[1]:
+                try:
+                    ks.append(float(p[0]))
+                except ValueError:
+                    pass
+        _KF_CACHE[key] = sorted(ks)
+    return _KF_CACHE[key]
+
+
+def _copy_cut(ffmpeg, src: str, t: float, d: float, out: str, should_stop=None, encoder: str = "x264") -> None:
+    """
+    Corte SIN volver a codificar (copia directa), justo en el fotograma clave forzado al principio de
+    cada jugada. Copiando, ffmpeg solo puede empezar en un fotograma clave: si el corte no cae
+    exactamente en el bueno, empezaría en el anterior (con un trozo del clip de antes). Por eso se
+    busca el fotograma clave real (el vídeo puede empezar unas centésimas desplazado por el audio) y,
+    si no lo hay, ese clip se corta volviendo a codificar (exacto, algo más lento).
+    """
     if should_stop and should_stop():
         raise RuntimeError("Cancelado.")
+    ks = _keyframes(src) if os.path.isfile(src) else []
+    v0 = ks[0] if ks else 0.0                     # dónde empieza de verdad el vídeo
+    target = t + v0
+    k = min(ks, key=lambda x: abs(x - target)) if ks else None
+    fr = _fps_of(src)
+    if k is not None and -0.5 / fr <= k - target <= 0.1:
+        # hasta unos fotogramas antes de la jugada siguiente: copiando, el fotograma clave con que empieza
+        # la siguiente se colaría al final (va antes en el orden de decodificación que los B de delante)
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{k + 0.002:.3f}",
+               "-t", f"{max(0.5, target + d - k - 5.0 / fr):.3f}",
+               "-i", src, "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-avoid_negative_ts", "make_zero",
+               "-movflags", "+faststart", out]
+    else:
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
+               "-i", src, "-map", "0:v:0", "-map", "0:a?", *_venc(encoder),
+               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out]
     r = subprocess.run(cmd, capture_output=True, text=True, **_no_window())
     if r.returncode != 0:
         raise RuntimeError("ffmpeg falló al cortar un clip:\n" + r.stderr[-500:])
@@ -1493,8 +1563,10 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
     os.makedirs(folder, exist_ok=True)
     # agrupar los trozos de una misma ronda (modo solo kills) en un único clip
     groups: list[tuple[Clip, float]] = []
+    fr_ = _fps_of(src) if copy_mode else None
     for c in clips:
-        d = c.vod_end - c.vod_start
+        # en el vídeo montado cada trozo ocupa un número exacto de fotogramas
+        d = _nframes(c, fr_) / fr_ if fr_ else c.vod_end - c.vod_start
         if groups and groups[-1][0].group == c.group:
             groups[-1] = (groups[-1][0], groups[-1][1] + d)
         else:
@@ -1519,7 +1591,7 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
             return same and _dur_ok(p, d, 0.6)
         if not reuse(h):
             if copy_mode:
-                _copy_cut(ffmpeg, src, t, d, h + ".tmp.mp4", should_stop)
+                _copy_cut(ffmpeg, src, t, d, h + ".tmp.mp4", should_stop, encoder)
             else:
                 cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}",
                        "-i", src, "-map", "0:v:0", "-map", "0:a?", *_venc(encoder),
@@ -1532,7 +1604,7 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
             v = os.path.join(sub, name + " (vertical).mp4")
             if not reuse(v):
                 if copy_mode and vsrc:
-                    _copy_cut(ffmpeg, vsrc, t, d, v + ".tmp.mp4", should_stop)
+                    _copy_cut(ffmpeg, vsrc, t, d, v + ".tmp.mp4", should_stop, encoder)
                 else:
                     make_vertical(src, v + ".tmp.mp4", vertical_cam, encoder, None, should_stop, start=t, dur=d,
                                   words=None if srt else words, highlight=highlight)

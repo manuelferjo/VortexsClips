@@ -2701,6 +2701,10 @@ class App(tk.Tk):
         self.persist()
         self.clips = core.build_clips(ms, vs, self.vod_info["duration"], self.settings(), self.calib,
                                       self.delay_fn_for_vod())
+        try:                    # cada corte con un número exacto de fotogramas (clips sueltos exactos)
+            core.snap_clips(self.clips, core._fps_of(self.v_vod.get()))
+        except Exception:
+            pass
         self.fill_clips()
         total = sum(c.vod_end - c.vod_start for c in self.clips)
         self.status(f"{len(self.clips)} rondas · {core.fmt_ts(total).split('.')[0]} de vídeo. "
