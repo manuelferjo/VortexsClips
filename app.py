@@ -23,6 +23,7 @@ import sync
 import tempfile
 import updater
 import killfeed
+import drive
 import semana
 import ui
 
@@ -327,6 +328,8 @@ class App(tk.Tk):
         self.v_cutshift = tk.StringVar(value=f"{float(cfg.get('cut_shift', 0.0)):.1f}")
         self.v_kfeed = tk.BooleanVar(value=cfg.get("killfeed_vertical", True))
         self.v_capcut = tk.BooleanVar(value=cfg.get("capcut_subs", False))
+        self.v_drive_link = tk.StringVar(value=cfg.get("drive_link", drive.DEFAULT_LINK))
+        self.v_drive_sub = tk.StringVar(value=cfg.get("drive_sub", drive.DEFAULT_SUB))
         self.v_topweek = tk.BooleanVar(value=cfg.get("top_week", True))
         self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
         self.v_autodel = tk.BooleanVar(value=cfg.get("auto_delete_vod", True))
@@ -480,8 +483,26 @@ class App(tk.Tk):
                   variable=self.v_topweek).pack(side="left")
         ui.Button(tw_, text="Hacer el top ahora…", command=self.top_week_now).pack(side="left", padx=10)
         ttk.Separator(t_auto).grid(row=7, column=0, columnspan=4, sticky="we", pady=8)
+        # Google Drive: la carpeta del directo se sube tal cual a <enlace>/<subcarpeta>/<dd-mm-aaaa>/
+        df_ = ttk.Frame(t_auto, style="Panel.TFrame")
+        df_.grid(row=8, column=0, columnspan=4, sticky="we")
+        ttk.Label(df_, text="Google Drive: carpeta").grid(row=0, column=0, sticky="w")
+        ttk.Entry(df_, textvariable=self.v_drive_link, width=46).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(df_, text="dentro de").grid(row=0, column=2, sticky="w", padx=(6, 0))
+        ttk.Entry(df_, textvariable=self.v_drive_sub, width=16).grid(row=0, column=3, sticky="w", padx=6)
+        dfb = ttk.Frame(df_, style="Panel.TFrame")
+        dfb.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        self.btn_drive_conn = ui.Button(dfb, text="Conectar con Google Drive", command=self.drive_connect)
+        self.btn_drive_conn.pack(side="left")
+        self.lbl_drive = ttk.Label(dfb, text="", style="Muted.TLabel")
+        self.lbl_drive.pack(side="left", padx=10)
+        ttk.Label(df_, text="Se sube con el botón «Subir a Drive» de abajo (siempre te pide confirmación), en una "
+                            "carpeta con la fecha del directo.", style="Muted.TLabel").grid(
+            row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        self._drive_status()
+        ttk.Separator(t_auto).grid(row=9, column=0, columnspan=4, sticky="we", pady=8)
         sf = ttk.Frame(t_auto, style="Panel.TFrame")
-        sf.grid(row=8, column=0, columnspan=4, sticky="w")
+        sf.grid(row=10, column=0, columnspan=4, sticky="w")
         ttk.Label(sf, text="Usar en otro PC:").pack(side="left")
         ui.Button(sf, text="Exportar ajustes", command=self.export_settings).pack(side="left", padx=6)
         ui.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
@@ -602,6 +623,8 @@ class App(tk.Tk):
         self.btn_subs = ui.Button(row, text="Corregir subtítulos…", style="Ghost.TButton",
                                    command=self.fix_subtitles_later)
         self.btn_subs.pack(side="right")
+        self.btn_drive = ui.Button(row, text="Subir a Drive", style="Ghost.TButton", command=self.drive_upload_last)
+        self.btn_drive.pack(side="right", padx=(0, 4))
 
     def big_preview(self):
         """La vista previa en una ventana grande (se puede agrandar o maximizar)."""
@@ -878,6 +901,7 @@ class App(tk.Tk):
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
                          "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset(),
                          "top_week": self.v_topweek.get(), "capcut_subs": self.v_capcut.get(), "killfeed_vertical": self.v_kfeed.get(),
+                         "drive_link": self.v_drive_link.get().strip(), "drive_sub": self.v_drive_sub.get().strip(),
                          "cut_shift": self.settings().cut_shift_s})
         try:
             save_cfg(self.cfg)
@@ -1348,6 +1372,10 @@ class App(tk.Tk):
         self.btn_dl.configure(state="disabled" if running else "normal")
         self.btn_cancel.configure(state="normal" if running else "disabled")
         self.btn_subs.configure(state="disabled" if running else "normal")
+        try:
+            self.btn_drive.configure(state="disabled" if running else "normal")
+        except AttributeError:
+            pass
 
     # ------------------------------------------------------------ cola de VODs
     def download_vod(self):
@@ -2867,7 +2895,12 @@ class App(tk.Tk):
                         semana.record(folder, self.vod_start_utc())
                     except Exception:
                         pass
+                try:
+                    sdate = self.vod_start_utc().strftime("%d-%m-%Y")
+                except Exception:
+                    sdate = datetime.now().strftime("%d-%m-%Y")
                 proj = {"vod": vod, "clips": clips, "out": out, "vertical": v, "cam": cam, "words": words,
+                        "date": sdate,
                         "capcut": capcut, "kf_lines": kf_lines,
                         "highlight": sub_hl, "encoder": enc, "singles": folder}
                 self.save_project(proj)
@@ -3001,6 +3034,103 @@ class App(tk.Tk):
             self.finish_steps("Subtítulos actualizados" if changed else "Sin cambios")
             self.status(proj["vertical"] if changed else "No cambiaste nada: la vertical se queda igual.")
         self.run_bg(work, done, "No se pudieron corregir los subtítulos")
+
+    # ------------------------------------------------------------ Google Drive
+    def _drive_status(self):
+        ok = drive.is_connected()
+        try:
+            self.lbl_drive.configure(text="✔ Conectado" if ok else "Sin conectar: se abre el navegador para "
+                                                                  "iniciar sesión en Google (solo la primera vez)")
+            self.btn_drive_conn.configure(text="Cambiar de cuenta" if ok else "Conectar con Google Drive")
+        except AttributeError:
+            pass
+
+    def drive_connect(self):
+        if self.busy:
+            return
+        if drive.is_connected() and not messagebox.askyesno(
+                APP_NAME, "Ya está conectado con Google Drive. ¿Conectar otra cuenta?"):
+            return
+        self.set_step(None, "Conectando con Google Drive…")
+        self.set_progress(0, "Inicia sesión en Google en la ventana del navegador que se abre…")
+        cb = self.progress_cb()
+
+        def work():
+            drive.ensure_rclone(cb)
+            cb(0, "Inicia sesión en Google en la ventana del navegador que se abre y pulsa «Permitir»…")
+            drive.connect()
+            return True
+
+        def done(_r):
+            self.finish_steps("Google Drive conectado")
+            self._drive_status()
+        self.run_bg(work, done, "No se pudo conectar con Google Drive")
+
+    def drive_upload_last(self, auto=False):
+        """Sube la carpeta del último vídeo generado a Drive, en <subcarpeta>/<fecha del directo>/."""
+        if self.busy:
+            if auto:
+                self.after(3000, lambda: self.drive_upload_last(auto=True))
+            return
+        proj = self.load_project()
+        folder = os.path.dirname(os.path.abspath(proj["out"])) if proj and proj.get("out") else None
+        if not folder or not os.path.isdir(folder):
+            if not auto:
+                messagebox.showinfo(APP_NAME, "Todavía no hay vídeos generados para subir.")
+            return
+        if not drive.is_connected():
+            if auto:
+                self.status("No se subió a Drive: falta conectar la cuenta (pestaña Automático).")
+                return
+            if not messagebox.askyesno(APP_NAME, "Para subir a Drive primero hay que conectar tu cuenta de Google "
+                                                 "(se abre el navegador para iniciar sesión, solo la primera vez)."
+                                                 "\n\n¿Conectar ahora?"):
+                return
+            self.drive_connect()
+            return
+        try:
+            drive.folder_id(self.v_drive_link.get())
+        except ValueError as e:
+            messagebox.showwarning(APP_NAME, f"{e}\n\nPega el enlace de la carpeta en la pestaña Automático.")
+            return
+        date_txt = proj.get("date") or datetime.fromtimestamp(os.path.getmtime(proj["out"])).strftime("%d-%m-%Y")
+        sub = self.v_drive_sub.get().strip()
+        n_files, n_bytes = 0, 0
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs if "en curso)" not in d]
+            for fn in files:
+                if fn.endswith((".tmp.mp4", ".part", ".pkl")):
+                    continue
+                n_files += 1
+                try:
+                    n_bytes += os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    pass
+        if not auto and not messagebox.askyesno(
+                APP_NAME, f"¿Subir a Google Drive los vídeos del último directo?\n\nCarpeta: {os.path.basename(folder)}\n"
+                          f"{n_files} archivos · {n_bytes / 2**30:.1f} GB\n\nSe guardan en Drive en:\n"
+                          f"{(sub + ' / ') if sub else ''}{date_txt} /\n\nRevisa antes que los vídeos estén bien: "
+                          f"lo que subas queda en la carpeta compartida."):
+            return
+        self.persist()
+        self.stop_flag = False
+        self.set_running(True)
+        self.set_step(None, "Subiendo a Google Drive…")
+        cb = self.progress_cb()
+        link = self.v_drive_link.get()
+
+        def work():
+            try:
+                return drive.upload(folder, date_txt, link, sub, cb, lambda: self.stop_flag)
+            finally:
+                self.after(0, lambda: self.set_running(False))
+
+        def done(dst):
+            self.finish_steps("Subido a Google Drive")
+            self.status(f"Subido a Drive: {dst}")
+            if not auto and not self.unattended():
+                messagebox.showinfo(APP_NAME, f"¡Subido a Google Drive!\n\n{dst}")
+        self.run_bg(work, done, "No se pudo subir a Google Drive")
 
     def cancel(self):
         self.stop_flag = True
@@ -3255,6 +3385,21 @@ def selftest(out_path):
         srts_ = subtitles.write_srt(words, os.path.join(tmp, "capcut"))
         ok_srt = len(srts_) == 3 and "00:00:00,500 --> " in open(srts_[1], encoding="utf-8-sig").read()
         log(ok_srt, "subtítulos para CapCut (.srt con y sin colores + palabras clave)")
+        # Google Drive: enlace, permiso de rclone (en los dos formatos) y el programa de subida
+        try:
+            import base64
+            tok = {"access_token": "x", "token_type": "Bearer", "refresh_token": "y", "expiry": "2030-01-01T00:00:00Z"}
+            old = "Paste the following into your remote machine --->\n" + json.dumps(tok) + "\n<---End paste"
+            new = "Paste the following into your remote machine --->\n" + base64.b64encode(
+                json.dumps({"token": json.dumps(tok)}).encode()).decode() + "\n<---End paste"
+            ok_d = drive.folder_id(drive.DEFAULT_LINK) == "1RoEymSQfnisgH6HiiMfK5AeAjw-q2dbZ" and \
+                drive._parse_token(old) == tok and drive._parse_token(new) == tok and \
+                drive.dest_path("Vortexs Clips", "25-11-2026") == "vcdrive:Vortexs Clips/25-11-2026"
+            exe = drive.ensure_rclone()
+            ver = subprocess.run([exe, "version"], capture_output=True, text=True, timeout=60).stdout
+            log(ok_d and "rclone v" in ver, f"Google Drive (enlace, permiso y {ver.splitlines()[0] if ver else 'rclone'})")
+        except Exception as e:
+            log(False, f"Google Drive: {e}")
         kpng = os.path.join(tmp, "kf.png")
         subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                         "color=c=0x3ec1a5@1.0:s=420x36,format=rgba", "-frames:v", "1", kpng], check=True,
