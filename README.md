@@ -131,6 +131,9 @@ Arriba verás un **resumen**: partidas dentro del VOD, cuántas están sincroniz
 | **Por hora** | Sin sincronizar: usa la hora + el desfase (en «solo kills» deja margen extra para no perder la jugada). |
 
 ### Tarjeta 4 · Rondas y vista previa
+
+La vista previa se ajusta al espacio que haya. **Ampliar ↗** la abre en una ventana grande que puedes agrandar o maximizar. Si la ventana del programa es pequeña, las tarjetas se colocan una debajo de otra y aparece una barra para desplazarte.
+
 | Botón | Qué hace |
 |---|---|
 | **Calcular rondas** | Lista de jugadas que se van a cortar, con su minuto en el VOD. |

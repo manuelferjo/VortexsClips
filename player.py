@@ -69,7 +69,7 @@ class Player(ttk.Frame):
             ttk.Button(bar, text="✔ Usar este momento", style="Accent.TButton",
                        command=lambda: on_pick(self.pos)).pack(side="right")
         if on_expand:
-            ttk.Button(bar, text="⤢ Ampliar", command=on_expand).pack(side="right")
+            ttk.Button(bar, text="Ampliar ↗", command=on_expand).pack(side="right")
         self.lbl_range = ttk.Label(bar, text="", style="Muted.TLabel")
         self.lbl_range.pack(side="right", padx=8)
 
