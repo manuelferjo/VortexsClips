@@ -209,19 +209,22 @@ def parse_whisper_json(data: dict) -> list[dict]:
 def fix_timing(words: list[dict]) -> list[dict]:
     """
     Corrige los desfases típicos del transcriptor:
-    - tras una pausa, la palabra «empieza» al final de la pausa anterior (el texto salía antes de
-      decirlo): si dura más de lo normal, se recorta por el principio (el final es lo fiable);
+    - con alineación (DTW) el INICIO es fiable pero el final no: cada palabra dura hasta la siguiente,
+      con tope (así no se queda una palabra suelta 0,1 s en pantalla ni se mete en un silencio);
+    - sin alineación, tras una pausa la palabra «empieza» al final de la pausa anterior (el texto
+      salía antes de decirlo): si dura más de lo normal, se recorta por el principio;
     - tiempos que se solapan o van hacia atrás.
     """
-    out = []
-    for w in sorted(words, key=lambda x: x["start"]):
-        w = dict(w)
+    ws = sorted((dict(w) for w in words), key=lambda x: x["start"])
+    for i, w in enumerate(ws):
         dtw = w.pop("_dtw", False)
-        if w["end"] - w["start"] > MAX_WORD_S:
-            if dtw:                       # inicio fiable (alineado con la voz): se recorta el final
-                w["end"] = w["start"] + MAX_WORD_S
-            else:                         # sin alineación: lo fiable suele ser el final
-                w["start"] = w["end"] - MAX_WORD_S
+        nxt = ws[i + 1]["start"] if i + 1 < len(ws) else None
+        if dtw:
+            w["end"] = min(nxt, w["start"] + MAX_WORD_S) if nxt is not None else w["start"] + 0.6
+        elif w["end"] - w["start"] > MAX_WORD_S:
+            w["start"] = w["end"] - MAX_WORD_S
+    out = []
+    for w in ws:
         if out and w["start"] < out[-1]["start"] + 0.02:
             w["start"] = out[-1]["start"] + 0.02
         if out and out[-1]["end"] > w["start"]:
