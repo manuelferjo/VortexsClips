@@ -1878,7 +1878,7 @@ class App(tk.Tk):
         def load(_e=None):
             s_ = sel()
             if s_:
-                v_txt.set(ws[s_[0]]["text"])
+                v_txt.set(" ".join(ws[i]["text"] for i in s_) if len(s_) > 1 else ws[s_[0]]["text"])
                 ent.focus_set()
                 ent.select_range(0, "end")
 
@@ -1890,7 +1890,15 @@ class App(tk.Tk):
             if not t:
                 delete()
                 return
-            ws[s_[0]]["text"] = t
+            if len(s_) > 1:
+                # varias seleccionadas: se juntan en una (p. ej. «tres kills» mal partido o mal oído)
+                first = ws[s_[0]]
+                first["text"] = t
+                first["end"] = max(ws[i]["end"] for i in s_)
+                for i in reversed(s_[1:]):
+                    del ws[i]
+            else:
+                ws[s_[0]]["text"] = t
             fill([str(s_[0])])
 
         def delete():
@@ -1919,9 +1927,89 @@ class App(tk.Tk):
         ttk.Button(cl, text="Morado", command=lambda: set_color("p")).pack(side="left", padx=4)
         ttk.Button(cl, text="Sin color", command=lambda: set_color("none")).pack(side="left", padx=4)
         ttk.Button(cl, text="Automático", command=lambda: set_color("auto")).pack(side="left", padx=4)
+        sl = ttk.Frame(dlg, style="Panel.TFrame")
+        sl.pack(fill="x", padx=12, pady=(6, 0))
+        ttk.Label(sl, text="Seleccionar:").pack(side="left")
+
+        def select_phrase():
+            """Toda la frase (lo que sale junto en pantalla) de las palabras seleccionadas."""
+            s_ = sel()
+            if not s_:
+                return
+            want = set()
+            for a_, b_, _it in subtitles.chunk_words_rich(ws, highlight=highlight):
+                idx = [i for i, w in enumerate(ws) if a_ - 0.001 <= w["start"] < b_ - 0.001]
+                if any(i in idx for i in s_):
+                    want.update(idx)
+            want.update(s_)
+            tv.selection_set([str(i) for i in sorted(want)])
+
+        def select_all(_e=None):
+            tv.selection_set(tv.get_children())
+            return "break"
+
+        def select_none():
+            tv.selection_set([])
+
+        ttk.Button(sl, text="Toda la frase", command=select_phrase).pack(side="left", padx=4)
+        ttk.Button(sl, text="Todo (Ctrl+A)", command=select_all).pack(side="left", padx=4)
+        ttk.Button(sl, text="Ninguna", command=select_none).pack(side="left", padx=4)
+        lbl_n = ttk.Label(sl, text="", style="Muted.TLabel")
+        lbl_n.pack(side="left", padx=10)
+        ttk.Label(dlg, text="Varias a la vez: arrastra con el ratón, o Ctrl+clic / Mayús+clic.  Clic derecho: "
+                            "menú.  Teclas: Supr borrar · A amarillo · M morado · S sin color · Z automático.",
+                  style="Muted.TLabel").pack(anchor="w", padx=12, pady=(4, 0))
+
+        def count(_e=None):
+            n_ = len(tv.selection())
+            lbl_n.configure(text=f"{n_} seleccionadas" if n_ > 1 else "")
+
+        # arrastrar para seleccionar varias
+        drag = {"a": None}
+
+        def press(e):
+            r_ = tv.identify_row(e.y)
+            drag["a"] = r_ if r_ and not (e.state & 0x0005) else None   # sin Ctrl/Mayús
+
+        def motion(e):
+            r_ = tv.identify_row(e.y)
+            if drag["a"] and r_:
+                a_, b_ = sorted((int(drag["a"]), int(r_)))
+                tv.selection_set([str(i) for i in range(a_, b_ + 1)])
+                tv.see(r_)
+
+        tv.bind("<ButtonPress-1>", press, add="+")
+        tv.bind("<B1-Motion>", motion)
+        tv.bind("<Control-a>", select_all)
+        tv.bind("<Control-A>", select_all)
+        for key_, hl_ in (("a", "y"), ("m", "p"), ("s", "none"), ("z", "auto")):
+            tv.bind(f"<KeyPress-{key_}>", lambda e, h=hl_: set_color(h))
+            tv.bind(f"<KeyPress-{key_.upper()}>", lambda e, h=hl_: set_color(h))
+        menu = tk.Menu(dlg, tearoff=0)
+        menu.add_command(label="Amarillo", command=lambda: set_color("y"))
+        menu.add_command(label="Morado", command=lambda: set_color("p"))
+        menu.add_command(label="Sin color", command=lambda: set_color("none"))
+        menu.add_command(label="Automático", command=lambda: set_color("auto"))
+        menu.add_separator()
+        menu.add_command(label="Seleccionar toda la frase", command=select_phrase)
+        menu.add_command(label="Corregir / juntar en una…", command=lambda: load())
+        menu.add_separator()
+        menu.add_command(label="Borrar", command=delete)
+
+        def popup(e):
+            r_ = tv.identify_row(e.y)
+            if r_ and r_ not in tv.selection():
+                tv.selection_set([r_])
+            try:
+                menu.tk_popup(e.x_root, e.y_root)
+            finally:
+                menu.grab_release()
+
+        tv.bind("<Button-3>", popup)
         def jump(_e=None):
             s_ = sel()
-            if pl and s_ and not pl.playing:
+            count()
+            if pl and len(s_) == 1 and not pl.playing:
                 pl.seek(max(0.0, ws[s_[0]]["start"] - 0.05))
 
         def listen():
@@ -1933,6 +2021,8 @@ class App(tk.Tk):
         if pl:
             ttk.Button(ed, text="▶ Escuchar desde aquí", command=listen).pack(side="left", padx=(12, 0))
             tv.bind("<<TreeviewSelect>>", jump)
+        else:
+            tv.bind("<<TreeviewSelect>>", count)
         tv.bind("<Double-1>", load)
         tv.bind("<Delete>", lambda e: delete())
         ent.bind("<Return>", apply_text)
@@ -1958,7 +2048,8 @@ class App(tk.Tk):
         fill()
         # para la prueba automática
         dlg._api = {"tv": tv, "words": ws, "set_color": set_color, "delete": delete, "text": v_txt,
-                    "apply": apply_text, "finish": finish, "player": pl, "overlay": ov, "on_time": on_time}
+                    "apply": apply_text, "finish": finish, "player": pl, "overlay": ov, "on_time": on_time,
+                    "select_phrase": select_phrase, "select_all": select_all}
         if pl:
             pl.seek(ws[0]["start"] if ws else 0.0)
         return dlg
@@ -2771,6 +2862,24 @@ def selftest(out_path):
         api2["on_time"](words[0]["start"] + 0.06)
         api2["finish"](api2["words"])
         log(ok_ov and got2 and got2[0][0]["text"] == "VAMOS", "editor de subtítulos viendo el vídeo")
+        got3 = []
+        dlg3 = app.edit_subtitles(words, got3.append)
+        api3 = dlg3._api
+        api3["tv"].selection_set(["0"])
+        api3["select_phrase"]()
+        n_phrase = len(api3["tv"].selection())
+        api3["select_all"]()
+        api3["set_color"]("y")
+        all_y = all(w.get("hl") == "y" for w in api3["words"])
+        api3["tv"].selection_set(["0", "1"])
+        api3["text"].set("vale mira")
+        api3["apply"]()
+        merged = len(api3["words"]) == 3 and api3["words"][0]["text"] == "vale mira"
+        api3["tv"].selection_set(["1", "2"])
+        api3["delete"]()
+        api3["finish"](api3["words"])
+        log(n_phrase >= 2 and all_y and merged and got3 and len(got3[0]) == 1,
+            f"subtítulos: varias a la vez (frase={n_phrase}, color={all_y}, juntar={merged})")
         # revisión rápida de la sincro
         rtmp = tempfile.mkdtemp(prefix="vc_rev_")
         a_png, b_png = os.path.join(rtmp, "a.png"), os.path.join(rtmp, "b.png")
