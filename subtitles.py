@@ -138,12 +138,15 @@ def transcribe(video: str, progress=None, should_stop=None) -> list[dict]:
             raise RuntimeError("El transcriptor falló:\n" + "".join(out_tail)[-400:])
         with open(jpath, encoding="utf-8", errors="replace") as f:
             data = json.load(f)
+        global LAST_RAW
+        LAST_RAW = data
         return parse_whisper_json(data)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 LAST_MODE = ""
+LAST_RAW: dict = {}
 DTW_PRESET = "small"          # el modelo es «small» (cuantizado q5_1)
 MAX_WORD_S = 0.9              # una palabra hablada casi nunca dura más
 MIN_WORD_S = 0.12

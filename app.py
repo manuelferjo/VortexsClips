@@ -2819,6 +2819,11 @@ def selftest_subs(wav, out_path):
         res = ("OK  " if ok else "FAIL") + f" transcripción ({len(ws)} palabras, modo «{subtitles.LAST_MODE}», " \
               f"en orden={mono}, dentro={inside}, primera a {ws[0]['start'] if ws else -1:.2f} s): {txt[:200]}\n"
         res += "\n".join(f"  {w['start']:6.2f}-{w['end']:6.2f} {w['text']}" for w in ws[:40])
+        res += "\nEN BRUTO (from-to | tokens texto@t_dtw):"
+        for sg in (subtitles.LAST_RAW.get("transcription") or [])[:40]:
+            o_ = sg.get("offsets") or {}
+            tk_ = " ".join(f"{(t.get('text') or '').strip()}@{t.get('t_dtw')}" for t in sg.get("tokens") or [])
+            res += f"\n  {o_.get('from')}-{o_.get('to')} | {tk_}"
     except Exception:
         ok, res = False, "FAIL " + traceback.format_exc()
     with open(out_path, "w", encoding="utf-8") as f:
