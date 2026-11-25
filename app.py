@@ -21,24 +21,27 @@ import time
 import sync
 import tempfile
 import updater
+import ui
+
+ui.load_fonts()      # las fuentes de Vortexs Live, antes de crear ninguna ventana
 from version import VERSION
 
 APP_NAME = "Vortexs Clips"
 CFG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "VortexsClips")
 CFG_FILE = os.path.join(CFG_DIR, "config.json")
 
-# Colores del canal
-BG = "#0b0a0f"
-PANEL = "#16131c"
-FIELD = "#211c29"
-TEXT = "#f2eef8"
-MUTED = "#958ca3"
-YELLOW = "#ffd21f"
-PURPLE = "#c7a6ff"
-BORDER = "#252030"        # borde fino de tarjetas y campos
-HOVER = "#2d2738"
-ROW_ALT = "#1b1722"       # filas alternas de las tablas
-DARK = "#111"
+# Colores: los mismos que Vortexs Live (ver ui.py)
+BG = ui.BG
+PANEL = ui.SURFACE
+FIELD = ui.ELEVATED
+TEXT = ui.TEXT
+MUTED = "#9a9aa6"
+YELLOW = ui.YELLOW
+PURPLE = ui.VIOLET
+BORDER = ui.BORDER
+HOVER = ui.HOVER
+ROW_ALT = "#14141a"       # filas alternas de las tablas
+DARK = "#0b0a10"
 
 REGIONS = ["eu", "na", "ap", "kr", "latam", "br"]
 ENCODERS = {"Automático (tu gráfica si se puede)": "auto",
@@ -49,7 +52,7 @@ ENCODERS = {"Automático (tu gráfica si se puede)": "auto",
 
 
 # colores de la tabla de partidas según cómo de fiable es su sincronización
-SYNC_COLORS = {"s_ok": "#7ee081", "s_approx": YELLOW, "s_hora": "#ff9f43", "s_fail": "#ff6b6b"}
+SYNC_COLORS = {"s_ok": ui.GREEN, "s_approx": YELLOW, "s_hora": "#ff9f43", "s_fail": ui.RED}
 
 
 def sync_tag(c: dict) -> str:
@@ -119,6 +122,7 @@ class App(tk.Tk):
 
         self._style()
         self._build()
+        ui.keep_cards_in_sync(self)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(1500, lambda: self.check_update(silent=True))
         self.load_delay()
@@ -139,144 +143,56 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ estilo
     def _style(self):
-        s = ttk.Style(self)
-        s.theme_use("clam")
-        base_font = ("Segoe UI", 10)
-        s.configure(".", background=BG, foreground=TEXT, fieldbackground=FIELD, bordercolor=BORDER,
-                    lightcolor=BORDER, darkcolor=BORDER, troughcolor=PANEL, focuscolor=YELLOW, font=base_font)
-        # tarjetas
-        s.configure("Panel.TFrame", background=PANEL)
-        s.configure("Card.TFrame", background=PANEL, borderwidth=1, relief="solid", bordercolor=BORDER,
-                    lightcolor=BORDER, darkcolor=BORDER)
-        s.configure("Head.TFrame", background=BG)
-        # textos
-        s.configure("TLabel", background=PANEL, foreground=TEXT)
-        s.configure("Muted.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9))
-        s.configure("Title.TLabel", background=BG, foreground=YELLOW, font=("Segoe UI Black", 22))
-        s.configure("Sub.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 10))
-        s.configure("Ver.TLabel", background=BG, foreground=PURPLE, font=("Segoe UI Semibold", 9),
-                    padding=(10, 3))
-        s.configure("H.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI Semibold", 12))
-        s.configure("HSub.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9))
-        s.configure("Badge.TLabel", background=YELLOW, foreground=DARK, font=("Segoe UI Black", 10),
-                    padding=(8, 1), anchor="center")
-        s.configure("Status.TLabel", background=BG, foreground=MUTED)
-        # campos
-        for w in ("TEntry", "TCombobox", "TSpinbox"):
-            s.configure(w, fieldbackground=FIELD, foreground=TEXT, insertcolor=YELLOW, bordercolor=BORDER,
-                        lightcolor=FIELD, darkcolor=FIELD, padding=(8, 5), arrowcolor=YELLOW,
-                        background=FIELD, selectbackground="#4a3d66", selectforeground=TEXT)
-            s.map(w, bordercolor=[("focus", YELLOW), ("hover", "#4a4258")],
-                  lightcolor=[("focus", YELLOW)], fieldbackground=[("readonly", FIELD), ("disabled", PANEL)],
-                  foreground=[("readonly", TEXT), ("disabled", MUTED)])
-        self.option_add("*TCombobox*Listbox.background", FIELD)
-        self.option_add("*TCombobox*Listbox.foreground", TEXT)
-        self.option_add("*TCombobox*Listbox.selectBackground", "#4a3d66")
-        self.option_add("*TCombobox*Listbox.font", base_font)
-        # casillas y opciones
-        for w in ("TCheckbutton", "TRadiobutton"):
-            s.configure(w, background=PANEL, foreground=TEXT, indicatorbackground=FIELD,
-                        indicatorforeground=DARK, indicatorrelief="flat", indicatormargin=(0, 0, 8, 0),
-                        upperbordercolor="#6a6178", lowerbordercolor="#6a6178", padding=(0, 2))
-            s.map(w, background=[("active", PANEL)], foreground=[("active", YELLOW)],
-                  indicatorbackground=[("selected", YELLOW), ("active", HOVER)])
-        # botones
-        s.configure("TButton", background=FIELD, foreground=TEXT, borderwidth=1, bordercolor=BORDER,
-                    lightcolor=FIELD, darkcolor=FIELD, padding=(14, 7), font=("Segoe UI Semibold", 9),
-                    focuscolor=FIELD)
-        s.map("TButton", background=[("pressed", "#3a3347"), ("active", HOVER), ("disabled", PANEL)],
-              bordercolor=[("active", "#4a4258")], foreground=[("disabled", MUTED)],
-              lightcolor=[("active", HOVER)], darkcolor=[("active", HOVER)])
-        s.configure("Accent.TButton", background=YELLOW, foreground=DARK, bordercolor=YELLOW,
-                    lightcolor=YELLOW, darkcolor=YELLOW, font=("Segoe UI Black", 10), padding=(18, 9))
-        s.map("Accent.TButton", background=[("pressed", "#e6bb10"), ("active", "#ffe066"), ("disabled", "#4a4320")],
-              lightcolor=[("active", "#ffe066")], darkcolor=[("active", "#ffe066")],
-              bordercolor=[("active", "#ffe066")], foreground=[("disabled", "#8a8050")])
-        s.configure("Purple.TButton", background=PURPLE, foreground=DARK, bordercolor=PURPLE,
-                    lightcolor=PURPLE, darkcolor=PURPLE, font=("Segoe UI Semibold", 9))
-        s.map("Purple.TButton", background=[("pressed", "#b08ef0"), ("active", "#dcc7ff")],
-              lightcolor=[("active", "#dcc7ff")], darkcolor=[("active", "#dcc7ff")],
-              bordercolor=[("active", "#dcc7ff")])
-        s.configure("Ghost.TButton", background=PANEL, foreground=MUTED, bordercolor=PANEL, lightcolor=PANEL,
-                    darkcolor=PANEL, padding=(10, 7), font=("Segoe UI", 9))
-        s.map("Ghost.TButton", background=[("active", FIELD)], foreground=[("active", TEXT)],
-              lightcolor=[("active", FIELD)], darkcolor=[("active", FIELD)], bordercolor=[("active", FIELD)])
-        # pestañas tipo píldora
-        s.configure("TNotebook", background=PANEL, borderwidth=0, bordercolor=PANEL, lightcolor=PANEL,
-                    darkcolor=PANEL, tabmargins=(0, 0, 0, 4))
-        s.configure("TNotebook.Tab", background=FIELD, foreground=MUTED, padding=(14, 6), borderwidth=0,
-                    bordercolor=PANEL, lightcolor=FIELD, darkcolor=FIELD, font=("Segoe UI Semibold", 9))
-        s.map("TNotebook.Tab", background=[("selected", YELLOW), ("active", HOVER)],
-              foreground=[("selected", DARK), ("active", TEXT)],
-              lightcolor=[("selected", YELLOW)], darkcolor=[("selected", YELLOW)],
-              expand=[("selected", (0, 0, 0, 0))])
-        # tablas
-        s.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=27,
-                    borderwidth=0, bordercolor=BORDER, lightcolor=PANEL, darkcolor=PANEL, font=base_font)
-        s.configure("Treeview.Heading", background=FIELD, foreground=PURPLE, font=("Segoe UI Semibold", 9),
-                    borderwidth=0, bordercolor=FIELD, lightcolor=FIELD, darkcolor=FIELD, padding=(6, 7),
-                    relief="flat")
-        s.map("Treeview.Heading", background=[("active", HOVER)])
-        s.map("Treeview", background=[("selected", "#3b3052")], foreground=[("selected", YELLOW)])
-        s.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-        # barras de desplazamiento finas
-        for o in ("Vertical", "Horizontal"):
-            s.configure(f"{o}.TScrollbar", background="#2e2838", troughcolor=PANEL, bordercolor=PANEL,
-                        lightcolor="#2e2838", darkcolor="#2e2838", arrowcolor=MUTED, gripcount=0,
-                        arrowsize=11)
-            s.map(f"{o}.TScrollbar", background=[("active", "#4a4258")])
-        # progreso
-        s.configure("Horizontal.TProgressbar", background=YELLOW, troughcolor=FIELD, bordercolor=FIELD,
-                    lightcolor=YELLOW, darkcolor="#e6bb10", thickness=14)
-        s.configure("Step.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI Semibold", 13))
-        s.configure("Pct.TLabel", background=PANEL, foreground=YELLOW, font=("Segoe UI Black", 18))
-        s.configure("Detail.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 10))
-        s.configure("ChipOff.TLabel", background=FIELD, foreground=MUTED, font=("Segoe UI", 9), padding=(12, 4))
-        s.configure("ChipOn.TLabel", background=YELLOW, foreground=DARK, font=("Segoe UI Semibold", 9),
-                    padding=(12, 4))
-        s.configure("ChipDone.TLabel", background="#2f2742", foreground=PURPLE, font=("Segoe UI", 9),
-                    padding=(12, 4))
-        s.configure("TSeparator", background=BORDER)
+        s = ui.apply_style(self)
+        F = ui
+        s.configure("Title.TLabel", background=BG, foreground=TEXT, font=F.display(22))
+        s.configure("TitleY.TLabel", background=BG, foreground=YELLOW, font=F.display(22))
+        s.configure("Sub.TLabel", background=BG, foreground=ui.DIM, font=F.mono(8))
+        s.configure("Ver.TLabel", background=BG, foreground=ui.DIM, font=F.mono(8))
+        s.configure("Num.TLabel", background=PANEL, foreground=PURPLE, font=F.display(14))
+        s.configure("Badge.TLabel", background=PANEL, foreground=PURPLE, font=F.display(14))
+        s.configure("Kpi.TFrame", background=FIELD)
+        s.configure("Step.TLabel", background=PANEL, foreground=TEXT, font=F.display(15))
+        s.configure("Pct.TLabel", background=PANEL, foreground=YELLOW, font=F.display(22))
+        s.configure("Detail.TLabel", background=PANEL, foreground=MUTED, font=F.body(10))
+        s.configure("ChipOff.TLabel", background=PANEL, foreground=ui.DIM, font=F.mono(8), padding=(10, 5))
+        s.configure("ChipOn.TLabel", background=YELLOW, foreground=DARK, font=F.mono(8), padding=(10, 5))
+        s.configure("ChipDone.TLabel", background=ui.SEL, foreground=PURPLE, font=F.mono(8), padding=(10, 5))
 
     def _panel(self, parent, title, sub=""):
-        """Tarjeta con número y título: «1 · Cuenta y partidas» -> [1] Cuenta y partidas."""
-        f = ttk.Frame(parent, style="Card.TFrame", padding=(16, 12, 16, 12))
+        """Tarjeta redondeada con número y título: «1 · Cuenta y partidas» -> 01 Cuenta y partidas."""
+        f = ui.Card(parent, pad=18, radius=18)
         hd = ttk.Frame(f, style="Panel.TFrame")
         hd.grid(row=0, column=0, columnspan=10, sticky="w", pady=(0, 8))
         num, _, txt = title.partition(" · ")
         if txt:
-            ttk.Label(hd, text=num, style="Badge.TLabel").pack(side="left", padx=(0, 10))
+            ttk.Label(hd, text=num.zfill(2), style="Num.TLabel").pack(side="left", padx=(0, 10))
         else:
             txt = title
         ttk.Label(hd, text=txt, style="H.TLabel").pack(side="left")
         if sub:
-            ttk.Label(hd, text="   " + sub, style="HSub.TLabel").pack(side="left", pady=(3, 0))
+            ttk.Label(hd, text="   " + sub, style="HSub.TLabel").pack(side="left", pady=(5, 0))
         return f
 
     # ------------------------------------------------------------ UI
     def _build(self):
-        head = ttk.Frame(self, style="Head.TFrame", padding=(20, 10, 20, 8))
+        head = ttk.Frame(self, style="Head.TFrame", padding=(22, 14, 22, 4))
         head.pack(fill="x")
-        ttk.Label(head, text="VORTEXS CLIPS", style="Title.TLabel").pack(side="left")
-        ttk.Label(head, text="    Tus 3K, 4K, ACE y clutches del directo, listos para TikTok",
-                  style="Sub.TLabel").pack(side="left", pady=(10, 0))
+        self._logo = ui.logo_image(self, 44)
+        if self._logo:
+            tk.Label(head, image=self._logo, bg=BG, bd=0).pack(side="left", padx=(0, 14))
+        tb = ttk.Frame(head, style="Head.TFrame")
+        tb.pack(side="left")
+        tl = ttk.Frame(tb, style="Head.TFrame")
+        tl.pack(anchor="w")
+        ttk.Label(tl, text="Vortexs", style="Title.TLabel").pack(side="left")
+        ttk.Label(tl, text=" Clips", style="TitleY.TLabel").pack(side="left")
+        ttk.Label(tb, text=f"BY VORTEXS · V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
+                  style="Sub.TLabel").pack(anchor="w")
         ttk.Button(head, text="Buscar actualizaciones",
                    command=lambda: self.check_update(silent=False)).pack(side="right")
-        ttk.Label(head, text=f"v{VERSION}", style="Ver.TLabel").pack(side="right", padx=10)
-        stripe = tk.Canvas(self, height=3, highlightthickness=0, bd=0, bg=BG)
-        stripe.pack(fill="x")
-
-        def draw_stripe(ev=None):
-            stripe.delete("all")
-            w = max(stripe.winfo_width(), 2)
-            # degradado amarillo -> morado (colores del canal)
-            c1, c2 = (0xff, 0xd2, 0x1f), (0xc7, 0xa6, 0xff)
-            steps = 64
-            for i in range(steps):
-                t = i / (steps - 1)
-                col = "#%02x%02x%02x" % tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
-                stripe.create_rectangle(i * w / steps, 0, (i + 1) * w / steps + 1, 3, fill=col, width=0)
-        stripe.bind("<Configure>", draw_stripe)
+        self.pill = ui.status_pill(head)
+        self.pill.pack(side="right", padx=12)
 
         top = ttk.Frame(self, padding=(16, 12, 16, 0))
         top.pack(fill="x")
@@ -317,18 +233,20 @@ class App(tk.Tk):
         for i, (key, cap) in enumerate((("invod", "partidas en el VOD"), ("synced", "sincronizadas"),
                                         ("plays", "jugadas para cortar"))):
             kp.columnconfigure(i, weight=1, uniform="kpi")
-            box = tk.Frame(kp, bg=FIELD, highlightthickness=1, highlightbackground=BORDER)
-            box.grid(row=0, column=i, sticky="we", padx=(0 if i == 0 else 8, 0))
-            num = tk.Label(box, text="—", bg=FIELD, fg=YELLOW if i != 1 else PURPLE,
-                           font=("Segoe UI Black", 20))
-            num.pack(anchor="w", padx=12, pady=(8, 0))
-            tk.Label(box, text=cap, bg=FIELD, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", padx=12, pady=(0, 9))
+            box = ui.Card(kp, pad=12, radius=14, bg=FIELD, outer=PANEL, border=ui.BORDER_HI, style="Kpi.TFrame")
+            box.grid(row=0, column=i, sticky="we", padx=(0 if i == 0 else 10, 0))
+            cr = tk.Frame(box, bg=FIELD)
+            cr.pack(anchor="w", fill="x")
+            tk.Label(cr, text="●", bg=FIELD, fg=YELLOW if i != 1 else PURPLE, font=ui.body(7)).pack(side="left")
+            tk.Label(cr, text=" " + cap.upper(), bg=FIELD, fg=ui.DIM, font=ui.mono(7)).pack(side="left")
+            num = tk.Label(box, text="—", bg=FIELD, fg=TEXT, font=ui.display(24))
+            num.pack(anchor="w", pady=(2, 0))
             self.kpi[key] = num
 
         # --- 2. VOD y ajustes (pestañas)
         p2 = self._panel(top, "2 · VOD y ajustes")
         p2.grid(row=0, column=1, sticky="nsew")
-        nb = ttk.Notebook(p2)
+        nb = ui.Tabs(p2)
         nb.grid(row=1, column=0, columnspan=6, sticky="nsew")
         self.nb2 = nb
         t_vod = ttk.Frame(nb, style="Panel.TFrame", padding=10)
@@ -386,11 +304,11 @@ class App(tk.Tk):
         self.lbl_queue.grid(row=2, column=0, columnspan=4, sticky="w")
         af = ttk.Frame(t_vod, style="Panel.TFrame")
         af.grid(row=3, column=0, columnspan=4, sticky="w", pady=(2, 0))
-        ttk.Checkbutton(af, text="Al terminar la descarga, sacar las rondas y generar los vídeos",
+        ui.Toggle(af, text="Al terminar la descarga, sacar las rondas y generar los vídeos",
                         variable=self.v_auto).pack(anchor="w")
-        ttk.Checkbutton(af, text="Bajar solo los trozos con partidas (no el directo entero: mucho más rápido "
+        ui.Toggle(af, text="Bajar solo los trozos con partidas (no el directo entero: mucho más rápido "
                                  "y ocupa una fracción)", variable=self.v_partial).pack(anchor="w")
-        ttk.Checkbutton(af, text="Borrar el VOD descargado 5 días después de sacar sus vídeos "
+        ui.Toggle(af, text="Borrar el VOD descargado 5 días después de sacar sus vídeos "
                                  "(los vídeos generados no se tocan)", variable=self.v_autodel).pack(anchor="w")
         of = ttk.Frame(t_vod, style="Panel.TFrame")
         of.grid(row=4, column=0, columnspan=4, sticky="we", pady=(6, 0))
@@ -413,7 +331,7 @@ class App(tk.Tk):
         ttk.Spinbox(t_cut, from_=2, to=6, textvariable=self.v_min, width=4).grid(row=0, column=1, sticky="w", padx=6)
         clf = ttk.Frame(t_cut, style="Panel.TFrame")
         clf.grid(row=0, column=2, columnspan=3, sticky="w", padx=(14, 0))
-        ttk.Checkbutton(clf, text="y clutches ganados de 1 contra", variable=self.v_clutch).pack(side="left")
+        ui.Toggle(clf, text="y clutches ganados de 1 contra", variable=self.v_clutch).pack(side="left")
         ttk.Spinbox(clf, from_=1, to=5, textvariable=self.v_clutchn, width=3).pack(side="left", padx=4)
         ttk.Label(clf, text="o más").pack(side="left")
         ttk.Label(t_cut, text="Qué cortar").grid(row=1, column=0, sticky="w", pady=(8, 2))
@@ -432,12 +350,12 @@ class App(tk.Tk):
             row=3, column=1, columnspan=4, sticky="w", pady=(6, 2))
         rf = ttk.Frame(t_cut, style="Panel.TFrame")
         rf.grid(row=4, column=1, columnspan=4, sticky="w", padx=(22, 0))
-        ttk.Checkbutton(rf, text="Saltar fase de compra", variable=self.v_skipbuy).pack(side="left")
+        ui.Toggle(rf, text="Saltar fase de compra", variable=self.v_skipbuy).pack(side="left")
         ttk.Label(rf, text="   Margen antes / después (s)").pack(side="left")
         ttk.Entry(rf, textvariable=self.v_pre, width=4).pack(side="left", padx=4)
         ttk.Entry(rf, textvariable=self.v_post, width=4).pack(side="left")
         ttk.Separator(t_cut).grid(row=5, column=0, columnspan=5, sticky="we", pady=8)
-        ttk.Checkbutton(t_cut, text="Sincronizar solo cada partida (cartel de fin de ronda, marcador y killfeed)",
+        ui.Toggle(t_cut, text="Sincronizar solo cada partida (cartel de fin de ronda, marcador y killfeed)",
                         variable=self.v_autosync).grid(row=6, column=0, columnspan=5, sticky="w")
         ttk.Label(t_cut, text="Desfase (s)").grid(row=7, column=0, sticky="w", pady=(6, 0))
         ttk.Label(t_cut, text="≈115 s: selección de agente + carga. Se ajusta solo al sincronizar.",
@@ -462,16 +380,16 @@ class App(tk.Tk):
                   style="Muted.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 6))
         vf2 = ttk.Frame(t_out, style="Panel.TFrame")
         vf2.grid(row=3, column=0, columnspan=4, sticky="we")
-        ttk.Checkbutton(vf2, text="Versión vertical 9:16 (como tus TikToks)",
+        ui.Toggle(vf2, text="Versión vertical 9:16 (como tus TikToks)",
                         variable=self.v_vertical).pack(side="left")
         ttk.Button(vf2, text="Elegir cámara…", command=self.pick_cam).pack(side="left", padx=8)
         self.lbl_cam = ttk.Label(vf2, text=self._cam_text(), style="Muted.TLabel")
         self.lbl_cam.pack(side="left")
-        ttk.Checkbutton(t_out, text="Subtítulos automáticos en la vertical (lo que dices, en grande bajo la cámara)",
+        ui.Toggle(t_out, text="Subtítulos automáticos en la vertical (lo que dices, en grande bajo la cámara)",
                         variable=self.v_subs).grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(t_out, text="    Palabras destacadas en amarillo y morado (colores del canal)",
+        ui.Toggle(t_out, text="    Palabras destacadas en amarillo y morado (colores del canal)",
                         variable=self.v_subhl).grid(row=5, column=0, columnspan=4, sticky="w", pady=(2, 0))
-        ttk.Checkbutton(t_out, text="    Revisar y editar los subtítulos viendo el vídeo generado",
+        ui.Toggle(t_out, text="    Revisar y editar los subtítulos viendo el vídeo generado",
                         variable=self.v_subedit).grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
         sf_ = ttk.Frame(t_out, style="Panel.TFrame")
         sf_.grid(row=7, column=0, columnspan=4, sticky="w", pady=(4, 0))
@@ -480,16 +398,16 @@ class App(tk.Tk):
                     format="%.1f").pack(side="left", padx=4)
         ttk.Label(sf_, text="+ salen más tarde · − salen antes", style="Muted.TLabel").pack(side="left", padx=(2, 12))
         ttk.Button(sf_, text="Diccionario…", command=self.edit_sub_dict).pack(side="left")
-        ttk.Checkbutton(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
+        ui.Toggle(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
                         variable=self.v_singles).grid(row=8, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         # ---- pestaña Automático
         ttk.Label(t_auto, text="Tu canal de Twitch").grid(row=0, column=0, sticky="w")
         ttk.Entry(t_auto, textvariable=self.v_channel, width=24).grid(row=0, column=1, sticky="w", padx=6)
-        ttk.Checkbutton(t_auto, text="Vigilar el canal: cuando acabe un directo, procesar el VOD solo",
+        ui.Toggle(t_auto, text="Vigilar el canal: cuando acabe un directo, procesar el VOD solo",
                         variable=self.v_watch, command=self.on_watch_toggle).grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        ttk.Checkbutton(t_auto, text="Abrir Vortexs Clips al encender el PC (minimizado)",
+        ui.Toggle(t_auto, text="Abrir Vortexs Clips al encender el PC (minimizado)",
                         variable=self.v_startup, command=self.on_startup_toggle).grid(
             row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
         self.lbl_watch = ttk.Label(t_auto, text="", style="Muted.TLabel")
@@ -542,15 +460,15 @@ class App(tk.Tk):
         lg.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
         for tag_, txt_ in (("s_ok", "segura"), ("s_approx", "aproximada (revísala)"),
                            ("s_hora", "sin sincronizar"), ("s_fail", "no se encontró")):
-            tk.Label(lg, text="●", bg=PANEL, fg=SYNC_COLORS[tag_], font=("Segoe UI", 11)).pack(side="left")
-            tk.Label(lg, text=txt_ + "   ", bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+            tk.Label(lg, text="●", bg=PANEL, fg=SYNC_COLORS[tag_], font=ui.body(9)).pack(side="left")
+            tk.Label(lg, text=" " + txt_.upper() + "    ", bg=PANEL, fg=ui.DIM, font=ui.mono(7)).pack(side="left")
 
         # --- 4. rondas
         p4o = self._panel(mid, "4 · Rondas y vista previa", "doble clic para ver una ronda")
         p4o.grid(row=0, column=1, sticky="nsew")
         p4o.rowconfigure(1, weight=1)
         p4o.columnconfigure(0, weight=1)
-        self.nb4 = ttk.Notebook(p4o)
+        self.nb4 = ui.Tabs(p4o)
         self.nb4.grid(row=1, column=0, sticky="nsew")
         p4 = ttk.Frame(self.nb4, style="Panel.TFrame", padding=6)
         self.tab_prev = ttk.Frame(self.nb4, style="Panel.TFrame", padding=6)
@@ -578,7 +496,7 @@ class App(tk.Tk):
         ttk.Button(cb, text="Quitar", style="Ghost.TButton", command=self.remove_clips).pack(side="left")
 
         # --- pie
-        foot = ttk.Frame(self, style="Card.TFrame", padding=(18, 10, 18, 12))
+        foot = ui.Card(self, pad=18, radius=20, glow=True)
         # el panel de progreso se coloca primero abajo para que nunca quede cortado;
         # si falta sitio, encogen las listas del medio
         foot.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
@@ -593,7 +511,7 @@ class App(tk.Tk):
             lb.pack(side="left", padx=(0, 4))
             self.chip_lbls.append(lb)
             if i < len(self.step_names) - 1:
-                ttk.Label(chips, text="—", style="Muted.TLabel").pack(side="left", padx=(0, 4))
+                ttk.Label(chips, text="›", style="Muted.TLabel").pack(side="left", padx=(0, 4))
         self.lbl_time = ttk.Label(chips, text="", style="Muted.TLabel")
         self.lbl_time.pack(side="right")
         top_row = ttk.Frame(foot, style="Panel.TFrame")
@@ -606,13 +524,15 @@ class App(tk.Tk):
         self.pb.pack(fill="x")
         row = ttk.Frame(foot, style="Panel.TFrame")
         row.pack(fill="x", pady=(6, 0))
-        self.lbl_status = ttk.Label(row, text="Pega un enlace de Twitch o elige un VOD.", style="Detail.TLabel")
+        self.lbl_status = ttk.Label(row, text="Pega un enlace de Twitch o elige un VOD.", style="Detail.TLabel",
+                                    wraplength=760)
         self.lbl_status.pack(side="left")
         self.btn_render = ttk.Button(row, text="GENERAR VÍDEO", style="Accent.TButton", command=self.render)
         self.btn_render.pack(side="right")
         self.btn_cancel = ttk.Button(row, text="Cancelar", command=self.cancel, state="disabled")
         self.btn_cancel.pack(side="right", padx=6)
-        self.btn_subs = ttk.Button(row, text="Corregir subtítulos…", command=self.fix_subtitles_later)
+        self.btn_subs = ttk.Button(row, text="Corregir subtítulos…", style="Ghost.TButton",
+                                   command=self.fix_subtitles_later)
         self.btn_subs.pack(side="right")
 
     # ------------------------------------------------------------ util
@@ -1284,6 +1204,10 @@ class App(tk.Tk):
 
     def set_running(self, running):
         self.keep_awake(running or self.flow_active)
+        try:
+            self.pill.set_state("TRABAJANDO" if running else "LISTO", YELLOW if running else ui.GREEN)
+        except Exception:
+            pass
         self.btn_render.configure(state="disabled" if running else "normal")
         self.btn_dl.configure(state="disabled" if running else "normal")
         self.btn_cancel.configure(state="normal" if running else "disabled")
@@ -2035,7 +1959,7 @@ class App(tk.Tk):
         ttk.Button(tf_, text="◀ −0,1 s (antes)", command=lambda: move(-0.1)).pack(side="left", padx=4)
         lbl_mv.pack(side="left")
         ttk.Button(tf_, text="+0,1 s (después) ▶", command=lambda: move(0.1)).pack(side="left", padx=4)
-        ttk.Checkbutton(tf_, text="Usar este ajuste en los próximos vídeos", variable=v_keep).pack(side="left",
+        ui.Toggle(tf_, text="Usar este ajuste en los próximos vídeos", variable=v_keep).pack(side="left",
                                                                                                   padx=10)
         sl = ttk.Frame(dlg, style="Panel.TFrame")
         sl.pack(fill="x", padx=12, pady=(6, 0))
