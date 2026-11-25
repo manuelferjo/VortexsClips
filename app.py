@@ -135,6 +135,23 @@ class App(tk.Tk):
         self.after(1500, _relay_loop)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(1500, lambda: self.check_update(silent=True))
+        # con el programa abierto también: mira cada 10 min si hay versión nueva y, si está trabajando,
+        # espera a que termine para avisar (sin tener que cerrarlo y volver a abrirlo)
+        self._upd_declined = set()
+        self._upd_pending = None
+
+        def _upd_loop():
+            self.check_update(silent=True)
+            self.after(10 * 60 * 1000, _upd_loop)
+        self.after(10 * 60 * 1000, _upd_loop)
+
+        def _upd_wait():
+            info = self._upd_pending
+            if info and not self._is_working():
+                self._upd_pending = None
+                self.offer_update(info, True)
+            self.after(5000, _upd_wait)
+        self.after(5000, _upd_wait)
         self.load_delay()
         self.after(800, self.detect_encoder)
         self.after(1200, self.restore_last_vod)
@@ -3003,9 +3020,16 @@ class App(tk.Tk):
             self.after(0, lambda: self.offer_update(info, silent))
         threading.Thread(target=target, daemon=True).start()
 
+    def _is_working(self):
+        return bool(self.busy or self.flow_active or str(self.btn_cancel.cget("state")) == "normal")
+
     def offer_update(self, info, silent):
         newer = info and info["version"] and updater._ver(info["version"]) > updater._ver(VERSION)
-        working = self.busy or self.flow_active or str(self.btn_cancel.cget("state")) == "normal"
+        working = self._is_working()
+        if silent and newer and info["version"] in getattr(self, "_upd_declined", ()):
+            return                      # ya dijiste que ahora no a esta versión
+        if getattr(self, "_upd_asking", False):
+            return
         # versión antigua (Iniciar.bat) -> ofrecer pasarse a la instalable una vez
         if not updater.FROZEN and info and info.get("setup") and (newer or not self.cfg.get("migrate_asked")):
             if working:
@@ -3026,14 +3050,23 @@ class App(tk.Tk):
                 messagebox.showinfo(APP_NAME, f"Ya tienes la última versión ({VERSION}).")
             return
         if working:
+            self._upd_pending = info    # se avisa en cuanto termine
             if not silent:
-                messagebox.showinfo(APP_NAME, "Hay una versión nueva. Actualiza cuando termine "
-                                              "lo que está haciendo el programa.")
+                messagebox.showinfo(APP_NAME, "Hay una versión nueva. Te aviso para actualizar en cuanto "
+                                              "termine lo que está haciendo el programa.")
             return
         notes = info["notes"].strip()
         notes = ("\n\nNovedades:\n" + notes[:600]) if notes else ""
-        if not messagebox.askyesno(APP_NAME, f"Hay una versión nueva: {info['version']} "
-                                             f"(tienes la {VERSION}).{notes}\n\n¿Actualizar ahora?"):
+        self._upd_asking = True
+        try:
+            ok = messagebox.askyesno(APP_NAME, f"Hay una versión nueva: {info['version']} "
+                                               f"(tienes la {VERSION}).{notes}\n\n¿Actualizar ahora? El programa "
+                                               "se actualiza y se vuelve a abrir solo en unos segundos "
+                                               "(tus ajustes se guardan).")
+        finally:
+            self._upd_asking = False
+        if not ok:
+            getattr(self, "_upd_declined", set()).add(info["version"])
             return
         if updater.FROZEN and info.get("setup"):
             self._run_update(lambda prog: updater.run_installer(info["setup"], prog, silent=True))
