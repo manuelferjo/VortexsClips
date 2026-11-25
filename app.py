@@ -4,6 +4,7 @@ Saca las rondas en las que haces 3 kills o más de tus partidas de competitivo
 y las recorta del VOD de Twitch en un solo vídeo.
 """
 import json
+import re
 import os
 import subprocess
 import threading
@@ -365,6 +366,7 @@ class App(tk.Tk):
         self.v_subhl = tk.BooleanVar(value=cfg.get("sub_highlight", True))
         self.v_subedit = tk.BooleanVar(value=cfg.get("sub_edit", True))
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
+        self.v_suboff = tk.StringVar(value=f"{float(cfg.get('sub_offset', 0.0)):.1f}")
         self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
         self.v_autodel = tk.BooleanVar(value=cfg.get("auto_delete_vod", True))
         self.cam = cfg.get("cam")
@@ -471,8 +473,15 @@ class App(tk.Tk):
                         variable=self.v_subhl).grid(row=5, column=0, columnspan=4, sticky="w", pady=(2, 0))
         ttk.Checkbutton(t_out, text="    Revisar y editar los subtítulos viendo el vídeo generado",
                         variable=self.v_subedit).grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        sf_ = ttk.Frame(t_out, style="Panel.TFrame")
+        sf_.grid(row=7, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(sf_, text="    Ajuste de tiempo (s):").pack(side="left")
+        ttk.Spinbox(sf_, from_=-3.0, to=3.0, increment=0.1, textvariable=self.v_suboff, width=6,
+                    format="%.1f").pack(side="left", padx=4)
+        ttk.Label(sf_, text="+ salen más tarde · − salen antes", style="Muted.TLabel").pack(side="left", padx=(2, 12))
+        ttk.Button(sf_, text="Diccionario…", command=self.edit_sub_dict).pack(side="left")
         ttk.Checkbutton(t_out, text="Además, un clip suelto por cada ronda (en carpetas 3K / 4K / ACE)",
-                        variable=self.v_singles).grid(row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
+                        variable=self.v_singles).grid(row=8, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         # ---- pestaña Automático
         ttk.Label(t_auto, text="Tu canal de Twitch").grid(row=0, column=0, sticky="w")
@@ -813,7 +822,7 @@ class App(tk.Tk):
                          "kill_gap": self.v_kgap.get(),
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
-                         "auto_delete_vod": self.v_autodel.get()})
+                         "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset()})
         try:
             save_cfg(self.cfg)
         except Exception:
@@ -1436,6 +1445,82 @@ class App(tk.Tk):
             prog(None, f"La descarga por trozos falló ({str(e)[:80]}); bajo el VOD entero…")
             return None
 
+    def sub_offset(self) -> float:
+        try:
+            return max(-3.0, min(3.0, round(float(str(self.v_suboff.get()).replace(",", ".")), 2)))
+        except (ValueError, tk.TclError):
+            return 0.0
+
+    def prepare_words(self, words):
+        """Tras transcribir: tu diccionario de correcciones y tu ajuste de tiempo."""
+        if not words:
+            return words
+        words = subtitles.apply_dict(words, self.cfg.get("sub_dict") or {})
+        return subtitles.shift(words, self.sub_offset())
+
+    def learn_word(self, original: str, new: str):
+        """Lo que corriges en el editor se guarda en el diccionario para la próxima vez."""
+        a, b = subtitles.norm(original), new.strip()
+        if not a or not b or subtitles.norm(b) == a or len(a.split()) > 4:
+            return
+        self.cfg.setdefault("sub_dict", {})[a] = re.sub(r"[.,;:!?…]+$", "", b) or b
+        self.persist()
+
+    def edit_sub_dict(self):
+        """Ver, añadir y quitar correcciones del diccionario de subtítulos."""
+        d = self.cfg.setdefault("sub_dict", {})
+        dlg = tk.Toplevel(self)
+        dlg.title("Diccionario de subtítulos")
+        dlg.configure(bg=PANEL)
+        dlg.geometry("560x480")
+        dlg.transient(self)
+        ttk.Label(dlg, text="Diccionario de subtítulos", style="H.TLabel").pack(anchor="w", padx=12, pady=(10, 0))
+        ttk.Label(dlg, text="Lo que corriges en el editor se apunta aquí solo y se aplica en los siguientes vídeos. "
+                            "Puede ser una palabra o varias (hasta 4), que se juntan en una.",
+                  style="Muted.TLabel", wraplength=530).pack(anchor="w", padx=12, pady=(2, 8))
+        fr = ttk.Frame(dlg, style="Panel.TFrame")
+        fr.pack(fill="both", expand=True, padx=12)
+        tv = ttk.Treeview(fr, columns=("a", "b"), show="headings", selectmode="extended")
+        tv.heading("a", text="Cuando entienda…")
+        tv.heading("b", text="…poner")
+        tv.column("a", width=250)
+        tv.column("b", width=250)
+        tv.pack(side="left", fill="both", expand=True)
+
+        def fill():
+            tv.delete(*tv.get_children())
+            for k in sorted(d):
+                tv.insert("", "end", iid=k, values=(k, d[k]))
+        af = ttk.Frame(dlg, style="Panel.TFrame")
+        af.pack(fill="x", padx=12, pady=8)
+        va, vb = tk.StringVar(), tk.StringVar()
+        ttk.Entry(af, textvariable=va, width=22).pack(side="left")
+        ttk.Label(af, text="→").pack(side="left", padx=4)
+        ttk.Entry(af, textvariable=vb, width=22).pack(side="left")
+
+        def add():
+            a_, b_ = subtitles.norm(va.get()), vb.get().strip()
+            if a_ and b_:
+                d[a_] = b_
+                va.set("")
+                vb.set("")
+                fill()
+                self.persist()
+
+        def remove():
+            for k in tv.selection():
+                d.pop(k, None)
+            fill()
+            self.persist()
+        ttk.Button(af, text="Añadir", command=add).pack(side="left", padx=6)
+        ttk.Button(af, text="Quitar seleccionadas", command=remove).pack(side="right")
+        tv.bind("<Delete>", lambda e: remove())
+        ttk.Button(dlg, text="Cerrar", style="Accent.TButton", command=dlg.destroy).pack(anchor="e", padx=12,
+                                                                                         pady=(0, 12))
+        fill()
+        dlg._api = {"add": add, "remove": remove, "a": va, "b": vb, "tv": tv}
+        return dlg
+
     VOD_KEEP_DAYS = 5
 
     def purge_old_vods(self):
@@ -1890,9 +1975,12 @@ class App(tk.Tk):
             if not t:
                 delete()
                 return
+            orig = " ".join(ws[i].get("raw", ws[i]["text"]) for i in s_)
+            self.learn_word(orig, t)
             if len(s_) > 1:
                 # varias seleccionadas: se juntan en una (p. ej. «tres kills» mal partido o mal oído)
                 first = ws[s_[0]]
+                first["raw"] = orig
                 first["text"] = t
                 first["end"] = max(ws[i]["end"] for i in s_)
                 for i in reversed(s_[1:]):
@@ -1927,6 +2015,28 @@ class App(tk.Tk):
         ttk.Button(cl, text="Morado", command=lambda: set_color("p")).pack(side="left", padx=4)
         ttk.Button(cl, text="Sin color", command=lambda: set_color("none")).pack(side="left", padx=4)
         ttk.Button(cl, text="Automático", command=lambda: set_color("auto")).pack(side="left", padx=4)
+        tf_ = ttk.Frame(dlg, style="Panel.TFrame")
+        tf_.pack(fill="x", padx=12, pady=(6, 0))
+        ttk.Label(tf_, text="Tiempo de todos:").pack(side="left")
+        moved = {"s": 0.0}
+        lbl_mv = ttk.Label(tf_, text="0,0 s", width=8, anchor="center")
+        v_keep = tk.BooleanVar(value=False)
+
+        def move(d_):
+            moved["s"] = round(moved["s"] + d_, 2)
+            for w in ws:
+                w["start"] = max(0.0, w["start"] + d_)
+                w["end"] = max(0.05, w["end"] + d_)
+            lbl_mv.configure(text=f"{moved['s']:+.1f} s".replace(".", ","))
+            fill([str(i) for i in sel()])
+            if pl and not pl.playing:
+                on_time(pl._now())
+
+        ttk.Button(tf_, text="◀ −0,1 s (antes)", command=lambda: move(-0.1)).pack(side="left", padx=4)
+        lbl_mv.pack(side="left")
+        ttk.Button(tf_, text="+0,1 s (después) ▶", command=lambda: move(0.1)).pack(side="left", padx=4)
+        ttk.Checkbutton(tf_, text="Usar este ajuste en los próximos vídeos", variable=v_keep).pack(side="left",
+                                                                                                  padx=10)
         sl = ttk.Frame(dlg, style="Panel.TFrame")
         sl.pack(fill="x", padx=12, pady=(6, 0))
         ttk.Label(sl, text="Seleccionar:").pack(side="left")
@@ -1937,7 +2047,7 @@ class App(tk.Tk):
             if not s_:
                 return
             want = set()
-            for a_, b_, _it in subtitles.chunk_words_rich(ws, highlight=highlight):
+            for a_, b_, _it in subtitles.chunk_words_rich(ws, max_words=12, max_chars=200, highlight=highlight):
                 idx = [i for i, w in enumerate(ws) if a_ - 0.001 <= w["start"] < b_ - 0.001]
                 if any(i in idx for i in s_):
                     want.update(idx)
@@ -2032,6 +2142,9 @@ class App(tk.Tk):
             if done["v"]:
                 return
             done["v"] = True
+            if v_keep.get() and moved["s"]:
+                self.v_suboff.set(f"{max(-3.0, min(3.0, self.sub_offset() + moved['s'])):.1f}")
+                self.persist()
             if pl:
                 pl.on_time = None
                 pl.stop()
@@ -2049,7 +2162,7 @@ class App(tk.Tk):
         # para la prueba automática
         dlg._api = {"tv": tv, "words": ws, "set_color": set_color, "delete": delete, "text": v_txt,
                     "apply": apply_text, "finish": finish, "player": pl, "overlay": ov, "on_time": on_time,
-                    "select_phrase": select_phrase, "select_all": select_all}
+                    "select_phrase": select_phrase, "select_all": select_all, "move": move, "keep": v_keep}
         if pl:
             pl.seek(ws[0]["start"] if ws else 0.0)
         return dlg
@@ -2422,7 +2535,7 @@ class App(tk.Tk):
                         wav = base + " (audio subtítulos).wav"
                         core.render_audio(vod, clips, wav, stop)
                         try:
-                            words = subtitles.transcribe(wav, cb, stop)
+                            words = self.prepare_words(subtitles.transcribe(wav, cb, stop))
                         finally:
                             try:
                                 os.remove(wav)
@@ -2878,6 +2991,36 @@ def selftest(out_path):
         api3["tv"].selection_set(["1", "2"])
         api3["delete"]()
         api3["finish"](api3["words"])
+        # diccionario (aprende lo corregido) y ajuste de tiempo
+        app.cfg["sub_dict"] = {}
+        got4 = []
+        dlg4 = app.edit_subtitles([{"start": 0.5, "end": 0.9, "text": "vortex", "raw": "vortex"},
+                                   {"start": 1.0, "end": 1.4, "text": "clips", "raw": "clips"}], got4.append)
+        api4 = dlg4._api
+        api4["tv"].selection_set(["0"])
+        api4["text"].set("Vortexs")
+        api4["apply"]()
+        api4["move"](0.1)
+        api4["move"](0.1)
+        api4["keep"].set(True)
+        api4["finish"](api4["words"])
+        learned = app.cfg.get("sub_dict", {}).get("vortex") == "Vortexs"
+        moved_ok = got4 and abs(got4[0][0]["start"] - 0.7) < 0.01 and abs(app.sub_offset() - 0.2) < 0.01
+        pw = app.prepare_words([{"start": 1.0, "end": 1.3, "text": "Vortex,"}])
+        log(learned and moved_ok and pw[0]["text"] == "Vortexs," and abs(pw[0]["start"] - 1.2) < 0.01,
+            f"subtítulos: diccionario y ajuste de tiempo (aprende={learned}, mueve={bool(moved_ok)})")
+        app.v_suboff.set("0.0")
+        one = subtitles.chunk_words_rich(words)
+        log(len(one) == len(words) and all(len(it) == 1 for _a, _b, it in one)
+            and all(one[i][1] <= one[i + 1][0] for i in range(len(one) - 1)),
+            "subtítulos palabra a palabra sin solaparse")
+        dd = app.edit_sub_dict()
+        dd._api["a"].set("tres kills")
+        dd._api["b"].set("3K")
+        dd._api["add"]()
+        ok_dd = app.cfg["sub_dict"].get("tres kills") == "3K"
+        dd.destroy()
+        log(ok_dd, "ventana del diccionario")
         log(n_phrase >= 2 and all_y and merged and got3 and len(got3[0]) == 1,
             f"subtítulos: varias a la vez (frase={n_phrase}, color={all_y}, juntar={merged})")
         # revisión rápida de la sincro

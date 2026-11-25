@@ -197,13 +197,59 @@ def parse_whisper_json(data: dict) -> list[dict]:
         a, b = off.get("from"), off.get("to")
         if a is None or b is None:
             continue
-        w = {"start": a / 1000.0, "end": max(b, a + 120) / 1000.0, "text": text}
+        w = {"start": a / 1000.0, "end": max(b, a + 120) / 1000.0, "text": text, "raw": text}
         d = _seg_dtw_start(seg)
         if d is not None and abs(d - w["start"]) < 6.0:
             w["start"] = d
             w["_dtw"] = True
         words.append(w)
     return fix_timing(drop_hallucinations(words))
+
+
+# ---------------------------------------------------------------- diccionario y ajuste de tiempo
+def norm(t: str) -> str:
+    """Forma para comparar: minúsculas y sin signos."""
+    return re.sub(r"\s+", " ", re.sub(r"[.,;:¡!¿?…\"'()]", "", t or "").lower()).strip()
+
+
+def apply_dict(words: list[dict], d: dict | None) -> list[dict]:
+    """
+    Corrige con tu diccionario (lo que has corregido otras veces): {"vortex": "Vortexs", "tres kills": "3K"}.
+    Admite expresiones de hasta 4 palabras (se juntan en una). Conserva el signo final de la original.
+    """
+    if not words or not d:
+        return words
+    dd = {norm(k): v for k, v in d.items() if norm(k)}
+    maxn = min(4, max((len(k.split()) for k in dd), default=1))
+    out, i = [], 0
+    while i < len(words):
+        hit = None
+        for n in range(min(maxn, len(words) - i), 0, -1):
+            key = " ".join(norm(w["text"]) for w in words[i:i + n])
+            if key in dd:
+                hit = (n, dd[key])
+                break
+        if not hit:
+            out.append(words[i])
+            i += 1
+            continue
+        n, rep = hit
+        grp = words[i:i + n]
+        tail = re.search(r"[.,;:!?…]+$", grp[-1]["text"].strip())
+        txt = rep + (tail.group(0) if tail and not re.search(r"[.,;:!?…]$", rep) else "")
+        nw = {**grp[0], "text": txt, "end": grp[-1]["end"]}
+        if any("hl" in g for g in grp):
+            nw["hl"] = next(g["hl"] for g in grp if "hl" in g)
+        out.append(nw)
+        i += n
+    return out
+
+
+def shift(words: list[dict], s: float) -> list[dict]:
+    """Mueve todos los subtítulos s segundos (positivo = salen más tarde)."""
+    if not words or not s:
+        return words
+    return [{**w, "start": max(0.0, w["start"] + s), "end": max(0.05, w["end"] + s)} for w in words]
 
 
 def fix_timing(words: list[dict]) -> list[dict]:
@@ -265,13 +311,20 @@ def auto_highlight(raw: str) -> bool:
     return len(letters) >= 9
 
 
-def chunk_words_rich(words: list[dict], max_words: int = 3, max_chars: int = 16, max_gap: float = 0.6,
+WORDS_PER_LINE = 1          # en pantalla: palabra a palabra (estilo TikTok)
+
+
+def chunk_words_rich(words: list[dict], max_words: int | None = None, max_chars: int = 16, max_gap: float = 0.6,
                      highlight: bool = True):
     """
     Como chunk_words pero conservando cada palabra y su color: [(inicio, fin, [(texto, color|None)])].
     Cada palabra puede traer 'hl': 'y' (amarillo), 'p' (morado), 'none' (sin color) o nada (automático).
     Como mucho una palabra con color por frase, alternando amarillo y morado.
     """
+    if max_words is None:
+        max_words = WORDS_PER_LINE
+    if max_words <= 1:
+        max_chars = 10 ** 6            # una palabra (o lo que juntaste en una) por pantalla
     chunks, cur = [], []
     for w in words:
         t = re.sub(r"\s+", " ", w["text"]).strip()
