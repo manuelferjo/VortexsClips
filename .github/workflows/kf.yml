@@ -9,6 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
+      - uses: actions/checkout@v4
       - name: Herramientas
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
