@@ -2794,7 +2794,9 @@ class App(tk.Tk):
                         import hashlib
                         kdir = os.path.join(core.data_dir(), "killfeed",
                                             hashlib.sha1(os.path.abspath(out).encode("utf-8")).hexdigest()[:12])
-                        kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop)
+                        kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop,
+                                                    log_path=os.path.join(os.path.dirname(os.path.abspath(out)),
+                                                                          "registro killfeed.txt"))
                     except Exception as e:
                         if "Cancelado" in str(e):
                             raise

@@ -115,6 +115,38 @@ def lines(img, src_h: int = 1080):
     return out
 
 
+def grab_seq(vod: str, t: float, dur: float, fps: int = 10) -> list:
+    """Fotogramas del killfeed a tamaño real entre t y t+dur (fps por segundo), en una sola lectura."""
+    import numpy as np
+    ffmpeg = core.find_tool("ffmpeg")
+    if not hasattr(grab_region, "_dims") or grab_region._dims[0] != vod:
+        info = core.probe_vod(vod)
+        grab_region._dims = (vod, int(info.get("width") or 1920), int(info.get("height") or 1080))
+    _, W, H = grab_region._dims
+    cw, ch = int(W * KF_W) // 2 * 2, int(H * KF_H) // 2 * 2
+    cx, cy = int(W * KF_X), int(H * KF_Y)
+    f, lt = core.vod_resolve(vod, t)
+    r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, lt):.3f}", "-t", f"{dur:.3f}",
+                        "-i", f, "-an", "-vf", f"fps={fps},crop={cw}:{ch}:{cx}:{cy}", "-f", "rawvideo",
+                        "-pix_fmt", "rgb24", "pipe:1"], capture_output=True, **core._no_window())
+    sz = cw * ch * 3
+    n = len(r.stdout) // sz
+    return [np.frombuffer(r.stdout[i * sz:(i + 1) * sz], dtype=np.uint8).reshape(ch, cw, 3) for i in range(n)]
+
+
+def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
+    """¿Es la misma línea del killfeed (aunque esté a otra altura)? Se compara su parte derecha."""
+    import numpy as np
+    h = min(a1 - a0, b1 - b0)
+    if h < 8:
+        return False
+    w = img_a.shape[1]
+    xa = int(w * 0.45)
+    pa = img_a[a0:a0 + h, xa:int(w * 0.97)].astype(np.int16)
+    pb = img_b[b0:b0 + h, xa:int(w * 0.97)].astype(np.int16)
+    return float(np.abs(pa - pb).mean()) < tol
+
+
 def find_new_lines(before, after, src_h: int = 1080, n: int = 1) -> list:
     """
     Las n líneas TUYAS (marcador amarillo) más bajas del killfeed «después» que no estaban ya igual
@@ -130,12 +162,8 @@ def find_new_lines(before, after, src_h: int = 1080, n: int = 1) -> list:
     for y0, y1, mx in reversed(lines(after, src_h)):
         if mx is None:
             continue
-        same = False
-        for b0, b1, bmx in olds:
-            if bmx is not None and abs(b0 - y0) <= 3:
-                d = np.abs(before[y0:y1].astype(np.int16) - after[y0:y1].astype(np.int16)).mean()
-                same = same or d < 14
-        if same:
+        # ¿ya estaba antes (en cualquier altura: cuando caduca una de arriba, todas suben)?
+        if any(same_line(before, b0, b1, after, y0, y1) for b0, b1, _bmx in olds):
             break                       # por encima de una que ya estaba, todo es anterior
         news.append((y0, y1, mx))
         if len(news) >= n:
@@ -192,11 +220,13 @@ def save_rgba(after, box, path: str) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------- preparar las líneas de un vídeo
-OUT_LINE_H = 64          # alto de cada línea en la vertical (1080x1920)
-GAP = 8
+OUT_LINE_H = 42          # alto de cada línea en la vertical (1080x1920): como en tus edits
+GAP = 10
+SEQ_FPS = 10
 
 
-def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None) -> list[dict]:
+def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
+            log_path: str | None = None) -> list[dict]:
     """
     Para el vídeo montado con esos clips: las líneas del killfeed de TUS kills, recortadas del directo,
     con su posición y su momento en la vertical. [{png, x, y, w, h, start, end}] (tiempos del vídeo).
@@ -228,8 +258,9 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None) 
                 continue
             seen.add(key)
             by_group.setdefault(c.group, []).append((tv, t0 + (tv - c.vod_start)))
-    y_top = core.cam_bottom_y(cam, W, H) + 120 if cam else 980
-    out = []
+    # justo debajo de la cámara y de los subtítulos (que van en su borde de abajo), pegadas a la derecha
+    y_top = core.cam_bottom_y(cam, W, H) + 95 if cam else 700
+    out, log = [], []
     groups = list(by_group.items())
     for gi, (g, ks) in enumerate(groups):
         if should_stop and should_stop():
@@ -248,22 +279,63 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None) 
             clusters.append(cur)
         slot = 0
         for cl in clusters:
-            before = grab_region(vod, cl[0][0] - 0.6)
-            after = grab_region(vod, cl[-1][0] + 0.6)
-            boxes = find_new_lines(before, after, H, len(cl))
-            # si salen menos líneas que kills, se quedan las últimas kills (las de más abajo)
+            # se mira el directo 10 veces por segundo alrededor de la(s) kill(s): la línea sale en el
+            # instante exacto en que entra en el killfeed (no en la hora de Riot, que puede ir desfasada)
+            t0 = cl[0][0] - 1.2
+            seq = grab_seq(vod, t0, (cl[-1][0] + 1.0) - t0, SEQ_FPS)
+            if len(seq) < 4:
+                log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: no se pudo leer el vídeo")
+                continue
+            # la imagen «después»: el primer momento en que tus líneas nuevas están enteras (y estables);
+            # no un fotograma fijo, que puede caer cuando el killfeed está tapado (destello, muerte…)
+            before = seq[0]
+            best_i, boxes = None, []
+            for i in range(1, len(seq)):
+                got = find_new_lines(before, seq[i], H, len(cl))
+                if len(got) > len(boxes) or (best_i is not None and len(got) == len(boxes) == len(cl)
+                                             and i <= best_i + 2):
+                    if len(got) > len(boxes):
+                        best_i, boxes = i, got
+                if len(boxes) == len(cl) and i >= best_i + 2:
+                    break
+            if not boxes:
+                log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: NO se ve tu línea en el killfeed "
+                           f"({len(cl)} kill(s))")
+                continue
+            # se recorta un par de fotogramas después de que entre (ya con su amarillo pleno)
+            src_i = min(len(seq) - 1, best_i + 2)
+            if len(find_new_lines(before, seq[src_i], H, len(cl))) == len(boxes):
+                boxes = find_new_lines(before, seq[src_i], H, len(cl))
+            else:
+                src_i = best_i
+            src = seq[src_i]
             pairs = list(zip(cl[len(cl) - len(boxes):], boxes))
             for (tv, tout), box in pairs:
+                x0, y0, x1, y1, _a = box
+                appear = None
+                for i in range(1, src_i + 1):
+                    # primer fotograma en que esta línea ya se reconoce como TUYA y nueva, en su sitio
+                    if any(abs(b[1] - y0) <= 4 for b in find_new_lines(before, seq[i], H, len(cl))):
+                        appear = t0 + i / SEQ_FPS - 0.1      # el amarillo llega ~0,1 s después de la línea
+                        break
+                if appear is None:
+                    appear = t0 + best_i / SEQ_FPS
                 png = os.path.join(folder, f"kf_{len(out):03d}.png")
-                ww, hh = save_rgba(after, box, png)
+                ww, hh = save_rgba(src, box, png)
                 sc = OUT_LINE_H / max(1, hh)
                 w2 = int(round(ww * sc / 2)) * 2
-                if w2 > 1040:
-                    sc = 1040 / ww
-                    w2 = 1040
                 h2 = int(round(hh * sc / 2)) * 2
-                out.append({"png": png, "w": w2, "h": h2, "x": 1080 - w2 - 14,
+                start = max(0.0, tout + (appear - tv) - 0.03)
+                out.append({"png": png, "w": w2, "h": h2, "x": 1080 - w2,
                             "y": int(y_top + slot * (OUT_LINE_H + GAP)),
-                            "start": tout + 0.05, "end": gend[g]})
+                            "start": start, "end": gend[g]})
+                log.append(f"{core.fmt_ts(tv)}  ronda {g[1] + 1}: línea {slot + 1}, entra a {core.fmt_ts(appear)}")
                 slot += 1
+    for p in [os.path.join(folder, "registro_killfeed.txt")] + ([log_path] if log_path else []):
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("Killfeed de la vertical: una línea por cada kill tuya (segundo del VOD)\n\n")
+                f.write("\n".join(log) + "\n")
+        except OSError:
+            pass
     return out
