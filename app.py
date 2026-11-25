@@ -2696,7 +2696,7 @@ def selftest(out_path):
         core.render(vid, rclips, rout, encoder="auto")
         msgs_ = []
         core.render(vid, rclips, rout, encoder="auto", progress=lambda f_, t_: msgs_.append(t_))
-        log(any("ya estaba generado" in x for x in msgs_), "retomar: no se rehace lo ya generado")
+        log(any("ya estaba" in x for x in msgs_), "retomar: no se rehace lo ya generado")
         # 1.14: horizontal + vertical en UNA pasada, clips copiados sin recodificar, textos para publicar
         dvo, dvv = os.path.join(tmp, "d.mp4"), os.path.join(tmp, "d (vertical).mp4")
         core.render(vid, rclips, dvo, encoder="auto", vout_path=dvv, cam=cam, words=words)
