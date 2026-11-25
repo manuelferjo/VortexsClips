@@ -73,7 +73,7 @@ def own_marker(band, src_h: int = 1080):
     t_cols = teal.mean(axis=0) > 0.5
     # la franja del nombre suele ser la primera zona verde azulada ancha, pero algunos retratos
     # (Sova, Neon, Fade…) tienen azules que también lo parecen y la adelantan: se prueba cada una
-    cands = [s_[0] for s_ in _segs(t_cols) if s_[1] - s_[0] >= 0.6 * lh]
+    cands = [s_[0] for s_ in _segs(t_cols) if s_[1] - s_[0] >= 0.3 * lh]
     if not cands:
         return None
     c = core_.astype(np.int16)
@@ -92,7 +92,7 @@ def _marker_at(core_, pure, yel, xt, lh):
     # más estrecho con algo de degradado (Sova: ~18 px amarillos y 3–5 de puro). En las líneas de
     # compañeros ahí hay su retrato o fondo, sin ese bloque. Su distancia a la franja verde también
     # depende del agente: entre ~1,5 y ~5,6 líneas de alto a la izquierda.
-    w0, w1 = max(0, int(xt - 5.6 * lh)), max(0, int(xt - 1.5 * lh))
+    w0, w1 = max(0, int(xt - 6.6 * lh)), max(0, int(xt - 1.5 * lh))
     if w1 <= w0:
         return None
     ycol = yel[:, w0:w1].mean(axis=0) >= 0.6
@@ -154,6 +154,11 @@ def lines(img, src_h: int = 1080):
             # (pared, destello) da franjas de otro alto
             if y0 >= top and lh * 0.8 <= n <= lh * 1.3:
                 out.append((y0, y, own_marker(img[y0:y], src_h)))
+            elif lh * 0.45 <= n < lh * 0.8 and y <= top + lh * 1.5:
+                # la primera línea con la mitad de arriba tapada por la pastilla «EN DIRECTO · Sin delay»
+                # de tu emisión: se ve solo su parte de abajo; se toma con su alto normal
+                ya = max(0, y - int(round(lh)))
+                out.append((ya, y, own_marker(img[ya:y], src_h)))
         y += 1
     return out
 
@@ -394,7 +399,8 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
         for cl in clusters:
             # se mira el directo 10 veces por segundo alrededor de la(s) kill(s): la línea sale en el
             # instante exacto en que entra en el killfeed (no en la hora de Riot, que puede ir desfasada)
-            t0 = cl[0][0] - 1.2
+            # desde 2,5 s antes: según el directo la línea sale hasta ~2 s ANTES de la hora de Riot
+            t0 = cl[0][0] - 2.5
             seq = grab_seq(vod, t0, (cl[-1][0] + 1.0) - t0, SEQ_FPS)
             if len(seq) < 4:
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: no se pudo leer el vídeo")
