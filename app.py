@@ -6,6 +6,7 @@ y las recorta del VOD de Twitch en un solo vídeo.
 import json
 import re
 import os
+import shutil
 import subprocess
 import threading
 import tkinter as tk
@@ -1457,10 +1458,18 @@ class App(tk.Tk):
         dl = self.cfg.get("downloaded_vods") or {}
         cur = os.path.abspath(self.v_vod.get()) if self.v_vod.get() else ""
         now, freed, gone = time.time(), 0, []
+        kept = []
         for path, when in list(gen.items()):
             if path not in dl or now - when < self.VOD_KEEP_DAYS * 86400 or path == cur:
                 if path not in dl and now - when > 60 * 86400:
                     gen.pop(path, None)
+                continue
+            # antes de borrar: ¿siguen ahí los vídeos que se sacaron de este VOD y se abren bien?
+            if path not in (self.cfg.get("generated_outputs") or {}):
+                continue          # de antes de 1.16.1: sin lista de vídeos no se borra nada
+            bad = self.outputs_problem(path)
+            if bad:
+                kept.append((os.path.basename(path), bad))
                 continue
             try:
                 if core.is_parts(path):
@@ -1486,7 +1495,40 @@ class App(tk.Tk):
             self.persist()
             self.status(f"Liberados {twitch.fmt_size(freed)}: borrados {len(gone)} VOD(s) de hace más de "
                         f"{self.VOD_KEEP_DAYS} días (los vídeos generados siguen ahí).")
+        warned = self.cfg.setdefault("purge_warned", [])
+        new_kept = [(n, why) for n, why in kept if n not in warned]
+        if new_kept:
+            warned.extend(n for n, _ in new_kept)
+            self.persist()
+            txt = "\n".join(f"• {n}: {why}" for n, why in new_kept[:5])
+            self.status("⚠ No he borrado " + ", ".join(n for n, _ in new_kept[:3]) +
+                        ": sus vídeos no están bien (mira el aviso).")
+            if not self.unattended():
+                messagebox.showwarning(APP_NAME, "Tocaba borrar estos VODs (pasaron 5 días), pero NO los he "
+                                                 "borrado porque sus vídeos generados no están o no se abren:\n\n"
+                                                 f"{txt}\n\nAsí puedes volver a generarlos. Si ya no los "
+                                                 "necesitas, bórralos tú a mano.")
         self.after(6 * 3600 * 1000, self.purge_old_vods)
+
+    def outputs_problem(self, vod_path: str) -> str:
+        """'' si los vídeos sacados de ese VOD están y se abren; si no, el motivo."""
+        outs = (self.cfg.get("generated_outputs") or {}).get(vod_path)
+        if not outs:
+            return "no sé qué vídeos se sacaron de él"
+        for p in outs:
+            if os.path.isdir(p):
+                if not any(f.lower().endswith(".mp4") for _, _, fs in os.walk(p) for f in fs):
+                    return f"la carpeta «{os.path.basename(p)}» está vacía"
+                continue
+            if not os.path.isfile(p):
+                return f"falta «{os.path.basename(p)}»"
+            try:
+                d = core.probe_vod(p).get("duration") or 0
+            except Exception:
+                d = 0
+            if d < 1:
+                return f"«{os.path.basename(p)}» no se abre o está vacío"
+        return ""
 
     def auto_process(self):
         """Tras descargar: trae las partidas del VOD, saca las rondas y genera el vídeo."""
@@ -2475,6 +2517,10 @@ class App(tk.Tk):
                             vout_path=v, cam=cam, words=words, highlight=sub_hl)
                 made = [out] + ([v] if v else [])
                 self.cfg.setdefault("generated_vods", {})[os.path.abspath(vod)] = time.time()
+                outs_ = self.cfg.setdefault("generated_outputs", {}).setdefault(os.path.abspath(vod), [])
+                for p_ in made:
+                    if os.path.abspath(p_) not in outs_:
+                        outs_.append(os.path.abspath(p_))
                 self.after(0, self.persist)
                 folder = base + " - clips sueltos" if singles else None
                 import publish
@@ -2878,6 +2924,25 @@ def selftest(out_path):
         log(bool(th) and th[0] > 8.5 and th[0] < 13, f"aprender umbrales de tus correcciones ({th})")
         app = App()
         log(True, "ventana creada")
+        # antes de borrar un VOD a los 5 días se comprueba que sus vídeos están y se abren
+        fake_vod = os.path.join(tmp, "viejo.mp4")
+        shutil.copy2(vid, fake_vod)
+        app.cfg["generated_vods"] = {fake_vod: time.time() - 6 * 86400}
+        app.cfg["downloaded_vods"] = {fake_vod: time.time() - 7 * 86400}
+        app.cfg["generated_outputs"] = {fake_vod: [os.path.join(tmp, "no_existe.mp4")]}
+        app.v_autodel.set(True)
+        app.v_vod.set("")
+        _sw = messagebox.showwarning
+        messagebox.showwarning = lambda *a_, **k_: None
+        try:
+            app.purge_old_vods()
+            kept_ = os.path.isfile(fake_vod)
+            app.cfg["generated_outputs"] = {fake_vod: [dvo]}
+            app.purge_old_vods()
+            gone_ = not os.path.isfile(fake_vod)
+        finally:
+            messagebox.showwarning = _sw
+        log(kept_ and gone_, f"borrado a los 5 días solo si los vídeos están bien (guarda={kept_}, borra={gone_})")
         # editor de subtítulos
         got = []
         dlg = app.edit_subtitles(words, got.append)

@@ -70,7 +70,7 @@ Las partidas descargadas se guardan: no se vuelven a pedir y, si la API falla o 
 | **Enlaces + Descargar VOD** | Descarga en la máxima calidad (normalmente 1080p60) con la hora exacta del directo. Si se corta, reintenta y sigue por donde iba. Antes comprueba que haya espacio en el disco. |
 | **Al terminar la descarga…** | Si está marcada, después de descargar lo hace todo solo. |
 | **Bajar solo los trozos con partidas** | En vez del directo entero (7 h ≈ 20–25 GB), mira antes qué partidas jugaste y baja solo esos trozos, con margen de sobra para la sincronización. Mucho más rápido y ocupa una fracción. Si algo falla, baja el VOD entero como siempre. Se guarda como `… .partes.json` + la carpeta `… (partidas)`; para abrirlo a mano, elige el `.partes.json`. |
-| **Borrar el VOD 5 días después** | Cuando ya se han sacado los vídeos de un VOD, lo borra a los 5 días para liberar espacio. Solo borra VODs que bajó el propio programa (nunca uno elegido a mano) y nunca los vídeos generados. |
+| **Borrar el VOD 5 días después** | Cuando ya se han sacado los vídeos de un VOD, lo borra a los 5 días para liberar espacio. Solo borra VODs que bajó el propio programa (nunca uno elegido a mano) y nunca los vídeos generados. **Antes de borrar comprueba que esos vídeos siguen ahí y se abren**: si falta alguno o está roto, no borra el VOD y te avisa, para que puedas volver a generarlos. |
 | **Carpeta…** | Dónde se guardan los VODs y los vídeos. |
 | **o elegir un VOD del PC…** | Usar un vídeo que ya tengas. |
 | **Inicio del directo** | Hora a la que empezó el directo (se pone sola con el enlace). |
