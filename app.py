@@ -2814,10 +2814,15 @@ def selftest_subs(wav, out_path):
         mono = all(b["start"] >= a["start"] for a, b in zip(ws, ws[1:]))
         inside = bool(ws) and ws[0]["start"] >= 0 and ws[-1]["end"] <= dur + 0.5
         # la voz de prueba empieza tras 2 s de silencio: el primer subtítulo no puede salir antes
-        early = bool(ws) and ws[0]["start"] < 1.3
-        ok = len(ws) >= 2 and mono and inside and not early
+        early = bool(ws) and ws[0]["start"] < 1.6
+        # tras la pausa de 4 s («…Vortexs Clips.» | «Mira esta jugada…») no puede haber palabras metidas
+        # en el silencio: el hueco más largo entre palabras tiene que ser de al menos 2,5 s
+        gaps = [b["start"] - a["end"] for a, b in zip(ws, ws[1:])]
+        pause_ok = bool(gaps) and max(gaps) >= 2.5
+        ok = len(ws) >= 2 and mono and inside and not early and pause_ok
         res = ("OK  " if ok else "FAIL") + f" transcripción ({len(ws)} palabras, modo «{subtitles.LAST_MODE}», " \
-              f"en orden={mono}, dentro={inside}, primera a {ws[0]['start'] if ws else -1:.2f} s): {txt[:200]}\n"
+              f"en orden={mono}, dentro={inside}, pausa respetada={pause_ok} ({max(gaps) if gaps else 0:.1f} s), " \
+              f"primera a {ws[0]['start'] if ws else -1:.2f} s): {txt[:200]}\n"
         res += "\n".join(f"  {w['start']:6.2f}-{w['end']:6.2f} {w['text']}" for w in ws[:40])
         res += "\nEN BRUTO (from-to | tokens texto@t_dtw):"
         for sg in (subtitles.LAST_RAW.get("transcription") or [])[:40]:

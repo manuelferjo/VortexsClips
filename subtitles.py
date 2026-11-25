@@ -27,7 +27,27 @@ MODEL_URLS = [
     f"https://github.com/manuelferjo/VortexsClips/releases/download/modelo-voz/{MODEL_NAME}",
     f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{MODEL_NAME}",
 ]
-HALLUCINATIONS = ("subtítulos", "subtitulos", "amara.org", "suscríbete", "gracias por ver")
+# frases que el transcriptor se inventa en silencios (se buscan como FRASE, no palabra suelta:
+# antes se tiraba cualquier «subtítulos» aunque lo dijeras de verdad)
+HALLUCINATIONS = (r"subt[ií]tulos (realizados|hechos|creados|por)( por)?( la comunidad)?( de)?( amara\.org)?",
+                  r"(la comunidad de )?amara\.org", r"suscr[ií]bete al canal", r"gracias por ver(lo| el v[ií]deo)?")
+
+
+def drop_hallucinations(words: list[dict]) -> list[dict]:
+    spans, pos, parts = [], 0, []
+    for w in words:
+        t = re.sub(r"[¡!¿?,;:\"]", "", w["text"]).strip().lower()
+        spans.append((pos, pos + len(t)))
+        parts.append(t)
+        pos += len(t) + 1
+    joined = " ".join(parts)
+    bad = set()
+    for pat in HALLUCINATIONS:
+        for mt in re.finditer(pat, joined):
+            for i, (a, b) in enumerate(spans):
+                if a < mt.end() and b > mt.start():
+                    bad.add(i)
+    return [w for i, w in enumerate(words) if i not in bad]
 
 
 def whisper_dir() -> str:
@@ -116,7 +136,9 @@ def transcribe(video: str, progress=None, should_stop=None) -> list[dict]:
         # si esta versión del transcriptor no lo admite, como antes
         common = [cli, "-m", model, "-f", wav, "-l", "es", "-t", threads, "-ml", "1", "-sow", "-np", "-of", base]
         out_tail = []
-        for extra in (["-mc", "0", "-dtw", DTW_PRESET, "-ojf"], ["-mc", "0", "-oj"], ["-oj"]):
+        # (la alineación DTW no funciona con «flash attention», que viene activada por defecto: -nfa)
+        for extra in (["-mc", "0", "-nfa", "-dtw", DTW_PRESET, "-ojf"], ["-mc", "0", "-dtw", DTW_PRESET, "-ojf"],
+                      ["-mc", "0", "-oj"], ["-oj"]):
             try:
                 os.remove(jpath)
             except OSError:
@@ -172,17 +194,16 @@ def parse_whisper_json(data: dict) -> list[dict]:
         off = seg.get("offsets") or {}
         if not text or text.startswith("[") or text.startswith("("):
             continue
-        if any(h in text.lower() for h in HALLUCINATIONS):
-            continue
         a, b = off.get("from"), off.get("to")
         if a is None or b is None:
             continue
         w = {"start": a / 1000.0, "end": max(b, a + 120) / 1000.0, "text": text}
         d = _seg_dtw_start(seg)
-        if d is not None and abs(d - w["start"]) < 3.0:
+        if d is not None and abs(d - w["start"]) < 6.0:
             w["start"] = d
+            w["_dtw"] = True
         words.append(w)
-    return fix_timing(words)
+    return fix_timing(drop_hallucinations(words))
 
 
 def fix_timing(words: list[dict]) -> list[dict]:
@@ -195,8 +216,12 @@ def fix_timing(words: list[dict]) -> list[dict]:
     out = []
     for w in sorted(words, key=lambda x: x["start"]):
         w = dict(w)
+        dtw = w.pop("_dtw", False)
         if w["end"] - w["start"] > MAX_WORD_S:
-            w["start"] = w["end"] - MAX_WORD_S
+            if dtw:                       # inicio fiable (alineado con la voz): se recorta el final
+                w["end"] = w["start"] + MAX_WORD_S
+            else:                         # sin alineación: lo fiable suele ser el final
+                w["start"] = w["end"] - MAX_WORD_S
         if out and w["start"] < out[-1]["start"] + 0.02:
             w["start"] = out[-1]["start"] + 0.02
         if out and out[-1]["end"] > w["start"]:
