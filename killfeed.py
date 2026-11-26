@@ -610,7 +610,10 @@ _PCACHE: dict = {}
 def agent_scores(img, box, agents) -> dict:
     """Parecido (0..1) del retrato de la derecha de la línea `box` con cada uno de esos agentes."""
     import numpy as np
-    from PIL import Image
+    try:
+        from PIL import Image
+    except ImportError:          # (sin Pillow no hay comparación de retratos: se sigue sin ella)
+        return {}
     P = portraits()
     x0b, y0b, x1b, y1b = box[:4]
     c = img[y0b:y1b, max(0, x1b - 3 * (y1b - y0b)):x1b].astype(np.float32)
