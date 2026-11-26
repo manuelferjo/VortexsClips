@@ -20,6 +20,7 @@ jobs:
           python -m pip install -q yt-dlp numpy pillow
       - name: Prueba
         run: |
+          bash tools/v18.sh
           mkdir -p out/agents
           curl -s "https://valorant-api.com/v1/agents?isPlayableCharacter=true" -o out/agents/agents.json
           python - <<'PY'
