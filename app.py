@@ -4505,6 +4505,58 @@ def demo_screenshot(out_png):
     app.mainloop()
 
 
+SINGLE_PORT = 47613
+
+
+def _single_instance(wait_s: float = 6.0):
+    """Socket local que solo puede tener un programa abierto. None si ya hay otro (y se le pide que se
+    muestre). Se espera unos segundos por si el otro se está cerrando (al actualizarse y reabrirse)."""
+    import socket
+    import time as _t
+    end = _t.time() + wait_s
+    while True:
+        s_ = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s_.bind(("127.0.0.1", SINGLE_PORT))
+            s_.listen(2)
+            return s_
+        except OSError:
+            s_.close()
+        if _t.time() >= end:
+            break
+        _t.sleep(0.3)
+    try:
+        c = socket.create_connection(("127.0.0.1", SINGLE_PORT), timeout=2)
+        c.sendall(b"show")
+        c.close()
+    except OSError:
+        pass
+    return None
+
+
+def _serve_show(srv, app_):
+    def loop():
+        while True:
+            try:
+                c, _a = srv.accept()
+                data = c.recv(16)
+                c.close()
+            except OSError:
+                return
+            if data.startswith(b"show"):
+                def show():
+                    try:
+                        app_.deiconify()
+                        app_.lift()
+                        app_.attributes("-topmost", True)
+                        app_.after(300, lambda: app_.attributes("-topmost", False))
+                        app_.focus_force()
+                    except Exception:
+                        pass
+                app_.after(0, show)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 if __name__ == "__main__":
     if "--demo-screenshot" in sys.argv:
         demo_screenshot(sys.argv[sys.argv.index("--demo-screenshot") + 1])
@@ -4515,4 +4567,10 @@ if __name__ == "__main__":
     elif "--selftest" in sys.argv:
         selftest(sys.argv[sys.argv.index("--selftest") + 1])
     else:
-        App().mainloop()
+        # una sola ventana del programa: si ya está abierto, se trae al frente y no se abre otro
+        srv = _single_instance()
+        if srv is None:
+            sys.exit(0)
+        app_ = App()
+        _serve_show(srv, app_)
+        app_.mainloop()
