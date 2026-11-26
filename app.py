@@ -59,6 +59,32 @@ ENCODERS = {"Automático (tu gráfica si se puede)": "auto",
 SYNC_COLORS = {"s_ok": ui.GREEN, "s_approx": YELLOW, "s_hora": "#ff9f43", "s_fail": ui.RED}
 
 
+class _SettingsTabs:
+    """Lo que antes eran las pestañas VOD / Cortes / Salida / Automático: abre la parte de los ajustes."""
+    KEYS = (None, "cortar", "videos", "auto")
+
+    def __init__(self, app):
+        self.app = app
+
+    def select(self, i):
+        k = self.KEYS[i] if isinstance(i, int) and 0 <= i < len(self.KEYS) else None
+        if k is None:
+            self.app.setwin.withdraw()
+            self.app.show_page("vod")
+        else:
+            self.app.open_settings(k)
+
+
+class _PageTabs:
+    """Lo que antes eran las pestañas Rondas / Vista previa: ahora todo está en la página Vídeos."""
+
+    def __init__(self, app, page):
+        self.app, self.page = app, page
+
+    def select(self, *_a):
+        self.app.show_page(self.page)
+
+
 def sync_tag(c: dict) -> str:
     if c.get("check") == "dudosa":
         return "s_approx"
@@ -212,15 +238,24 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ UI
     def _build(self):
+        """
+        Pantalla principal en 3 pasos (VOD → Partidas → Vídeos), uno a la vista cada vez; los ajustes
+        que se tocan una vez (cuenta, cortes, vídeos, carpeta, automático) van en la ventana Ajustes.
+        """
         head = ui.GlowHeader(self, height=80)
         head.pack(fill="x")
         self._logo = ui.logo_image(self, 44)
-        upd = ui.Button(head, text="Buscar actualizaciones", command=lambda: self.check_update(silent=False))
-        upd.configure(bg=BG)
-        upd._bgc = BG
-        upd._cache.clear()
-        upd._draw()
+        upd = ui.Button(head, text="Buscar actualizaciones", style="Ghost.TButton",
+                        command=lambda: self.check_update(silent=False))
+        b_set = ui.Button(head, text="⚙  Ajustes", command=lambda: self.open_settings())
+        b_dir = ui.Button(head, text="Carpeta", command=self.open_outdir)
+        for b_ in (upd, b_set, b_dir):
+            b_.configure(bg=BG)
+            b_._bgc = BG
+            b_._cache.clear()
+            b_._draw()
         self.pill = ui.status_pill(head)
+        self._head_vod = ""
 
         def place_head(w):
             head.delete("fg")
@@ -231,78 +266,153 @@ class App(tk.Tk):
             f1 = ui.display(22)
             t1 = head.create_text(x, 14, text="Vortexs", font=f1, fill=TEXT, anchor="nw", tags="fg")
             bx = head.bbox(t1)
-            head.create_text(bx[2] + 8, 14, text="Clips", font=f1, fill=YELLOW, anchor="nw", tags="fg")
-            head.create_text(x + 1, 52, text=f"BY VORTEXS · V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
+            t2 = head.create_text(bx[2] + 8, 14, text="Clips", font=f1, fill=YELLOW, anchor="nw", tags="fg")
+            bx2 = head.bbox(t2)
+            if self._head_vod:
+                head.create_text(bx2[2] + 18, 24, text=self._head_vod, font=ui.body(10), fill=MUTED,
+                                 anchor="nw", tags="fg")
+            head.create_text(x + 1, 52, text=f"V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
                              font=ui.mono(8), fill=ui.DIM, anchor="nw", tags="fg")
-            head.create_window(w - 22, 40, window=upd, anchor="e", tags="fg")
-            head.create_window(w - 22 - upd.winfo_reqwidth() - 12, 40, window=self.pill, anchor="e", tags="fg")
+            xr = w - 22
+            for wdg in (b_set, b_dir, upd, self.pill):
+                head.create_window(xr, 40, window=wdg, anchor="e", tags="fg")
+                xr -= wdg.winfo_reqwidth() + 10
         head.items.append(place_head)
+        self._head = head
 
-        # todo lo de en medio va en una zona que se desplaza si la ventana es baja
+        # ---------------- ventana de ajustes (se crea ya, oculta: sus controles existen desde el principio)
+        sw = tk.Toplevel(self)
+        sw.withdraw()
+        sw.title("Ajustes · Vortexs Clips")
+        sw.configure(bg=BG)
+        sw.geometry("1080x640")
+        sw.minsize(860, 480)
+        sw.protocol("WM_DELETE_WINDOW", self.close_settings)
+        try:
+            ico_ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+            if os.path.isfile(ico_):
+                sw.iconbitmap(ico_)
+        except Exception:
+            pass
+        self.setwin = sw
+        nav = tk.Frame(sw, bg=BG, width=220)
+        nav.pack(side="left", fill="y", padx=(14, 0), pady=14)
+        nav.pack_propagate(False)
+        sbody = ui.ScrollArea(sw)
+        sbody.pack(side="left", fill="both", expand=True, padx=14, pady=14)
+        scard = ui.Card(sbody.inner, pad=18, radius=18)
+        scard.pack(fill="both", expand=True)
+        self._set_title = ttk.Label(scard, text="", style="H.TLabel")
+        self._set_title.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        scard.columnconfigure(0, weight=1)
+        self._set_pages, self._set_btns = {}, {}
+        for key, txt in (("cuenta", "Cuenta"), ("cortar", "Qué cortar"), ("videos", "Vídeos y subtítulos"),
+                         ("carpeta", "Carpeta y Drive"), ("auto", "Automático"), ("otro", "Otro PC")):
+            pg = ttk.Frame(scard, style="Panel.TFrame")
+            self._set_pages[key] = (pg, txt)
+            lb = tk.Label(nav, text="   " + txt, anchor="w", bg=BG, fg=MUTED, font=ui.semi(10),
+                          padx=8, pady=9, cursor="hand2")
+            lb.pack(fill="x", pady=1)
+            lb.bind("<Button-1>", lambda e, k=key: self.open_settings(k))
+            self._set_btns[key] = lb
+        self._set_cur = None
+        tk.Label(nav, text="Se guarda solo.", bg=BG, fg=ui.DIM, font=ui.body(9)).pack(side="bottom", anchor="w",
+                                                                                       padx=10, pady=6)
+
+        # ---------------- cuerpo: pasos arriba y una página cada vez
         self.body = ui.ScrollArea(self)
-        top = ttk.Frame(self.body.inner, padding=(16, 8, 16, 0))
-        top.pack(fill="x")
-        top.columnconfigure(0, weight=1)
-        top.columnconfigure(1, weight=1)
+        stepper = tk.Frame(self.body.inner, bg=BG)
+        stepper.pack(fill="x", padx=16, pady=(10, 2))
+        self._steps = []
+        for i, (key, txt) in enumerate((("vod", "VOD"), ("partidas", "Partidas"), ("videos", "Vídeos"))):
+            stepper.columnconfigure(i, weight=1, uniform="st")
+            f_ = tk.Frame(stepper, bg=PANEL, cursor="hand2", highlightthickness=1, highlightbackground=BORDER)
+            f_.grid(row=0, column=i, sticky="we", padx=(0 if i == 0 else 8, 0))
+            ic = tk.Label(f_, text="○", bg=PANEL, fg=ui.DIM, font=ui.display(13), cursor="hand2")
+            ic.pack(side="left", padx=(14, 6), pady=9)
+            tl = tk.Label(f_, text=f"{i + 1} · {txt}", bg=PANEL, fg=TEXT, font=ui.display(13), cursor="hand2")
+            tl.pack(side="left", pady=9)
+            sl = tk.Label(f_, text="", bg=PANEL, fg=ui.DIM, font=ui.body(9), cursor="hand2")
+            sl.pack(side="left", padx=(10, 0), pady=9)
+            for w_ in (f_, ic, tl, sl):
+                w_.bind("<Button-1>", lambda e, k=key: self.show_page(k))
+            self._steps.append((key, f_, ic, tl, sl))
+        pages = ttk.Frame(self.body.inner, padding=(16, 8, 16, 8))
+        pages.pack(fill="both", expand=True)
+        pages.columnconfigure(0, weight=1)
+        pages.rowconfigure(0, weight=1)
+        self._pages = {k: ttk.Frame(pages) for k in ("vod", "partidas", "videos")}
+        for f_ in self._pages.values():
+            f_.grid(row=0, column=0, sticky="nsew")
+            f_.columnconfigure(0, weight=1)
+        self._page = None
 
-        # --- 1. cuenta
-        p1 = self._panel(top, "1 · Cuenta y partidas", "tu cuenta de VALORANT")
-        p1.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        # --- Ajustes · Cuenta
+        p1 = self._set_pages["cuenta"][0]
         self.v_riot = tk.StringVar(value=self.cfg.get("riot_id", "Vortexs#vrtxs"))
         self.v_region = tk.StringVar(value=self.cfg.get("region", "eu"))
         self.v_key = tk.StringVar(value=self.cfg.get("api_key", ""))
         self.v_link = tk.StringVar()
         ttk.Label(p1, text="Riot ID").grid(row=1, column=0, sticky="w")
         ttk.Entry(p1, textvariable=self.v_riot, width=22).grid(row=1, column=1, sticky="w", padx=6)
-        ttk.Label(p1, text="Región").grid(row=1, column=2, sticky="w")
+        ttk.Label(p1, text="Región").grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Combobox(p1, textvariable=self.v_region, values=REGIONS, width=6,
-                     state="readonly").grid(row=1, column=3, sticky="w", padx=6)
-        ttk.Label(p1, text="Clave API").grid(row=2, column=0, sticky="w", pady=6)
-        ttk.Entry(p1, textvariable=self.v_key, width=40, show="•").grid(
-            row=2, column=1, columnspan=3, sticky="we", padx=6)
-        b = ttk.Frame(p1, style="Panel.TFrame")
-        b.grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        self.btn_load = ui.Button(b, text="Cargar partidas", style="Purple.TButton",
-                                   command=self.load_matches)
-        self.btn_load.pack(side="left")
-        self.btn_more = ui.Button(b, text="Cargar 10 más", command=lambda: self.load_matches(True))
-        self.btn_more.pack(side="left", padx=6)
-        ttk.Label(p1, text="o pega el enlace de una partida de tracker.gg").grid(
-            row=4, column=0, columnspan=4, sticky="w", pady=(10, 2))
-        lf = ttk.Frame(p1, style="Panel.TFrame")
-        lf.grid(row=5, column=0, columnspan=4, sticky="we")
-        ttk.Entry(lf, textvariable=self.v_link, width=44).pack(side="left", fill="x", expand=True)
-        ui.Button(lf, text="Añadir", command=self.add_by_link).pack(side="left", padx=6)
-        kp = ttk.Frame(p1, style="Panel.TFrame")
-        kp.grid(row=6, column=0, columnspan=4, sticky="we", pady=(10, 0))
-        self.kpi = {}
-        for i, (key, cap) in enumerate((("invod", "partidas en el VOD"), ("synced", "sincronizadas"),
-                                        ("plays", "jugadas para cortar"))):
-            kp.columnconfigure(i, weight=1, uniform="kpi")
-            box = ui.Card(kp, pad=12, radius=14, bg=FIELD, outer=PANEL, border=ui.BORDER_HI, style="Kpi.TFrame")
-            box.grid(row=0, column=i, sticky="we", padx=(0 if i == 0 else 10, 0))
-            cr = tk.Frame(box, bg=FIELD)
-            cr.pack(anchor="w", fill="x")
-            tk.Label(cr, text="●", bg=FIELD, fg=YELLOW if i != 1 else PURPLE, font=ui.body(7)).pack(side="left")
-            tk.Label(cr, text=" " + cap.upper(), bg=FIELD, fg=ui.DIM, font=ui.mono(7)).pack(side="left")
-            num = tk.Label(box, text="—", bg=FIELD, fg=TEXT, font=ui.display(24))
-            num.pack(anchor="w", pady=(2, 0))
-            self.kpi[key] = num
+                     state="readonly").grid(row=2, column=1, sticky="w", padx=6, pady=(8, 0))
+        ttk.Label(p1, text="Clave API").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(p1, textvariable=self.v_key, width=46, show="•").grid(
+            row=3, column=1, sticky="w", padx=6, pady=(8, 0))
+        ttk.Label(p1, text="La clave de HenrikDev (api.henrikdev.xyz) para leer tus partidas.",
+                  style="Muted.TLabel").grid(row=4, column=1, sticky="w", padx=6, pady=(2, 0))
 
-        # --- 2. VOD y ajustes (pestañas)
-        p2 = self._panel(top, "2 · VOD y ajustes")
-        p2.grid(row=0, column=1, sticky="nsew")
-        nb = ui.Tabs(p2)
-        nb.grid(row=1, column=0, columnspan=6, sticky="nsew")
-        self.nb2 = nb
-        t_vod = ttk.Frame(nb, style="Panel.TFrame", padding=10)
-        t_cut = ttk.Frame(nb, style="Panel.TFrame", padding=10)
-        t_out = ttk.Frame(nb, style="Panel.TFrame", padding=10)
-        t_auto = ttk.Frame(nb, style="Panel.TFrame", padding=10)
-        nb.add(t_vod, text="  VOD  ")
-        nb.add(t_cut, text="  Cortes  ")
-        nb.add(t_out, text="  Salida  ")
-        nb.add(t_auto, text="  Automático  ")
+        # --- página Partidas
+        pp = self._pages["partidas"]
+        p3 = self._panel(pp, "Partidas de este directo")
+        p3.grid(row=0, column=0, sticky="nsew")
+        p3.columnconfigure(0, weight=1)
+        sumr = ttk.Frame(p3, style="Panel.TFrame")
+        sumr.grid(row=1, column=0, sticky="we", pady=(0, 8))
+        self.kpi = {}
+        for key, cap in (("invod", "en el VOD"), ("synced", "sincronizadas"), ("plays", "jugadas para cortar")):
+            n_ = tk.Label(sumr, text="—", bg=PANEL, fg=TEXT, font=ui.display(13))
+            n_.pack(side="left")
+            tk.Label(sumr, text=" " + cap + "     ", bg=PANEL, fg=MUTED, font=ui.body(10)).pack(side="left")
+            self.kpi[key] = n_
+        self.lbl_hidden = tk.Label(sumr, text="", bg=PANEL, fg=PURPLE, font=ui.body(10), cursor="hand2")
+        self.lbl_hidden.pack(side="right")
+        self.lbl_hidden.bind("<Button-1>", lambda e: self._toggle_hidden())
+        self._show_hidden = False
+        self.mcards = tk.Frame(p3, bg=PANEL)
+        self.mcards.grid(row=2, column=0, sticky="nsew")
+        self.mcards.columnconfigure(0, weight=1)
+        self._msel = None
+        # (la tabla de antes sigue existiendo, sin mostrarse: guarda la lista y la selección)
+        cols = ("use", "date", "map", "agent", "score", "hl", "invod", "sync")
+        self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse", height=5)
+        mb = ttk.Frame(p3, style="Panel.TFrame")
+        mb.grid(row=3, column=0, sticky="we", pady=(10, 0))
+        self.btn_load = ui.Button(mb, text="Buscar partidas", command=self.load_matches)
+        self.btn_load.pack(side="left")
+        self.btn_more = ui.Button(mb, text="Cargar 10 más", style="Ghost.TButton",
+                                  command=lambda: self.load_matches(True))
+        self.btn_more.pack(side="left", padx=6)
+        ui.Button(mb, text="Revisar sincro", style="Ghost.TButton", command=self.review_sync).pack(side="right")
+        ui.Button(mb, text="Sincronizar a mano…", style="Ghost.TButton",
+                  command=self.calibrate).pack(side="right", padx=6)
+        ttk.Label(p3, text="Clic en una partida para elegirla (para sincronizar a mano) · clic en ☐ para "
+                           "incluirla o no", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(6, 0))
+
+        # --- página VOD y páginas de la ventana de ajustes
+        pv = self._panel(self._pages["vod"], "El directo", "de qué directo sacar los vídeos")
+        pv.grid(row=0, column=0, sticky="nsew")
+        pv.columnconfigure(0, weight=1)
+        t_vod = ttk.Frame(pv, style="Panel.TFrame")
+        t_vod.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+        t_cut = self._set_pages["cortar"][0]
+        t_out = self._set_pages["videos"][0]
+        t_auto = self._set_pages["auto"][0]
+        t_dir = self._set_pages["carpeta"][0]
+        t_pc = self._set_pages["otro"][0]
+        self.nb2 = _SettingsTabs(self)
 
         cfg = self.cfg
         self.v_vod = tk.StringVar()
@@ -389,11 +499,14 @@ class App(tk.Tk):
                                  "y ocupa una fracción)", variable=self.v_partial).pack(anchor="w")
         ui.Toggle(af, text="Borrar el VOD descargado 5 días después de sacar sus vídeos "
                                  "(los vídeos generados no se tocan)", variable=self.v_autodel).pack(anchor="w")
-        of = ttk.Frame(t_vod, style="Panel.TFrame")
-        of.grid(row=4, column=0, columnspan=4, sticky="we", pady=(6, 0))
-        ui.Button(of, text="Carpeta…", command=self.pick_outdir).pack(side="left")
+        ttk.Label(t_dir, text="Aquí se guardan los vídeos: una carpeta por directo, con su fecha (dd-mm-aaaa).",
+                  style="Muted.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+        of = ttk.Frame(t_dir, style="Panel.TFrame")
+        of.grid(row=1, column=0, columnspan=4, sticky="we", pady=(6, 0))
+        ui.Button(of, text="Cambiar carpeta…", command=self.pick_outdir).pack(side="left")
         self.lbl_outdir = ttk.Label(of, text=self.v_outdir.get(), style="Muted.TLabel")
         self.lbl_outdir.pack(side="left", padx=8)
+        ttk.Separator(t_dir).grid(row=2, column=0, columnspan=4, sticky="we", pady=12)
         ttk.Separator(t_vod).grid(row=5, column=0, columnspan=4, sticky="we", pady=8)
         vf = ttk.Frame(t_vod, style="Panel.TFrame")
         vf.grid(row=6, column=0, columnspan=4, sticky="we")
@@ -515,10 +628,9 @@ class App(tk.Tk):
         ui.Toggle(tw_, text="Top de la semana cada lunes (las 10 mejores jugadas, horizontal y vertical)",
                   variable=self.v_topweek).pack(side="left")
         ui.Button(tw_, text="Hacer el top ahora…", command=self.top_week_now).pack(side="left", padx=10)
-        ttk.Separator(t_auto).grid(row=7, column=0, columnspan=4, sticky="we", pady=8)
         # Google Drive: la carpeta del directo se sube tal cual a <enlace>/<subcarpeta>/<dd-mm-aaaa>/
-        df_ = ttk.Frame(t_auto, style="Panel.TFrame")
-        df_.grid(row=8, column=0, columnspan=4, sticky="we")
+        df_ = ttk.Frame(t_dir, style="Panel.TFrame")
+        df_.grid(row=3, column=0, columnspan=4, sticky="we")
         ttk.Label(df_, text="Google Drive: carpeta").grid(row=0, column=0, sticky="w")
         ttk.Entry(df_, textvariable=self.v_drive_link, width=46).grid(row=0, column=1, sticky="w", padx=6)
         ttk.Label(df_, text="dentro de").grid(row=0, column=2, sticky="w", padx=(6, 0))
@@ -533,73 +645,26 @@ class App(tk.Tk):
                             "carpeta con la fecha del directo.", style="Muted.TLabel").grid(
             row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self._drive_status()
-        ttk.Separator(t_auto).grid(row=9, column=0, columnspan=4, sticky="we", pady=8)
-        sf = ttk.Frame(t_auto, style="Panel.TFrame")
-        sf.grid(row=10, column=0, columnspan=4, sticky="w")
+        ttk.Label(t_pc, text="Lleva tus ajustes a otro ordenador (incluye tu clave API: no lo compartas).",
+                  style="Muted.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        sf = ttk.Frame(t_pc, style="Panel.TFrame")
+        sf.grid(row=1, column=0, columnspan=4, sticky="w")
         ttk.Label(sf, text="Usar en otro PC:").pack(side="left")
         ui.Button(sf, text="Exportar ajustes", command=self.export_settings).pack(side="left", padx=6)
         ui.Button(sf, text="Importar ajustes", command=self.import_settings).pack(side="left")
 
-        # --- 3. partidas
-        mid = ttk.Frame(self.body.inner, padding=(16, 10, 16, 8))
-        mid.columnconfigure(0, weight=3)
-        mid.columnconfigure(1, weight=2)
-        mid.rowconfigure(0, weight=1)
-
-        p3 = self._panel(mid, "3 · Partidas", "clic en ☐ para incluir")
-        p3.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        p3.rowconfigure(1, weight=1)
-        p3.columnconfigure(0, weight=1)
-        cols = ("use", "date", "map", "agent", "score", "hl", "invod", "sync")
-        self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse", height=5)
-        for c, t, w in zip(cols, ("", "Fecha", "Mapa", "Agente", "Resultado", "Rondas", "¿En el VOD?", "Sincro"),
-                           (34, 130, 80, 80, 88, 64, 96, 120)):
-            self.tv_m.heading(c, text=t, anchor="w" if c == "date" else "center")
-            self.tv_m.column(c, width=w, anchor="center" if c != "date" else "w", stretch=c in ("date", "sync"))
-        self.tv_m.grid(row=1, column=0, sticky="nsew")
-        sb = ttk.Scrollbar(p3, orient="vertical", command=self.tv_m.yview)
-        sb.grid(row=1, column=1, sticky="ns")
-        self.tv_m.configure(yscrollcommand=sb.set)
-        self.tv_m.bind("<Button-1>", self.on_match_click)
-        self.tv_m.tag_configure("alt", background=ROW_ALT)
-        self.tv_m.tag_configure("in", foreground=YELLOW)
-        self.tv_m.tag_configure("out", foreground=MUTED)
-        for tag_, col_ in SYNC_COLORS.items():
-            self.tv_m.tag_configure(tag_, foreground=col_)
-        mb = ttk.Frame(p3, style="Panel.TFrame")
-        mb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ui.Button(mb, text="Marcar las que están en el VOD", command=self.auto_check).pack(side="left")
-        ui.Button(mb, text="Sincronizar solo", style="Purple.TButton", command=self.sync_checked).pack(side="left", padx=6)
-        ui.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="left")
-        ui.Button(mb, text="Informes", style="Ghost.TButton", command=self.open_reports).pack(side="right")
-        ui.Button(mb, text="Revisar sincro", command=self.review_sync).pack(side="right", padx=6)
-        ui.Button(mb, text="Quitar sincro", command=self.clear_calib).pack(side="left")
-        lg = ttk.Frame(p3, style="Panel.TFrame")
-        lg.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        for tag_, txt_ in (("s_ok", "segura"), ("s_approx", "aproximada (revísala)"),
-                           ("s_hora", "sin sincronizar"), ("s_fail", "no se encontró")):
-            tk.Label(lg, text="●", bg=PANEL, fg=SYNC_COLORS[tag_], font=ui.body(9)).pack(side="left")
-            tk.Label(lg, text=" " + txt_.upper() + "    ", bg=PANEL, fg=ui.DIM, font=ui.mono(7)).pack(side="left")
-
-        # --- 4. rondas
-        p4o = self._panel(mid, "4 · Rondas y vista previa", "doble clic para ver una ronda")
-        p4o.grid(row=0, column=1, sticky="nsew")
-        p4o.rowconfigure(1, weight=1)
-        p4o.columnconfigure(0, weight=1)
-        self.nb4 = ui.Tabs(p4o)
-        self.nb4.grid(row=1, column=0, sticky="nsew")
-        p4 = ttk.Frame(self.nb4, style="Panel.TFrame", padding=6)
-        self.tab_prev = ttk.Frame(self.nb4, style="Panel.TFrame", padding=6)
-        self.nb4.add(p4, text="  Rondas que se van a cortar  ")
-        self.nb4.add(self.tab_prev, text="  Vista previa  ")
-        self.player = player.Player(self.tab_prev, lambda: self.v_vod.get(), fit=True,
-                                    on_expand=self.big_preview)
-        self.player.pack(anchor="n")
+        # --- página Vídeos: las rondas que se van a cortar y la vista previa
+        pvd = self._pages["videos"]
+        pvd.columnconfigure(0, weight=3)
+        pvd.columnconfigure(1, weight=2)
+        pvd.rowconfigure(0, weight=1)
+        p4 = self._panel(pvd, "Rondas que se van a cortar", "doble clic para verla")
+        p4.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         p4.rowconfigure(1, weight=1)
         p4.columnconfigure(0, weight=1)
         cols = ("round", "from", "to", "dur")
-        self.tv_c = ttk.Treeview(p4, columns=cols, show="headings", selectmode="extended", height=5)
-        for c, t, w in zip(cols, ("Ronda", "Desde (VOD)", "Hasta", "Dur."), (190, 90, 80, 50)):
+        self.tv_c = ttk.Treeview(p4, columns=cols, show="headings", selectmode="extended", height=12)
+        for c, t, w in zip(cols, ("Ronda", "Desde (VOD)", "Hasta", "Dur."), (220, 90, 80, 50)):
             self.tv_c.heading(c, text=t)
             self.tv_c.column(c, width=w, anchor="w" if c == "round" else "center", stretch=c == "round")
         self.tv_c.grid(row=1, column=0, sticky="nsew")
@@ -610,55 +675,56 @@ class App(tk.Tk):
         self.tv_c.tag_configure("alt", background=ROW_ALT)
         cb = ttk.Frame(p4, style="Panel.TFrame")
         cb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ui.Button(cb, text="Calcular rondas", style="Purple.TButton", command=self.compute).pack(side="left")
-        ui.Button(cb, text="Ver ronda", command=self.preview).pack(side="left", padx=6)
+        ui.Button(cb, text="Calcular rondas", command=self.compute).pack(side="left")
+        ui.Button(cb, text="Ver ronda", style="Ghost.TButton", command=self.preview).pack(side="left", padx=6)
         ui.Button(cb, text="Quitar", style="Ghost.TButton", command=self.remove_clips).pack(side="left")
+        self.btn_drive = ui.Button(cb, text="Subir a Drive…", style="Ghost.TButton", command=self.drive_upload_last)
+        self.btn_drive.pack(side="right")
+        self.btn_subs = ui.Button(cb, text="Corregir subtítulos…", style="Ghost.TButton",
+                                  command=self.fix_subtitles_later)
+        self.btn_subs.pack(side="right", padx=6)
+        p5 = self._panel(pvd, "Vista previa")
+        p5.grid(row=0, column=1, sticky="nsew")
+        self.tab_prev = ttk.Frame(p5, style="Panel.TFrame")
+        self.tab_prev.grid(row=1, column=0, sticky="nsew")
+        self.player = player.Player(self.tab_prev, lambda: self.v_vod.get(), fit=True,
+                                    on_expand=self.big_preview)
+        self.player.pack(anchor="n")
+        self.nb4 = _PageTabs(self, "videos")
 
-        # --- pie
+        # --- pie: progreso, «Más» y UN botón principal que cambia según el momento
         foot = ui.Card(self, pad=16, radius=20, glow=True)
-        # el panel de progreso se coloca primero abajo para que nunca quede cortado;
-        # si falta sitio, encogen las listas del medio
         foot.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
         self.body.pack(fill="both", expand=True)
-        mid.pack(fill="both", expand=True)
-        self._lay = {"top": top, "mid": mid, "p": (p1, p2, p3, p4o), "mode": None, "maxw": [0, 0, 0, 0]}
-        self.bind("<Configure>", lambda e: ui.later(self, "_relay_id", 80, self._relayout)
-                  if e.widget is self else None, add="+")
-        chips = ttk.Frame(foot, style="Panel.TFrame")
-        chips.pack(fill="x")
         self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sincronizar",
                            "4 · Sacar rondas", "5 · Generar vídeos"]
         self.chip_lbls = []
-        for i, n in enumerate(self.step_names):
-            lb = ttk.Label(chips, text=n, style="ChipOff.TLabel")
-            lb.pack(side="left", padx=(0, 4))
-            self.chip_lbls.append(lb)
-            if i < len(self.step_names) - 1:
-                ttk.Label(chips, text="›", style="Muted.TLabel").pack(side="left", padx=(0, 4))
-        self.lbl_time = ttk.Label(chips, text="", style="Muted.TLabel")
-        self.lbl_time.pack(side="right")
         top_row = ttk.Frame(foot, style="Panel.TFrame")
-        top_row.pack(fill="x", pady=(8, 4))
+        top_row.pack(fill="x", pady=(0, 4))
         self.lbl_step = ttk.Label(top_row, text="Listo para empezar", style="Step.TLabel")
         self.lbl_step.pack(side="left")
         self.lbl_pct = ttk.Label(top_row, text="", style="Pct.TLabel")
         self.lbl_pct.pack(side="right")
+        self.lbl_time = ttk.Label(top_row, text="", style="Muted.TLabel")
+        self.lbl_time.pack(side="right", padx=12)
         self.pb = ui.GradBar(foot, mode="determinate", maximum=1)
         self.pb.pack(fill="x")
         row = ttk.Frame(foot, style="Panel.TFrame")
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(8, 0))
         self.lbl_status = ttk.Label(row, text="Pega un enlace de Twitch o elige un VOD.", style="Detail.TLabel",
                                     wraplength=760)
         self.lbl_status.pack(side="left")
-        self.btn_render = ui.Button(row, text="GENERAR VÍDEO", style="Accent.TButton", command=self.render)
+        self.btn_render = ui.Button(row, text="Descargar VOD", style="Accent.TButton", command=self.primary_action)
         self.btn_render.pack(side="right")
-        self.btn_cancel = ui.Button(row, text="Cancelar", command=self.cancel, state="disabled")
-        self.btn_cancel.pack(side="right", padx=6)
-        self.btn_subs = ui.Button(row, text="Corregir subtítulos…", style="Ghost.TButton",
-                                   command=self.fix_subtitles_later)
-        self.btn_subs.pack(side="right")
-        self.btn_drive = ui.Button(row, text="Subir a Drive", style="Ghost.TButton", command=self.drive_upload_last)
-        self.btn_drive.pack(side="right", padx=(0, 4))
+        self.btn_more_menu = ui.Button(row, text="Más  ▾", style="Ghost.TButton")
+        self.btn_more_menu.configure(command=self.show_more_menu)
+        self.btn_more_menu.pack(side="right", padx=8)
+        self.btn_cancel = ui.Button(row, text="Cancelar", style="Ghost.TButton", command=self.cancel,
+                                    state="disabled")
+        self.btn_cancel.pack(side="right")
+        self._lay = None
+        self.show_page("vod")
+        self.after(500, self._ui_tick)
 
     def big_preview(self):
         """La vista previa en una ventana grande (se puede agrandar o maximizar)."""
@@ -684,12 +750,295 @@ class App(tk.Tk):
         dlg.protocol("WM_DELETE_WINDOW", close)
         return dlg
 
+    # ------------------------------------------------------------ navegación (pasos y ajustes)
+    def show_page(self, key):
+        if key not in self._pages:
+            return
+        self._page = key
+        self._pages[key].tkraise()
+        self._paint_steps()
+        try:
+            self.body.cv.yview_moveto(0)
+        except Exception:
+            pass
+
+    def _step_state(self):
+        """(estado, texto) de cada paso: 'done', 'now' o 'todo'."""
+        st = self.settings()
+        has_vod = bool(self.vod_info)
+        ch = [self.matches[i] for i in self.checked if i in self.matches]
+        synced = [m for m in ch if self._is_synced(m.match_id)]
+        n_cl = len({c.group for c in self.clips}) if self.clips else 0
+        vod_txt = ""
+        if has_vod:
+            vod_txt = (self.v_start.get().split(" ")[0] or "listo")
+        p_txt = ""
+        if self.matches:
+            p_txt = f"{len(synced)}/{len(ch)} sincronizadas" if ch else "ninguna marcada"
+        v_txt = f"{n_cl} jugadas" if n_cl else ""
+        s_v = "done" if has_vod else "now"
+        s_p = "todo" if not has_vod else ("done" if ch and len(synced) == len(ch) else "now")
+        s_c = "todo" if s_p != "done" else ("done" if getattr(self, "_rendered_ok", False) else "now")
+        del st
+        return [(s_v, vod_txt), (s_p, p_txt), (s_c, v_txt)]
+
+    def _is_synced(self, mid):
+        c = self.calib.get(mid) or {}
+        return bool(c.get("auto") or c.get("first_kill_vod_s") is not None or c.get("failed"))
+
+    def _paint_steps(self):
+        try:
+            states = self._step_state()
+        except Exception:
+            return
+        for (key, f_, ic, tl, sl), (st, txt) in zip(self._steps, states):
+            cur = key == self._page
+            bg = ui.SEL if cur else PANEL
+            ic.configure(text={"done": "✓", "now": "●", "todo": "○"}[st],
+                         fg={"done": ui.GREEN, "now": YELLOW, "todo": ui.DIM}[st])
+            f_.configure(bg=bg, highlightbackground=PURPLE if cur else BORDER)
+            for w_ in (ic, tl, sl):
+                w_.configure(bg=bg)
+            tl.configure(fg=TEXT if (cur or st != "todo") else ui.DIM)
+            sl.configure(text=txt)
+
+    def open_settings(self, key=None):
+        key = key or self._set_cur or "cuenta"
+        if self._set_cur and self._set_cur != key:
+            self._set_pages[self._set_cur][0].grid_forget()
+        pg, txt = self._set_pages[key]
+        pg.grid(row=1, column=0, sticky="nsew")
+        self._set_title.configure(text=txt)
+        for k, lb in self._set_btns.items():
+            lb.configure(bg=ui.SEL if k == key else BG, fg=TEXT if k == key else MUTED)
+        self._set_cur = key
+        self.setwin.deiconify()
+        self.setwin.lift()
+        try:
+            self.setwin.focus_force()
+        except Exception:
+            pass
+
+    def close_settings(self):
+        self.setwin.withdraw()
+        try:
+            self.persist()
+        except Exception:
+            pass
+        self.refresh_matches()
+
+    def open_outdir(self):
+        d = self.v_outdir.get()
+        os.makedirs(d, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(d)
+        else:
+            messagebox.showinfo(APP_NAME, d)
+
+    # ------------------------------------------------------------ partidas en tarjetas
+    def _toggle_hidden(self):
+        self._show_hidden = not self._show_hidden
+        self.render_match_cards()
+
+    def _round_tags(self, m, st):
+        out = []
+        for r in m.highlight_rounds(st.min_kills, st.clutch_min):
+            k = r.my_kills
+            lab = {3: "3K", 4: "4K"}.get(k, "ACE" if k >= 5 else "")
+            if core.is_clutch(r, st.clutch_min):
+                lab = (lab + " " if lab else "") + f"1v{r.clutch_vs}"
+            out.append(f"{lab or f'{k}K'} R{r.index + 1}")
+        return out
+
+    def _sync_words(self, m, inv):
+        """Estado de la partida en palabras: (texto, color)."""
+        if inv is False:
+            return "No está en este directo", ui.DIM
+        c = self.calib.get(m.match_id) or {}
+        if c.get("check") == "dudosa":
+            return "⚠ Revisar", YELLOW
+        if c.get("auto") and (c.get("approx") or float(c.get("conf") or 0) < 0.5):
+            return "≈ Aproximada (revísala)", YELLOW
+        if c.get("auto"):
+            return f"✓ Lista ({int(float(c.get('conf') or 0) * 100)}%)", ui.GREEN
+        if c.get("first_kill_vod_s") is not None:
+            return "✓ Lista (a mano)", ui.GREEN
+        if c.get("failed"):
+            return "✕ No se encontró", ui.RED
+        return "Sin sincronizar", "#ff9f43"
+
+    def render_match_cards(self):
+        box = getattr(self, "mcards", None)
+        if box is None:
+            return
+        for w_ in box.winfo_children():
+            w_.destroy()
+        st = self.settings()
+        try:
+            vs = self.vod_start_utc() if self.vod_info else None
+        except ValueError:
+            vs = None
+        rows = []
+        for m in self.matches.values():
+            inv = None
+            if vs and self.vod_info:
+                inv = core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib, self.delay_fn_for_vod())
+            tags = self._round_tags(m, st)
+            group = 0 if (inv is not False and tags) else (1 if inv is not False else 2)
+            rows.append((group, -m.started_at.timestamp(), m, inv, tags))
+        rows.sort(key=lambda r: (r[0], r[1]))
+        hidden = [r for r in rows if r[0] == 1]
+        if hidden:
+            self.lbl_hidden.configure(text=(f"Ocultar las {len(hidden)} sin rondas" if self._show_hidden else
+                                            f"{len(hidden)} sin rondas que cortar (ocultas) · ver"))
+        else:
+            self.lbl_hidden.configure(text="")
+        if not rows:
+            tk.Label(box, text="Todavía no hay partidas. Pulsa «Buscar partidas» (o el botón de abajo).",
+                     bg=PANEL, fg=MUTED, font=ui.body(10)).grid(row=0, column=0, sticky="w", pady=10)
+            return
+        r_ = 0
+        for group, _t, m, inv, tags in rows:
+            if group == 1 and not self._show_hidden:
+                continue
+            sel = m.match_id == self._msel
+            dim = group == 2
+            bg = ui.SEL if sel else (FIELD if not dim else PANEL)
+            card = tk.Frame(box, bg=bg, highlightthickness=1,
+                            highlightbackground=PURPLE if sel else BORDER, cursor="hand2")
+            card.grid(row=r_, column=0, sticky="we", pady=3)
+            r_ += 1
+            chk = tk.Label(card, text="☑" if m.match_id in self.checked else "☐", bg=bg,
+                           fg=YELLOW if m.match_id in self.checked else ui.DIM, font=ui.body(15), cursor="hand2")
+            chk.pack(side="left", padx=(12, 10), pady=6)
+            info = tk.Frame(card, bg=bg)
+            info.pack(side="left", pady=6)
+            fg1 = TEXT if not dim else ui.DIM
+            tk.Label(info, text=f"{m.map_name} · {m.agent}", bg=bg, fg=fg1, font=ui.semi(11),
+                     anchor="w", width=20).pack(anchor="w")
+            local = m.started_at.astimezone()
+            tk.Label(info, text=f"{local.strftime('%d/%m %H:%M')} · {m.score}", bg=bg, fg=ui.DIM,
+                     font=ui.body(9), anchor="w").pack(anchor="w")
+            mid_ = tk.Frame(card, bg=bg)
+            mid_.pack(side="left", padx=(14, 0), fill="x", expand=True)
+            if tags and not dim:
+                for t_ in tags[:8]:
+                    tk.Label(mid_, text=t_, bg=ui.SEL if not sel else FIELD, fg=PURPLE, font=ui.semi(9),
+                             padx=8, pady=2).pack(side="left", padx=(0, 6))
+                if len(tags) > 8:
+                    tk.Label(mid_, text=f"+{len(tags) - 8}", bg=bg, fg=ui.DIM, font=ui.body(9)).pack(side="left")
+            else:
+                tk.Label(mid_, text=(f"{len(tags)} rondas buenas" if tags else "sin rondas que cortar"),
+                         bg=bg, fg=ui.DIM, font=ui.body(9)).pack(side="left")
+            txt, col = self._sync_words(m, inv)
+            stl = tk.Label(card, text=txt, bg=bg, fg=col, font=ui.semi(10))
+            stl.pack(side="right", padx=14)
+
+            def toggle(e, mid=m.match_id):
+                if mid in self.checked:
+                    self.checked.discard(mid)
+                else:
+                    self.checked.add(mid)
+                self.refresh_matches()
+                return "break"
+
+            def pick(e, mid=m.match_id):
+                self._msel = mid
+                try:
+                    self.tv_m.selection_set(mid)
+                except tk.TclError:
+                    pass
+                self.render_match_cards()
+
+            chk.bind("<Button-1>", toggle)
+            for w_ in [card, info, mid_, stl] + list(info.winfo_children()) + list(mid_.winfo_children()):
+                w_.bind("<Button-1>", pick)
+                w_.bind("<Double-1>", lambda e, mid=m.match_id: (pick(e, mid), self.calibrate()))
+        self._paint_steps()
+
+    # ------------------------------------------------------------ botón principal y menú «Más»
+    def _primary(self):
+        """(texto, acción) del botón principal según en qué punto estás."""
+        if not self.vod_info:
+            if self.v_twitch.get().strip():
+                n = len(twitch.find_vod_urls(self.v_twitch.get()))
+                return ("Descargar VOD" if n <= 1 else f"Descargar {n} VODs"), self.download_vod
+            return "Elegir el directo", lambda: (self.show_page("vod"), self.status(
+                "Pega el enlace del directo de Twitch arriba (o elige un vídeo del PC)."))
+        if not self.matches:
+            return "Buscar partidas", lambda: (self.show_page("partidas"), self.load_matches())
+        ch = [i for i in self.checked if i in self.matches]
+        pend = [i for i in ch if not self._is_synced(i)]
+        if not ch:
+            return "Marca alguna partida", lambda: self.show_page("partidas")
+        if pend:
+            return (f"Sincronizar {len(pend)} partida" + ("s" if len(pend) > 1 else ""),
+                    lambda: (self.show_page("partidas"), self.sync_checked()))
+        return "GENERAR VÍDEOS", lambda: (self.show_page("videos"), self.render())
+
+    def primary_action(self):
+        _t, fn = self._primary()
+        fn()
+
+    def _ui_tick(self):
+        try:
+            if str(self.btn_cancel.cget("state")) != "normal":
+                t, _fn = self._primary()
+                if self.btn_render.cget("text") != t:
+                    self.btn_render.configure(text=t)
+            self._paint_steps()
+            hv = ""
+            if self.vod_info and self.v_start.get().strip():
+                hv = "Directo del " + self.v_start.get().split(" ")[0]
+            if hv != self._head_vod:
+                self._head_vod = hv
+                self._head._last = None
+                self._head._redraw(self._head.winfo_width())
+        except Exception:
+            pass
+        self.after(700, self._ui_tick)
+
+    def show_more_menu(self):
+        m = tk.Menu(self, tearoff=0, bg=FIELD, fg=TEXT, activebackground=ui.SEL, activeforeground=TEXT,
+                    font=ui.body(10), bd=0, relief="flat")
+        m.add_command(label="Buscar partidas", command=lambda: (self.show_page("partidas"), self.load_matches()))
+        m.add_command(label="Cargar 10 partidas más", command=lambda: self.load_matches(True))
+        m.add_command(label="Añadir una partida por enlace de tracker.gg…", command=self.add_link_dialog)
+        m.add_command(label="Marcar las que tienen rondas en este VOD", command=self.auto_check)
+        m.add_separator()
+        m.add_command(label="Sincronizar las marcadas", command=self.sync_checked)
+        m.add_command(label="Sincronizar a mano la elegida…", command=self.calibrate)
+        m.add_command(label="Revisar la sincronización…", command=self.review_sync)
+        m.add_command(label="Quitar la sincronización de la elegida", command=self.clear_calib)
+        m.add_command(label="Informes de sincronización", command=self.open_reports)
+        m.add_separator()
+        m.add_command(label="Calcular rondas", command=lambda: (self.show_page("videos"), self.compute()))
+        m.add_command(label="Corregir subtítulos del último vídeo…", command=self.fix_subtitles_later)
+        m.add_command(label="Subir a Drive…", command=self.drive_upload_last)
+        m.add_command(label="Hacer el top de la semana ahora…", command=self.top_week_now)
+        m.add_separator()
+        m.add_command(label="Abrir la carpeta de vídeos", command=self.open_outdir)
+        m.add_command(label="Ajustes…", command=lambda: self.open_settings())
+        b = self.btn_more_menu
+        try:
+            m.tk_popup(b.winfo_rootx(), b.winfo_rooty() - 10 - 22 * 18)
+        finally:
+            m.grab_release()
+
+    def add_link_dialog(self):
+        from tkinter import simpledialog
+        url = simpledialog.askstring(APP_NAME, "Pega el enlace de la partida (tracker.gg):", parent=self)
+        if url:
+            self.v_link.set(url.strip())
+            self.show_page("partidas")
+            self.add_by_link()
+
     # ------------------------------------------------------------ ventana adaptable
     def _relayout(self):
         """Si la ventana es estrecha, las tarjetas van una debajo de otra en vez de recortarse."""
         L = getattr(self, "_lay", None)
         if not L:
-            return
+            return      # (diseño por páginas: no hay tarjetas que recolocar)
         try:
             w = self.body.cv.winfo_width()
             if w < 100:
@@ -736,6 +1085,11 @@ class App(tk.Tk):
             st = "ChipOff.TLabel" if idx is None or i > idx else ("ChipOn.TLabel" if i == idx else "ChipDone.TLabel")
             lb.configure(style=st)
         if idx is not None:
+            # la pantalla sigue al trabajo: VOD → Partidas (buscar y sincronizar) → Vídeos
+            try:
+                self.show_page(("vod", "partidas", "partidas", "videos", "videos")[idx])
+            except Exception:
+                pass
             self.lbl_step.configure(text=title or self.step_names[idx][4:] + "…")
             self._t0 = time.time()
             if getattr(self, "_tick_id", None):
@@ -1122,6 +1476,7 @@ class App(tk.Tk):
                              values=("☑" if m.match_id in self.checked else "☐",
                                      local.strftime("%d/%m %H:%M"), m.map_name, m.agent, m.score,
                                      n, invt, sync_txt))
+        self.render_match_cards()
 
     def update_kpis(self):
         """Cifras del resumen (tarjeta 1)."""
@@ -3928,18 +4283,31 @@ def demo_screenshot(out_png):
 
     steps = []
 
-    def tab(i, name):
+    def page(k, name):
         def f():
-            app.nb2.select(i)
-            app.after(600, lambda: grab(app, name))
+            app.setwin.withdraw()
+            app.show_page(k)
+            app.after(700, lambda: grab(app, name))
         return f
-    steps.append(lambda: grab(app, "1_principal.png"))
-    for i, nm in ((1, "2_cortes.png"), (2, "3_salida.png"), (3, "4_automatico.png")):
-        steps.append(tab(i, nm))
+
+    def sett(k, name):
+        def f():
+            app.open_settings(k)
+            app.setwin.geometry("1080x640+80+80")
+            app.after(900, lambda: grab(app.setwin, name))
+        return f
+    steps.append(page("partidas", "1_principal.png"))
+    steps.append(page("vod", "2_vod.png"))
+    steps.append(page("videos", "3_videos.png"))
+    for k, nm in (("cuenta", "4a_ajustes_cuenta.png"), ("cortar", "4b_ajustes_cortes.png"),
+                  ("videos", "4c_ajustes_videos.png"), ("carpeta", "4d_ajustes_carpeta.png"),
+                  ("auto", "4e_ajustes_auto.png")):
+        steps.append(sett(k, nm))
+
 
     def review():
         from PIL import Image, ImageDraw
-        app.nb2.select(0)
+        app.setwin.withdraw()
         tmpd = tempfile.mkdtemp()
         rows = []
         for j, mid in enumerate(list(app.matches)[4:7]):
@@ -3968,11 +4336,6 @@ def demo_screenshot(out_png):
         app.after(900, lambda: (grab(d, "6_subtitulos.png"), d.destroy()))
     steps.append(subs)
 
-    def prev():
-        app.nb2.select(0)
-        app.nb4.select(app.tab_prev)
-        app.after(900, lambda: grab(app, "7_vista_previa.png"))
-    steps.append(prev)
 
     def small():
         try:
@@ -3980,8 +4343,7 @@ def demo_screenshot(out_png):
         except Exception:
             pass
         app.geometry("1165x832+0+0")
-        app.nb2.select(1)
-        app.nb4.select(0)
+        app.show_page("partidas")
         app.after(1500, lambda: grab(app, "8_ventana_pequena.png"))
     steps.append(small)
     steps.append(app.destroy)
