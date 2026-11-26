@@ -1034,7 +1034,7 @@ def glow_into(img, cx, cy, rx, ry, color, strength):
 
 # ---------------------------------------------------------------- botón
 KIND = {None: "ghost", "TButton": "ghost", "Accent.TButton": "primary", "Purple.TButton": "pill",
-        "Ghost.TButton": "link", "Danger.TButton": "danger"}
+        "Ghost.TButton": "link", "Danger.TButton": "danger", "Yellow.TButton": "yellow"}
 
 
 class VButton(tk.Canvas):
@@ -1063,7 +1063,7 @@ class VButton(tk.Canvas):
         if font is None and compact:
             font = semi(9)
         if font is None:
-            font = display(12) if self.kind == "primary" else (body(9) if self.kind == "link" else semi(9))
+            font = display(12) if self.kind in ("primary", "yellow") else (body(9) if self.kind == "link" else semi(9))
         self._font = font
         self._hov = self._prs = 0.0
         self._hover = self._press = False
@@ -1082,6 +1082,8 @@ class VButton(tk.Canvas):
         fm = tkfont.Font(root=self, font=self._font)
         if self._compact:
             padx, h = (12, 30) if self.kind != "link" else (6, 26)
+        elif self.kind == "yellow":
+            padx, h = 22, 38
         elif self.kind == "primary":
             padx, h = 26, 42
         elif self.kind == "link":
@@ -1121,6 +1123,12 @@ class VButton(tk.Canvas):
                 img = _over(img, _grad(W, H, x0, x1), _rr_cov(W, H, x0, y0, x1, y1, r))
         elif k == "link":
             pass
+        elif k == "yellow":                      # amarillo liso del canal (botón principal)
+            if dis:
+                fill = _lerp(_rgb(ELEVATED), _rgb(YELLOW), 0.25)
+            else:
+                fill = _lerp(_rgb(YELLOW), (255, 246, 120), 0.45 * hq)
+            img = _over(img, np.array(fill, np.float32), _rr_cov(W, H, x0, y0, x1, y1, r))
         else:
             if k == "danger":
                 fill = _lerp(_lerp(_rgb(self._bgc), _rgb(RED), 18 / 255), _lerp(_rgb(self._bgc), _rgb(RED), 40 / 255), hq)
@@ -1145,6 +1153,8 @@ class VButton(tk.Canvas):
         dis = self._state == "disabled"
         if self.kind == "primary":
             return DIM if dis else "#0b0a10"
+        if self.kind == "yellow":
+            return "#3a3606" if dis else "#0b0a10"
         if self.kind == "link":
             return DIM if dis else _mix(VIOLET, VIOLET_L, h)
         if self.kind == "pill":

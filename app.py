@@ -216,6 +216,8 @@ class App(tk.Tk):
         s.configure("Kpi.TFrame", background=FIELD)
         s.configure("Step.TLabel", background=PANEL, foreground=TEXT, font=F.display(15))
         s.configure("Pct.TLabel", background=PANEL, foreground=YELLOW, font=F.display(22))
+        s.configure("StepS.TLabel", background=PANEL, foreground=TEXT, font=F.display(12))
+        s.configure("PctS.TLabel", background=PANEL, foreground=YELLOW, font=F.display(12))
         s.configure("Detail.TLabel", background=PANEL, foreground=MUTED, font=F.body(10))
         s.configure("ChipOff.TLabel", background=PANEL, foreground=ui.DIM, font=F.mono(8), padding=(10, 5))
         s.configure("ChipOn.TLabel", background=YELLOW, foreground=DARK, font=F.mono(8), padding=(10, 5))
@@ -692,34 +694,37 @@ class App(tk.Tk):
         self.player.pack(anchor="n")
         self.nb4 = _PageTabs(self, "videos")
 
-        # --- pie: progreso, «Más» y UN botón principal que cambia según el momento
-        foot = ui.Card(self, pad=16, radius=20, glow=True)
-        foot.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
+        # --- pie: una fila (estado + barra fina) y a la derecha «Cancelar», «Más» y UN botón principal
+        foot = ui.Card(self, pad=12, radius=16)
+        foot.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
         self.body.pack(fill="both", expand=True)
         self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sincronizar",
                            "4 · Sacar rondas", "5 · Generar vídeos"]
         self.chip_lbls = []
-        top_row = ttk.Frame(foot, style="Panel.TFrame")
-        top_row.pack(fill="x", pady=(0, 4))
-        self.lbl_step = ttk.Label(top_row, text="Listo para empezar", style="Step.TLabel")
-        self.lbl_step.pack(side="left")
-        self.lbl_pct = ttk.Label(top_row, text="", style="Pct.TLabel")
-        self.lbl_pct.pack(side="right")
-        self.lbl_time = ttk.Label(top_row, text="", style="Muted.TLabel")
-        self.lbl_time.pack(side="right", padx=12)
-        self.pb = ui.GradBar(foot, mode="determinate", maximum=1)
-        self.pb.pack(fill="x")
         row = ttk.Frame(foot, style="Panel.TFrame")
-        row.pack(fill="x", pady=(8, 0))
-        self.lbl_status = ttk.Label(row, text="Pega un enlace de Twitch o elige un VOD.", style="Detail.TLabel",
-                                    wraplength=760)
-        self.lbl_status.pack(side="left")
-        self.btn_render = ui.Button(row, text="Descargar VOD", style="Accent.TButton", command=self.primary_action)
+        row.pack(fill="x")
+        right = ttk.Frame(row, style="Panel.TFrame")
+        right.pack(side="right", padx=(16, 0))
+        left = ttk.Frame(row, style="Panel.TFrame")
+        left.pack(side="left", fill="x", expand=True)
+        l1 = ttk.Frame(left, style="Panel.TFrame")
+        l1.pack(fill="x")
+        self.lbl_step = ttk.Label(l1, text="Listo para empezar", style="StepS.TLabel")
+        self.lbl_step.pack(side="left")
+        self.lbl_status = ttk.Label(l1, text="Pega un enlace de Twitch o elige un VOD.", style="Muted.TLabel")
+        self.lbl_status.pack(side="left", padx=(10, 0))
+        self.lbl_pct = ttk.Label(l1, text="", style="PctS.TLabel")
+        self.lbl_pct.pack(side="right")
+        self.lbl_time = ttk.Label(l1, text="", style="Muted.TLabel")
+        self.lbl_time.pack(side="right", padx=10)
+        self.pb = ui.GradBar(left, mode="determinate", maximum=1)
+        self.pb.pack(fill="x", pady=(6, 0))
+        self.btn_render = ui.Button(right, text="Descargar VOD", style="Yellow.TButton", command=self.primary_action)
         self.btn_render.pack(side="right")
-        self.btn_more_menu = ui.Button(row, text="Más  ▾", style="Ghost.TButton")
+        self.btn_more_menu = ui.Button(right, text="Más  ▾")
         self.btn_more_menu.configure(command=self.show_more_menu)
         self.btn_more_menu.pack(side="right", padx=8)
-        self.btn_cancel = ui.Button(row, text="Cancelar", style="Ghost.TButton", command=self.cancel)
+        self.btn_cancel = ui.Button(right, text="Cancelar", style="Ghost.TButton", command=self.cancel)
         self.btn_cancel.configure(state="disabled")      # (el botón no toma state= al crearse)
         self.btn_cancel.pack(side="right")
         self._lay = None
@@ -791,16 +796,18 @@ class App(tk.Tk):
             states = self._step_state()
         except Exception:
             return
+        tint = {"done": ("#0f2a20", ui.GREEN), "now": ("#2b2908", YELLOW), "todo": (PANEL, ui.DIM)}
         for (key, f_, ic, tl, sl), (st, txt) in zip(self._steps, states):
             cur = key == self._page
-            bg = ui.SEL if cur else PANEL
-            ic.configure(text={"done": "✓", "now": "●", "todo": "○"}[st],
-                         fg={"done": ui.GREEN, "now": YELLOW, "todo": ui.DIM}[st])
-            f_.configure(bg=bg, highlightbackground=PURPLE if cur else BORDER)
+            bg, fg = tint[st]
+            ic.configure(text={"done": "✓", "now": "●", "todo": "○"}[st], fg=fg)
+            # la página que estás viendo, con borde (morado); el resto, con el borde de su color
+            f_.configure(bg=bg, highlightthickness=2 if cur else 1,
+                         highlightbackground=PURPLE if cur else (fg if st != "todo" else BORDER))
             for w_ in (ic, tl, sl):
                 w_.configure(bg=bg)
-            tl.configure(fg=TEXT if (cur or st != "todo") else ui.DIM)
-            sl.configure(text=txt)
+            tl.configure(fg=fg if st != "todo" else (TEXT if cur else ui.DIM))
+            sl.configure(text=txt, fg=fg if st != "todo" else ui.DIM)
 
     def open_settings(self, key=None):
         key = key or self._set_cur or "cuenta"
@@ -906,15 +913,15 @@ class App(tk.Tk):
             bg = ui.SEL if sel else (FIELD if not dim else PANEL)
             card = tk.Frame(box, bg=bg, highlightthickness=1,
                             highlightbackground=PURPLE if sel else BORDER, cursor="hand2")
-            card.grid(row=r_, column=0, sticky="we", pady=3)
+            card.grid(row=r_, column=0, sticky="we", pady=2)
             r_ += 1
             chk = tk.Label(card, text="☑" if m.match_id in self.checked else "☐", bg=bg,
                            fg=YELLOW if m.match_id in self.checked else ui.DIM, font=ui.body(15), cursor="hand2")
-            chk.pack(side="left", padx=(12, 10), pady=6)
+            chk.pack(side="left", padx=(12, 10), pady=3)
             info = tk.Frame(card, bg=bg)
-            info.pack(side="left", pady=6)
+            info.pack(side="left", pady=4)
             fg1 = TEXT if not dim else ui.DIM
-            tk.Label(info, text=f"{m.map_name} · {m.agent}", bg=bg, fg=fg1, font=ui.semi(11),
+            tk.Label(info, text=f"{m.map_name} · {m.agent}", bg=bg, fg=fg1, font=ui.semi(10),
                      anchor="w", width=20).pack(anchor="w")
             local = m.started_at.astimezone()
             tk.Label(info, text=f"{local.strftime('%d/%m %H:%M')} · {m.score}", bg=bg, fg=ui.DIM,
@@ -1076,7 +1083,8 @@ class App(tk.Tk):
     # ------------------------------------------------------------ util
     def status(self, txt):
         if txt:
-            self.lbl_status.configure(text=txt)
+            t = str(txt).replace("\n", " ")
+            self.lbl_status.configure(text=t if len(t) <= 120 else t[:117] + "…")
 
     def set_step(self, idx, title=None):
         """Marca el paso actual (0-3) o None para reposo."""
