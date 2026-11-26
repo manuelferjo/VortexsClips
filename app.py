@@ -139,6 +139,7 @@ class App(tk.Tk):
         self.after(1500, _relay_loop)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(1500, lambda: self.check_update(silent=True))
+        self.after(3000, updater.cleanup_old)
         core.API_WAIT_CB = lambda left: self.after(0, lambda: self.status(
             f"Esperando a la API de Riot: límite de peticiones por minuto ({left:.0f} s)…"))
         # con el programa abierto también: mira cada 10 min si hay versión nueva y, si está trabajando,
@@ -3426,7 +3427,9 @@ class App(tk.Tk):
             getattr(self, "_upd_declined", set()).add(info["version"])
             return
         if updater.FROZEN and info.get("setup"):
-            self._run_update(lambda prog: updater.run_installer(info["setup"], prog, silent=True))
+            # primero la rápida (solo el programa, unos MB); si no se puede, el instalador completo
+            self._run_update(lambda prog: updater.fast_update(info, prog) or
+                             updater.run_installer(info["setup"], prog, silent=True))
         else:
             def zip_update(prog):
                 updater.apply(info["url"], prog)

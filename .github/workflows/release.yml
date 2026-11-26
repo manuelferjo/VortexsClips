@@ -57,6 +57,30 @@ jobs:
             --icon icon.ico --add-data "icon.ico;." --hidden-import numpy --hidden-import publish --hidden-import ui --hidden-import semana --hidden-import killfeed --hidden-import drive --add-data "fonts;fonts" --add-data "logo.png;." app.py
           if (!(Test-Path dist\VortexsClips\VortexsClips.exe)) { throw "No se generó el .exe" }
 
+      - name: Paquete de actualización rápida (solo el programa)
+        shell: pwsh
+        run: |
+          # «huella» de todo lo que NO es el programa (Python, numpy, PyInstaller, fuentes…): si en la
+          # versión instalada es la misma, basta con cambiar VortexsClips.exe (unos MB, no ~80)
+          $base = (Resolve-Path dist\VortexsClips\_internal).Path
+          $lines = Get-ChildItem $base -Recurse -File | Sort-Object FullName | ForEach-Object { $_.FullName.Substring($base.Length) + ":" + $_.Length }
+          $lines += "python:" + (python -c "import sys;print(sys.version)")
+          $lines += "pyinstaller:" + (python -c "import PyInstaller;print(PyInstaller.__version__)")
+          $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+          $h = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace("-","")
+          Set-Content -NoNewline -Encoding ascii dist\VortexsClips\deps.txt $h
+          Copy-Item dist\VortexsClips\deps.txt dist\VortexsClips-deps.txt
+          Compress-Archive -Path dist\VortexsClips\VortexsClips.exe, dist\VortexsClips\deps.txt -DestinationPath dist\VortexsClips-app.zip -Force
+          Write-Host "huella $h"; Get-Item dist\VortexsClips-app.zip | Select-Object Length
+          # Windows deja renombrar un programa en marcha (así se cambia sin cerrar el instalador)
+          Copy-Item "$env:WINDIR\System32\PING.EXE" "$env:TEMP\prueba.exe"
+          $pr = Start-Process "$env:TEMP\prueba.exe" -ArgumentList "-n","20","127.0.0.1" -PassThru -WindowStyle Hidden
+          Start-Sleep 2
+          if ($pr.HasExited) { throw "La prueba no quedó en marcha" }
+          Rename-Item "$env:TEMP\prueba.exe" "prueba.old.exe"
+          if (!(Test-Path "$env:TEMP\prueba.old.exe")) { throw "No se pudo renombrar un programa en marcha" }
+          Stop-Process $pr.Id -Force
+
       - name: Descargar ffmpeg
         shell: pwsh
         run: |
@@ -120,7 +144,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: setup
-          path: dist/VortexsClips-Setup.exe
+          path: |
+            dist/VortexsClips-Setup.exe
+            dist/VortexsClips-app.zip
+            dist/VortexsClips-deps.txt
 
   publish:
     needs: [check, windows]
@@ -153,9 +180,9 @@ jobs:
           T="${{ needs.check.outputs.tag }}"
           for i in 1 2 3 4 5 6; do
             if gh release view "$T" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release upload "$T" dist/VortexsClips.zip out/VortexsClips-Setup.exe --clobber -R "$GITHUB_REPOSITORY" && \
+              gh release upload "$T" dist/VortexsClips.zip out/VortexsClips-Setup.exe out/VortexsClips-app.zip out/VortexsClips-deps.txt --clobber -R "$GITHUB_REPOSITORY" && \
                 gh release edit "$T" --draft=false --latest -R "$GITHUB_REPOSITORY" && exit 0
-            elif gh release create "$T" dist/VortexsClips.zip out/VortexsClips-Setup.exe \
+            elif gh release create "$T" dist/VortexsClips.zip out/VortexsClips-Setup.exe out/VortexsClips-app.zip out/VortexsClips-deps.txt \
                 --target "$GITHUB_SHA" --title "Vortexs Clips $T" --generate-notes; then
               exit 0
             fi
