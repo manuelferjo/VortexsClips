@@ -845,6 +845,31 @@ class App(tk.Tk):
             pass
         self.refresh_matches()
 
+    def _cut_line(self, parent):
+        """«Se corta: 3K o más · clutches 1v2 o más · solo las kills   Cambiar opciones de corte»."""
+        f_ = tk.Frame(parent, bg=PANEL)
+        lb = tk.Label(f_, text="", bg=PANEL, fg=MUTED, font=ui.body(10))
+        lb.pack(side="left")
+        ch = tk.Label(f_, text="Cambiar opciones de corte", bg=PANEL, fg=PURPLE, font=ui.semi(10), cursor="hand2")
+        ch.pack(side="left", padx=(12, 0))
+        ch.bind("<Button-1>", lambda e: self.open_settings("cortar"))
+        self._cut_lbls.append(lb)
+        return f_
+
+    def _cut_text(self):
+        try:
+            mk = int(self.v_min.get() or 3)
+        except (tk.TclError, ValueError):
+            mk = 3
+        parts = [f"{mk}K o más"]
+        if self.v_clutch.get():
+            try:
+                parts.append(f"clutches 1v{int(self.v_clutchn.get() or 2)} o más")
+            except (tk.TclError, ValueError):
+                parts.append("clutches")
+        parts.append("solo las kills" if self.v_mode.get() == "kills" else "la ronda entera")
+        return "Se corta: " + " · ".join(parts)
+
     def open_outdir(self):
         d = self.v_outdir.get()
         os.makedirs(d, exist_ok=True)
