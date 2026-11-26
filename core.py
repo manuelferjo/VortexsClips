@@ -88,6 +88,93 @@ class Match:
         return [r for r in self.rounds if r.my_kills >= min_kills or is_clutch(r, clutch_min)]
 
 
+# ---------------------------------------------------------------- flecha de choque de Sova: cuándo la tiras
+HUD_X, HUD_Y, HUD_W, HUD_H = 0.35, 0.87, 0.30, 0.13      # barra de habilidades de abajo (C Q E X)
+_THROW_CACHE: dict = {}
+
+
+def q_charges(img):
+    """Cargas de la Q que se ven en la barra de habilidades (0, 1 o 2), o None si no se ve el HUD."""
+    import numpy as np
+    H, W = img.shape[:2]
+    x0, x1 = int(W * 0.33), int(W * 0.47)
+    ic = img[int(H * 0.30):int(H * 0.60), int(W * 0.10):int(W * 0.90)].astype(np.int16)
+    if ((ic.min(axis=2) > 215).mean() < 0.004):
+        return None                                   # sin iconos de habilidades: HUD oculto (muerto, mapa…)
+
+    def teal(p):
+        r, g, b = p[..., 0], p[..., 1], p[..., 2]
+        return (g > 170) & (b > 130) & (r < 110) & (g > b)
+    t = teal(img[int(H * 0.71):int(H * 0.77), x0:x1].astype(np.int16)).mean(axis=0)
+    tb = teal(img[int(H * 0.62):int(H * 0.66), x0:x1].astype(np.int16)).mean(axis=0)
+    w = len(t)
+    return sum(int(t[s].mean() - tb[s].mean() > 0.35) for s in (slice(0, w // 2), slice(w // 2, w)))
+
+
+def throws_in(frames, t0: float, fps: float) -> list[float]:
+    """Momentos en que la Q pierde una carga (de 2 a 1 o de 1 a 0) y se queda así."""
+    cs = [q_charges(f) for f in frames]
+    out, stable, run = [], None, 0
+    for i, c in enumerate(cs):
+        if c is None:
+            continue
+        if stable is None:
+            stable, run = c, 1
+            continue
+        if c == stable:
+            run += 1
+            continue
+        # ¿cambio que se mantiene?
+        nxt = [x for x in cs[i:i + 4] if x is not None]
+        if len(nxt) >= 3 and all(x == c for x in nxt[:3]):
+            if c == stable - 1 and run >= 2:
+                out.append(t0 + i / fps)
+            stable, run = c, 1
+    return out
+
+
+def sova_throw_start(vod: str, t_kill: float, look: float = 15.0, lead: float = 1.2):
+    """
+    Segundo del VOD en que empiezas a tirar la flecha (o la primera de las dos) que acaba en la kill de
+    t_kill: la última vez que la Q pierde una carga antes de la kill (y la anterior si fue poco antes),
+    menos un poco para que se vea cómo apuntas. None si no se ve.
+    """
+    import numpy as np
+    key = (vod, round(t_kill, 1))
+    if key in _THROW_CACHE:
+        return _THROW_CACHE[key]
+    res = None
+    try:
+        ff = find_tool("ffmpeg")
+        info = probe_vod(vod)
+        W, H = int(info.get("width") or 1920), int(info.get("height") or 1080)
+        cw, ch = int(W * HUD_W) // 2 * 2, int(H * HUD_H) // 2 * 2
+        cx, cy = int(W * HUD_X), int(H * HUD_Y)
+        fps = 8
+        t0 = max(0.0, t_kill - look)
+        f, lt = vod_resolve(vod, t0)
+        r = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, lt):.3f}",
+                            "-t", f"{t_kill + 0.4 - t0:.3f}", "-i", f, "-an", "-vf",
+                            f"fps={fps},crop={cw}:{ch}:{cx}:{cy}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+                           capture_output=True, **_no_window())
+        sz = cw * ch * 3
+        frames = [np.frombuffer(r.stdout[i * sz:(i + 1) * sz], dtype=np.uint8).reshape(ch, cw, 3)
+                  for i in range(len(r.stdout) // sz)]
+        th = [x for x in throws_in(frames, t0, fps) if x <= t_kill + 0.2]
+        if th:
+            first = th[-1]
+            for x in reversed(th[:-1]):          # tiraste las dos: desde la primera
+                if first - x <= 5.0:
+                    first = x
+                else:
+                    break
+            res = first - lead
+    except Exception:
+        res = None
+    _THROW_CACHE[key] = res
+    return res
+
+
 def is_shock_dart(m: "Match", k: "Kill") -> bool:
     """¿Kill con la flecha de choque de Sova (su Q)?"""
     txt = f"{k.weapon} {k.weapon_id}".lower()
@@ -604,7 +691,8 @@ class CutSettings:
     mode: str = "round"           # "round" = ronda completa · "kills" = solo las kills
     kill_pre_s: float = 2.5       # modo kills: segundos antes de cada kill
     kill_post_s: float = 1.5      # modo kills: segundos después de cada kill
-    dart_pre_s: float = 6.0       # modo kills: antes de una kill con la flecha de choque de Sova
+    dart_pre_s: float = 6.0       # modo kills: flecha de choque de Sova, si no se ve en el HUD cuándo la tiras
+    throw_fn: object = None       # (vod_s de la kill) -> vod_s en que empezaste a tirar la flecha, o None
     merge_gap_s: float = 4.0      # modo kills: si entre dos kills hay menos de esto, no se corta
     clutch_min: int = 2           # también clutches ganados de 1 contra X o más (0 = no)
     clutch_pre_s: float = 3.0     # clutch en modo kills: segundos antes de quedarte solo
@@ -700,7 +788,17 @@ def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
     last = None
     for t, k in ks:
         # con la flecha de choque (Sova, Q) se ve desde que la tiras: puede cruzar medio mapa
-        pre = (max(settings.kill_pre_s, settings.dart_pre_s) if is_shock_dart(m, k) else settings.kill_pre_s) + extra
+        pre = settings.kill_pre_s
+        if is_shock_dart(m, k):
+            # desde que la tiras (lo mira en el HUD del directo: la Q pierde una carga); si no se ve, fijo
+            ts = None
+            if settings.throw_fn is not None and synced:
+                try:
+                    ts = settings.throw_fn(t)
+                except Exception:
+                    ts = None
+            pre = max(settings.kill_pre_s, t - ts) if ts is not None else max(settings.kill_pre_s, settings.dart_pre_s)
+        pre += extra
         a, b = t - pre, t + post
         if segs and (a <= segs[-1][1] + 0.05 or (last is not None and t - last <= settings.merge_gap_s)):
             segs[-1][1] = max(segs[-1][1], b)

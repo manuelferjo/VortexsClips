@@ -558,10 +558,9 @@ class App(tk.Tk):
                   style="Muted.TLabel").pack(side="left", padx=(2, 0))
         kf3 = ttk.Frame(kfc, style="Panel.TFrame")
         kf3.pack(anchor="w", pady=(4, 0))
-        ttk.Label(kf3, text="Kills con la flecha de choque de Sova (Q): segundos antes").pack(side="left")
+        ttk.Label(kf3, text="Flecha de choque de Sova (Q): empieza cuando la tiras (lo ve en el HUD); si no se ve,").pack(side="left")
         ttk.Entry(kf3, textvariable=self.v_dartpre, width=4).pack(side="left", padx=4)
-        ttk.Label(kf3, text="para que se vea desde que tiras la flecha (o las dos)",
-                  style="Muted.TLabel").pack(side="left", padx=(2, 0))
+        ttk.Label(kf3, text="s antes", style="Muted.TLabel").pack(side="left", padx=(2, 0))
         ttk.Label(kf, text="Segundos antes de cada kill").pack(side="left")
         ttk.Entry(kf, textvariable=self.v_kpre, width=4).pack(side="left", padx=4)
         ttk.Label(kf, text="  y después").pack(side="left")
@@ -697,6 +696,13 @@ class App(tk.Tk):
         self.tv_c.tag_configure("alt", background=ROW_ALT)
         cb = ttk.Frame(p4, style="Panel.TFrame")
         cb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        adj = ttk.Frame(p4, style="Panel.TFrame")
+        adj.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(adj, text="Ajustar la ronda elegida:").pack(side="left", padx=(0, 8))
+        for txt, which, d in (("Empieza 2 s antes", "a", -2), ("Empieza 1 s después", "a", 1),
+                              ("Acaba 1 s antes", "b", -1), ("Acaba 2 s después", "b", 2)):
+            ui.Button(adj, text=txt, compact=True,
+                      command=lambda w=which, d=d: self.nudge_clip(w, d)).pack(side="left", padx=(0, 4))
         self._cut_line(p4).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ui.Button(cb, text="Calcular rondas", command=self.compute).pack(side="left")
         ui.Button(cb, text="Ver ronda", style="Ghost.TButton", command=self.preview).pack(side="left", padx=6)
@@ -3312,7 +3318,14 @@ class App(tk.Tk):
             messagebox.showinfo(APP_NAME, "Marca al menos una partida (☐ → ☑).")
             return
         self.persist()
-        self.clips = core.build_clips(ms, vs, self.vod_info["duration"], self.settings(), self.calib,
+        st = self.settings()
+        vod = self.v_vod.get()
+        if vod:
+            # flecha de choque de Sova: el corte empieza cuando la tiras (se ve en el HUD del directo)
+            st.throw_fn = lambda t, v=vod: core.sova_throw_start(v, t)
+        self.status("Calculando las rondas…")
+        self.update_idletasks()
+        self.clips = core.build_clips(ms, vs, self.vod_info["duration"], st, self.calib,
                                       self.delay_fn_for_vod())
         try:                    # cada corte con un número exacto de fotogramas (clips sueltos exactos)
             core.snap_clips(self.clips, core._fps_of(self.v_vod.get()))
@@ -3322,6 +3335,34 @@ class App(tk.Tk):
         total = sum(c.vod_end - c.vod_start for c in self.clips)
         self.status(f"{len(self.clips)} rondas · {core.fmt_ts(total).split('.')[0]} de vídeo. "
                     f"Doble clic en una ronda para comprobarla.")
+
+    def nudge_clip(self, which, d):
+        """Alarga o acorta a mano el corte de las rondas elegidas en la lista (antes de generar)."""
+        sel = [int(i) for i in self.tv_c.selection() if str(i).isdigit()]
+        if not sel:
+            self.status("Elige una ronda de la lista para ajustarla.")
+            return
+        dur = (self.vod_info or {}).get("duration") or 1e12
+        for i in sel:
+            if 0 <= i < len(self.clips):
+                c = self.clips[i]
+                if which == "a":
+                    c.vod_start = min(c.vod_end - 1.0, max(0.0, c.vod_start + d))
+                else:
+                    c.vod_end = max(c.vod_start + 1.0, min(dur, c.vod_end + d))
+        try:
+            core.snap_clips(self.clips, core._fps_of(self.v_vod.get()))
+        except Exception:
+            pass
+        self.fill_clips()
+        try:
+            self.tv_c.selection_set([str(i) for i in sel])
+            self.tv_c.see(str(sel[0]))
+        except tk.TclError:
+            pass
+        c = self.clips[sel[0]]
+        self.status(f"Ronda ajustada: {core.fmt_ts(c.vod_start)} → {core.fmt_ts(c.vod_end)} "
+                    f"({c.vod_end - c.vod_start:.1f} s). Doble clic para verla.")
 
     def fill_clips(self):
         self.after_idle(self.update_kpis)
