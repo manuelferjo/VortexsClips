@@ -1764,8 +1764,35 @@ class App(tk.Tk):
             return
         self.v_start.set("")
         self.set_progress(None, "Leyendo el vídeo…")
-        self.run_bg(lambda: core.probe_vod(p), lambda info: self.set_vod(p, info),
-                    "No se pudo leer el vídeo")
+
+        def work():
+            info = core.probe_vod(p)
+            start = None
+            # si el archivo es un VOD de Twitch (lleva su número), la hora exacta de inicio sale de Twitch:
+            # la fecha del archivo es la de cuando se descargó, no la del directo
+            mm = re.search(r"\bv(\d{8,})", os.path.basename(p))
+            if mm and not info.get("parts"):
+                try:
+                    start = twitch.vod_info(f"https://www.twitch.tv/videos/{mm.group(1)}").get("start")
+                except Exception:
+                    start = None
+            return info, start
+
+        def done(res):
+            info, start = res
+            # partidas de otro directo: fuera (se vuelven a buscar para este)
+            self.checked = set()
+            self.set_vod(p, info, start)
+            if start is None and re.search(r"\bv(\d{8,})", os.path.basename(p)):
+                self.status("No pude leer en Twitch la hora de inicio de este directo: revísala en «Inicio del directo».")
+                self.refresh_matches()
+            elif self.v_key.get().strip():
+                # las partidas de ESE día (va hacia atrás hasta encontrarlas)
+                self.show_page("partidas")
+                self.load_matches()
+            else:
+                self.refresh_matches()
+        self.run_bg(work, done, "No se pudo leer el vídeo")
 
     def set_vod(self, p, info, start_utc=None):
         self.load_delay()
