@@ -127,6 +127,46 @@ def _parse_token(out: str) -> dict | None:
     return None
 
 
+def _token() -> str | None:
+    """El permiso guardado (rclone lo renueva solo cada vez que se usa)."""
+    try:
+        with open(conf_path(), encoding="utf-8") as f:
+            for ln in f:
+                if ln.startswith("token"):
+                    return json.loads(ln.split("=", 1)[1].strip()).get("access_token")
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def folder_info(fid: str) -> dict:
+    """Nombre y carpeta de arriba de una carpeta de Drive (también de unidades compartidas)."""
+    import urllib.request
+    exe = ensure_rclone()
+    # cualquier uso de rclone renueva el permiso si ha caducado (y lo guarda en drive.conf)
+    subprocess.run(_base_args(exe, fid) + ["lsd", f"{REMOTE}:", "--max-depth", "1"], capture_output=True,
+                   text=True, timeout=120, **core._no_window())
+    tok = _token()
+    if not tok:
+        raise RuntimeError("Falta el permiso de Google Drive")
+    req = urllib.request.Request(f"https://www.googleapis.com/drive/v3/files/{fid}"
+                                 "?fields=name,parents&supportsAllDrives=true",
+                                 headers={"Authorization": f"Bearer {tok}"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def day_parent(fid: str) -> str | None:
+    """Si el enlace es el de la carpeta de UN día (dd-mm-aaaa), la carpeta donde van todos los días."""
+    try:
+        info = folder_info(fid)
+    except Exception:
+        return None
+    if re.match(r"^\d{2}-\d{2}-\d{4}( \(\d+\))?$", (info.get("name") or "").strip()) and info.get("parents"):
+        return info["parents"][0]
+    return None
+
+
 def disconnect() -> None:
     try:
         os.remove(conf_path())

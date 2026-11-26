@@ -660,6 +660,8 @@ class App(tk.Tk):
         dfb.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self.btn_drive_conn = ui.Button(dfb, text="Conectar con Google Drive", command=self.drive_connect)
         self.btn_drive_conn.pack(side="left")
+        ui.Button(dfb, text="Subir otros días…", style="Ghost.TButton",
+                  command=self.drive_upload_pick).pack(side="left", padx=(6, 0))
         self.lbl_drive = ttk.Label(dfb, text="", style="Muted.TLabel")
         self.lbl_drive.pack(side="left", padx=10)
         ttk.Label(df_, text="Se sube con el botón «Subir a Drive» de abajo (siempre te pide confirmación), en una "
@@ -3832,14 +3834,44 @@ class App(tk.Tk):
             self._drive_status()
         self.run_bg(work, done, "No se pudo conectar con Google Drive")
 
-    def drive_upload_last(self, auto=False):
+    def drive_upload_pick(self):
+        """Elegir una o varias carpetas de días ya generados y subirlas a Drive (una detrás de otra)."""
+        if self.busy:
+            return
+        root = self.v_outdir.get() or os.path.join(os.path.expanduser("~"), "Videos", "Vortexs Clips")
+        try:
+            days = sorted(d for d in os.listdir(root)
+                          if re.match(r"^\d{2}-\d{2}-\d{4}( \(\d+\))?$", d) and os.path.isdir(os.path.join(root, d)))
+        except OSError:
+            days = []
+        sel = _ask_days(self, days) if days else None
+        if sel is None and not days:
+            p = filedialog.askdirectory(parent=self, initialdir=root, title="Carpeta del día a subir")
+            sel = [os.path.basename(p)] if p else None
+            root = os.path.dirname(p) if p else root
+        if not sel:
+            return
+        queue = [os.path.join(root, d) for d in sel]
+        self._drive_left = lambda: len(queue)
+        self._drive_done, self._drive_many_ok = [], False
+
+        def nxt():
+            if self.busy:
+                self.after(2000, nxt)
+                return
+            if queue:
+                self.drive_upload_last(folder=queue.pop(0), then=nxt, many=len(sel))
+        nxt()
+
+    def drive_upload_last(self, auto=False, folder=None, then=None, many=0):
         """Sube la carpeta del último vídeo generado a Drive, en <subcarpeta>/<fecha del directo>/."""
         if self.busy:
             if auto:
                 self.after(3000, lambda: self.drive_upload_last(auto=True))
             return
-        proj = self.load_project()
-        folder = os.path.dirname(os.path.abspath(proj["out"])) if proj and proj.get("out") else None
+        proj = {} if folder else self.load_project()
+        if not folder:
+            folder = os.path.dirname(os.path.abspath(proj["out"])) if proj and proj.get("out") else None
         if not folder or not os.path.isdir(folder):
             if not auto:
                 messagebox.showinfo(APP_NAME, "Todavía no hay vídeos generados para subir.")
@@ -3858,6 +3890,14 @@ class App(tk.Tk):
             fid = drive.folder_id(self.v_drive_link.get())
         except ValueError:
             fid = None
+        if fid:
+            # si el enlace es el de la carpeta de un día, los días van en la carpeta de arriba
+            par = drive.day_parent(fid)
+            if par:
+                fid = par
+                self.v_drive_link.set(f"https://drive.google.com/drive/folders/{par}")
+                self.v_drive_sub.set("")
+                self.persist()
         if not fid or fid == drive.EXAMPLE_DAY_ID:
             messagebox.showwarning(APP_NAME, "Falta el enlace de tu carpeta «Vortexs Clips» de Drive (donde van las "
                                              "carpetas de cada día).\n\nEn Drive, abre «Vortexs Clips» → Compartir → "
@@ -3879,16 +3919,22 @@ class App(tk.Tk):
                     n_bytes += os.path.getsize(os.path.join(root, fn))
                 except OSError:
                     pass
-        if not auto and not messagebox.askyesno(
-                APP_NAME, f"¿Subir a Google Drive los vídeos del último directo?\n\nCarpeta: {os.path.basename(folder)}\n"
+        if many and getattr(self, "_drive_many_ok", False):
+            pass                        # ya confirmaste la tanda de días
+        elif not auto and not messagebox.askyesno(
+                APP_NAME, (f"¿Subir a Google Drive {many} día(s), uno detrás de otro?\n\nEl primero:\n" if many else
+                           "¿Subir a Google Drive los vídeos del último directo?\n\n")
+                          + f"Carpeta: {os.path.basename(folder)}\n"
                           f"{n_files} archivos · {n_bytes / 2**30:.1f} GB\n\nSe guardan en Drive en:\n"
                           f"{(sub + ' / ') if sub else ''}{date_txt} /\n\nRevisa antes que los vídeos estén bien: "
                           f"lo que subas queda en la carpeta compartida."):
             return
+        if many:
+            self._drive_many_ok = True
         self.persist()
         self.stop_flag = False
         self.set_running(True)
-        self.set_step(None, "Subiendo a Google Drive…")
+        self.set_step(None, "Subiendo a Google Drive…" + (f" ({os.path.basename(folder)})" if many else ""))
         cb = self.progress_cb()
         link = self.v_drive_link.get()
 
@@ -3901,6 +3947,15 @@ class App(tk.Tk):
         def done(dst):
             self.finish_steps("Subido a Google Drive")
             self.status(f"Subido a Drive: {dst}")
+            if then is not None:
+                self._drive_done = getattr(self, "_drive_done", []) + [dst]
+                if getattr(self, "_drive_left", lambda: 0)():
+                    self.after(500, then)
+                    return
+                lst = "\n".join(self._drive_done)
+                self._drive_done, self._drive_many_ok = [], False
+                messagebox.showinfo(APP_NAME, f"¡Subido a Google Drive!\n\n{lst}")
+                return
             if not auto and not self.unattended():
                 messagebox.showinfo(APP_NAME, f"¡Subido a Google Drive!\n\n{dst}")
         self.run_bg(work, done, "No se pudo subir a Google Drive")
@@ -3996,6 +4051,34 @@ class App(tk.Tk):
     def on_close(self):
         self.persist()
         self.destroy()
+
+
+def _ask_days(parent, days):
+    """Ventanita con una casilla por día ya generado. -> lista elegida o None."""
+    win = tk.Toplevel(parent)
+    win.title("Subir días a Google Drive")
+    win.transient(parent)
+    win.configure(bg=ui.SURFACE)
+    fr = ttk.Frame(win, padding=16, style="Panel.TFrame")
+    fr.pack(fill="both", expand=True)
+    ttk.Label(fr, text="¿Qué días subo? (se suben uno detrás de otro)").pack(anchor="w", pady=(0, 8))
+    vs = []
+    for d in days:
+        v = tk.BooleanVar(value=False)
+        ui.Toggle(fr, text=d, variable=v).pack(anchor="w", pady=2)
+        vs.append((d, v))
+    res = {"v": None}
+
+    def ok():
+        res["v"] = [d for d, v in vs if v.get()]
+        win.destroy()
+    bf = ttk.Frame(fr, style="Panel.TFrame")
+    bf.pack(anchor="e", pady=(12, 0))
+    ui.Button(bf, text="Cancelar", style="Ghost.TButton", command=win.destroy).pack(side="right")
+    ui.Button(bf, text="Subir", command=ok).pack(side="right", padx=6)
+    win.grab_set()
+    parent.wait_window(win)
+    return res["v"]
 
 
 def selftest(out_path):
