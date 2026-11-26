@@ -69,7 +69,6 @@ class _SettingsTabs:
     def select(self, i):
         k = self.KEYS[i] if isinstance(i, int) and 0 <= i < len(self.KEYS) else None
         if k is None:
-            self.app.setwin.withdraw()
             self.app.show_page("vod")
         else:
             self.app.open_settings(k)
@@ -249,9 +248,8 @@ class App(tk.Tk):
         self._logo = ui.logo_image(self, 44)
         upd = ui.Button(head, text="Buscar actualizaciones", style="Ghost.TButton",
                         command=lambda: self.check_update(silent=False))
-        b_set = ui.Button(head, text="⚙  Ajustes", command=lambda: self.open_settings())
         b_dir = ui.Button(head, text="Carpeta", command=self.open_outdir)
-        for b_ in (upd, b_set, b_dir):
+        for b_ in (upd, b_dir):
             b_.configure(bg=BG)
             b_._bgc = BG
             b_._cache.clear()
@@ -276,50 +274,11 @@ class App(tk.Tk):
             head.create_text(x + 1, 52, text=f"V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
                              font=ui.mono(8), fill=ui.DIM, anchor="nw", tags="fg")
             xr = w - 22
-            for wdg in (b_set, b_dir, upd, self.pill):
+            for wdg in (b_dir, upd, self.pill):
                 head.create_window(xr, 40, window=wdg, anchor="e", tags="fg")
                 xr -= wdg.winfo_reqwidth() + 10
         head.items.append(place_head)
         self._head = head
-
-        # ---------------- ventana de ajustes (se crea ya, oculta: sus controles existen desde el principio)
-        sw = tk.Toplevel(self)
-        sw.withdraw()
-        sw.title("Ajustes · Vortexs Clips")
-        sw.configure(bg=BG)
-        sw.geometry("1080x640")
-        sw.minsize(860, 480)
-        sw.protocol("WM_DELETE_WINDOW", self.close_settings)
-        try:
-            ico_ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
-            if os.path.isfile(ico_):
-                sw.iconbitmap(ico_)
-        except Exception:
-            pass
-        self.setwin = sw
-        nav = tk.Frame(sw, bg=BG, width=220)
-        nav.pack(side="left", fill="y", padx=(14, 0), pady=14)
-        nav.pack_propagate(False)
-        sbody = ui.ScrollArea(sw)
-        sbody.pack(side="left", fill="both", expand=True, padx=14, pady=14)
-        scard = ui.Card(sbody.inner, pad=18, radius=18)
-        scard.pack(fill="both", expand=True)
-        self._set_title = ttk.Label(scard, text="", style="H.TLabel")
-        self._set_title.grid(row=0, column=0, sticky="w", pady=(0, 10))
-        scard.columnconfigure(0, weight=1)
-        self._set_pages, self._set_btns = {}, {}
-        for key, txt in (("cuenta", "Cuenta"), ("cortar", "Qué cortar"), ("videos", "Vídeos y subtítulos"),
-                         ("carpeta", "Carpeta y Drive"), ("auto", "Automático"), ("otro", "Otro PC")):
-            pg = ttk.Frame(scard, style="Panel.TFrame")
-            self._set_pages[key] = (pg, txt)
-            lb = tk.Label(nav, text="   " + txt, anchor="w", bg=BG, fg=MUTED, font=ui.semi(10),
-                          padx=8, pady=9, cursor="hand2")
-            lb.pack(fill="x", pady=1)
-            lb.bind("<Button-1>", lambda e, k=key: self.open_settings(k))
-            self._set_btns[key] = lb
-        self._set_cur = None
-        tk.Label(nav, text="Se guarda solo.", bg=BG, fg=ui.DIM, font=ui.body(9)).pack(side="bottom", anchor="w",
-                                                                                       padx=10, pady=6)
 
         # ---------------- cuerpo: pasos arriba y una página cada vez
         self.body = ui.ScrollArea(self)
@@ -339,15 +298,52 @@ class App(tk.Tk):
             for w_ in (f_, ic, tl, sl):
                 w_.bind("<Button-1>", lambda e, k=key: self.show_page(k))
             self._steps.append((key, f_, ic, tl, sl))
+        stepper.columnconfigure(3, weight=0)
+        fa = tk.Frame(stepper, bg=PANEL, cursor="hand2", highlightthickness=1, highlightbackground=BORDER)
+        fa.grid(row=0, column=3, sticky="nswe", padx=(8, 0))
+        la = tk.Label(fa, text="⚙  Ajustes", bg=PANEL, fg=MUTED, font=ui.display(13), cursor="hand2")
+        la.pack(padx=18, pady=9)
+        for w_ in (fa, la):
+            w_.bind("<Button-1>", lambda e: self.open_settings())
+        self._tab_set = (fa, la)
         pages = ttk.Frame(self.body.inner, padding=(16, 8, 16, 8))
         pages.pack(fill="both", expand=True)
         pages.columnconfigure(0, weight=1)
         pages.rowconfigure(0, weight=1)
-        self._pages = {k: ttk.Frame(pages) for k in ("vod", "partidas", "videos")}
+        self._pages = {k: ttk.Frame(pages) for k in ("vod", "partidas", "videos", "ajustes")}
         for f_ in self._pages.values():
             f_.grid(row=0, column=0, sticky="nsew")
             f_.columnconfigure(0, weight=1)
         self._page = None
+
+        # ---------------- pestaña Ajustes (lo que se toca una vez), con sus secciones a la izquierda
+        sw = self._pages["ajustes"]
+        sw.columnconfigure(0, weight=0)
+        sw.columnconfigure(1, weight=1)
+        sw.rowconfigure(0, weight=1)
+        self.setwin = sw
+        nav = tk.Frame(sw, bg=BG, width=220)
+        nav.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+        nav.pack_propagate(False)
+        scard = ui.Card(sw, pad=18, radius=18)
+        scard.grid(row=0, column=1, sticky="nsew")
+        self._set_title = ttk.Label(scard, text="", style="H.TLabel")
+        self._set_title.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        scard.columnconfigure(0, weight=1)
+        self._set_pages, self._set_btns = {}, {}
+        for key, txt in (("cuenta", "Cuenta"), ("cortar", "Qué cortar"), ("videos", "Vídeos y subtítulos"),
+                         ("carpeta", "Carpeta y Drive"), ("auto", "Automático"), ("otro", "Otro PC")):
+            pg = ttk.Frame(scard, style="Panel.TFrame")
+            self._set_pages[key] = (pg, txt)
+            lb = tk.Label(nav, text="   " + txt, anchor="w", bg=BG, fg=MUTED, font=ui.semi(10),
+                          padx=8, pady=9, cursor="hand2")
+            lb.pack(fill="x", pady=1)
+            lb.bind("<Button-1>", lambda e, k=key: self.open_settings(k))
+            self._set_btns[key] = lb
+        self._set_cur = None
+        tk.Label(nav, text="Se guarda solo.", bg=BG, fg=ui.DIM, font=ui.body(9)).pack(anchor="w", padx=10,
+                                                                                       pady=(14, 0))
+
 
         # --- Ajustes · Cuenta
         p1 = self._set_pages["cuenta"][0]
@@ -379,6 +375,8 @@ class App(tk.Tk):
             n_.pack(side="left")
             tk.Label(sumr, text=" " + cap + "     ", bg=PANEL, fg=MUTED, font=ui.body(10)).pack(side="left")
             self.kpi[key] = n_
+        self._cut_lbls = []
+        self._cut_line(p3).grid(row=5, column=0, sticky="w", pady=(8, 0))
         lk = tk.Label(sumr, text="Marcar las que tienen rondas", bg=PANEL, fg=PURPLE, font=ui.body(10),
                       cursor="hand2")
         lk.pack(side="right")
@@ -686,6 +684,7 @@ class App(tk.Tk):
         self.tv_c.tag_configure("alt", background=ROW_ALT)
         cb = ttk.Frame(p4, style="Panel.TFrame")
         cb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        self._cut_line(p4).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ui.Button(cb, text="Calcular rondas", command=self.compute).pack(side="left")
         ui.Button(cb, text="Ver ronda", style="Ghost.TButton", command=self.preview).pack(side="left", padx=6)
         ui.Button(cb, text="Quitar", style="Ghost.TButton", command=self.remove_clips).pack(side="left")
@@ -765,6 +764,12 @@ class App(tk.Tk):
     def show_page(self, key):
         if key not in self._pages:
             return
+        if self._page == "ajustes" and key != "ajustes":
+            self.after_idle(self.close_settings)
+        if key == "ajustes" and not self._set_cur:
+            self._page = key        # (open_settings vuelve a llamar aquí con la sección elegida)
+            self.open_settings("cuenta")
+            return
         self._page = key
         self._pages[key].tkraise()
         self._paint_steps()
@@ -802,6 +807,11 @@ class App(tk.Tk):
             states = self._step_state()
         except Exception:
             return
+        fa, la = self._tab_set
+        on = self._page == "ajustes"
+        fa.configure(bg=ui.SEL if on else PANEL, highlightthickness=2 if on else 1,
+                     highlightbackground=PURPLE if on else BORDER)
+        la.configure(bg=ui.SEL if on else PANEL, fg=TEXT if on else MUTED)
         tint = {"done": ("#0f2a20", ui.GREEN), "now": ("#2b2908", YELLOW), "todo": (PANEL, ui.DIM)}
         for (key, f_, ic, tl, sl), (st, txt) in zip(self._steps, states):
             cur = key == self._page
@@ -825,15 +835,10 @@ class App(tk.Tk):
         for k, lb in self._set_btns.items():
             lb.configure(bg=ui.SEL if k == key else BG, fg=TEXT if k == key else MUTED)
         self._set_cur = key
-        self.setwin.deiconify()
-        self.setwin.lift()
-        try:
-            self.setwin.focus_force()
-        except Exception:
-            pass
+        self.show_page("ajustes")
 
     def close_settings(self):
-        self.setwin.withdraw()
+        """Al salir de la pestaña Ajustes: se guardan y se recalcula la lista de partidas."""
         try:
             self.persist()
         except Exception:
@@ -1000,6 +1005,10 @@ class App(tk.Tk):
                 if self.btn_render.cget("text") != t:
                     self.btn_render.configure(text=t)
             self._paint_steps()
+            ct = self._cut_text()
+            for lb in getattr(self, "_cut_lbls", []):
+                if lb.cget("text") != ct:
+                    lb.configure(text=ct)
             hv = ""
             if self.vod_info and self.v_start.get().strip():
                 hv = "Directo del " + self.v_start.get().split(" ")[0]
@@ -4272,7 +4281,6 @@ def demo_screenshot(out_png):
 
     def page(k, name):
         def f():
-            app.setwin.withdraw()
             app.show_page(k)
             app.after(700, lambda: grab(app, name))
         return f
@@ -4280,8 +4288,7 @@ def demo_screenshot(out_png):
     def sett(k, name):
         def f():
             app.open_settings(k)
-            app.setwin.geometry("1080x640+80+80")
-            app.after(900, lambda: grab(app.setwin, name))
+            app.after(900, lambda: grab(app, name))
         return f
     steps.append(page("partidas", "1_principal.png"))
     steps.append(page("vod", "2_vod.png"))
@@ -4294,7 +4301,7 @@ def demo_screenshot(out_png):
 
     def review():
         from PIL import Image, ImageDraw
-        app.setwin.withdraw()
+        app.show_page("partidas")
         tmpd = tempfile.mkdtemp()
         rows = []
         for j, mid in enumerate(list(app.matches)[4:7]):
