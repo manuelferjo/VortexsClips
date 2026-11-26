@@ -83,14 +83,12 @@ def own_marker(band, src_h: int = 1080):
         if r is not None:
             # en tus kills el que muere es un rival: la línea ACABA en rojo. Si acaba en verde, la víctima
             # eres tú («X → Me») y el amarillo era el de tu retrato o el del retrato del que te mata
-            rc = red.mean(axis=0) > 0.5
-            tc = teal.mean(axis=0) > 0.5
-            cols = np.flatnonzero(rc | tc)
-            if len(cols):
-                e = cols[-1] + 1
-                b0 = max(0, e - int(2 * lh))
-                if int(tc[b0:e].sum()) > int(rc[b0:e].sum()):
-                    continue
+            # (se compara dónde está el rojo respecto al verde a la derecha del marcador, no solo el
+            # final: la pastilla del delay de tu emisión puede tapar el final de la línea)
+            rc = np.flatnonzero(red[:, r:].mean(axis=0) > 0.5)
+            tcc = np.flatnonzero(teal[:, r:].mean(axis=0) > 0.5)
+            if len(rc) >= 0.4 * lh and len(tcc) >= 0.4 * lh and np.median(rc) < np.median(tcc):
+                continue
             return r
     return None
 
@@ -109,7 +107,7 @@ def _marker_at(core_, pure, yel, xt, lh):
     pcol = pure[:, w0:w1].mean(axis=0) >= 0.5
     best = None
     for a, b in _segs(ycol):
-        if not (0.35 * lh <= b - a <= 1.3 * lh):
+        if not (0.25 * lh <= b - a <= 1.3 * lh):          # (el de Hush mide ~10 px)
             continue
         if int(pcol[a:b].sum()) < 3:
             continue
