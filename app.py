@@ -1084,7 +1084,7 @@ class App(tk.Tk):
     def status(self, txt):
         if txt:
             t = str(txt).replace("\n", " ")
-            self.lbl_status.configure(text=t if len(t) <= 120 else t[:117] + "…")
+            self.lbl_status.configure(text=t if len(t) <= 95 else t[:92] + "…")
 
     def set_step(self, idx, title=None):
         """Marca el paso actual (0-3) o None para reposo."""
@@ -1113,7 +1113,7 @@ class App(tk.Tk):
         if getattr(self, "_t0", None) is None:
             return
         el = int(time.time() - self._t0)
-        self.lbl_time.configure(text=f"tiempo en este paso: {el // 60}:{el % 60:02d}")
+        self.lbl_time.configure(text=f"{el // 60}:{el % 60:02d}")
         self._tick_id = self.after(1000, self._tick)
 
     def set_progress(self, frac, detail=None):
