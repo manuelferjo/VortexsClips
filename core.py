@@ -1271,6 +1271,16 @@ def _render_batch(ffmpeg, vod_path, clips, out, venc, font, audio, done_before, 
         raise RuntimeError("ffmpeg falló:\n" + "".join(err_lines)[-800:])
 
 
+def _file_sig(p: str) -> str:
+    """Huella del CONTENIDO de un archivo (los recortes del killfeed se llaman igual aunque cambien)."""
+    import hashlib
+    try:
+        with open(p, "rb") as f:
+            return hashlib.sha1(f.read()).hexdigest()[:12]
+    except OSError:
+        return ""
+
+
 def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x264",
            show_label: bool = False, progress=None, should_stop=None,
            vout_path: str | None = None, cam: dict | None = None, words: list | None = None,
@@ -1305,7 +1315,7 @@ def render(vod_path: str, clips: list[Clip], out_path: str, *, encoder: str = "x
             progress(frac, f"Generando vídeo{'s' if vout_path else ''}… {frac * 100:.0f}%  ({len(clips)} rondas)")
 
     vkey = (vout_path is not None, cam, words, highlight, vertical_only,
-            [(round(k["start"], 2), round(k["end"], 2), k["png"]) for k in (kf_lines or [])])
+            [(round(k["start"], 2), round(k["end"], 2), k["png"], _file_sig(k["png"])) for k in (kf_lines or [])])
     sig = _hash(os.path.abspath(vod_path), [(round(c.vod_start, 3), round(c.vod_end, 3)) for c in clips],
                 venc, bool(font), audio, vkey, 3)
     outs_ok = _sig_get(out_path) == sig and _dur_ok(out_path, total_s, 1.5)
