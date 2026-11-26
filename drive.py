@@ -185,7 +185,8 @@ def dest_path(sub: str, date_txt: str) -> str:
 
 def upload(folder: str, date_txt: str, link: str, sub: str = DEFAULT_SUB, progress=None, should_stop=None) -> str:
     """Sube el contenido de `folder` a <link>/<sub>/<date_txt>/ (crea las carpetas que falten; lo que ya
-    está subido igual no se vuelve a subir). Devuelve la ruta en Drive."""
+    está subido igual no se vuelve a subir; lo que sobra en Drive de esa carpeta del día, a la papelera).
+    Devuelve la ruta en Drive."""
     if not is_connected():
         raise RuntimeError("Primero conecta tu cuenta de Google Drive (pestaña Automático).")
     if not os.path.isdir(folder):
@@ -193,7 +194,11 @@ def upload(folder: str, date_txt: str, link: str, sub: str = DEFAULT_SUB, progre
     exe = ensure_rclone()
     rid = folder_id(link)
     dst = dest_path(sub, date_txt)
-    cmd = _base_args(exe, rid) + ["copy", folder, dst, "--stats", "1s", "--stats-one-line", "-v",
+    # la carpeta del día en Drive queda IGUAL que la del PC: lo que ya no está (clips de antes con otro
+    # nombre al volver a generar) va a la papelera de Drive. Solo con una carpeta de día, nunca la raíz.
+    mode = "sync" if re.match(r"^\d{2}-\d{2}-\d{4}( \(\d+\))?$", date_txt or "") else "copy"
+    cmd = _base_args(exe, rid) + [mode, folder, dst, "--stats", "1s", "--stats-one-line", "-v",
+                                  "--drive-use-trash=true",
                                   "--transfers", "4", "--drive-chunk-size", "64M", "--retries", "5"]
     for e in EXCLUDE:
         cmd += ["--exclude", e]

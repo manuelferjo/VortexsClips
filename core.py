@@ -72,6 +72,7 @@ class Match:
     allies: set = field(default_factory=set)     # puuids de tu equipo (contigo)
     enemies: set = field(default_factory=set)
     agents: dict = field(default_factory=dict)   # puuid -> agente (para reconocer a quién mataste)
+    head_only: dict = field(default_factory=dict)  # ronda -> rivales a los que solo diste en la cabeza
 
     def is_mine(self, k: "Kill") -> bool:
         """Kill tuya a un enemigo (no a un compañero ni a ti mismo)."""
@@ -303,7 +304,22 @@ class Clip:
         ws = [w for w in self.weapons if w.lower() not in t.lower()][:3]
         if ws:
             t += " con " + (ws[0] if len(ws) == 1 else ", ".join(ws[:-1]) + " y " + ws[-1])
+        hs = self.headshots
+        if hs >= 2:
+            n_ = len([k for k in m.my_round_kills(self.round) if not is_shock_dart(m, k)])
+            t += ", todas a la cabeza" if hs >= n_ >= 3 else f", {hs} a la cabeza"
         return t
+
+    @property
+    def headshots(self) -> int:
+        """Tus kills con arma de la ronda en las que todos tus impactos fueron a la cabeza."""
+        m = self.match
+        heads = (getattr(m, "head_only", None) or {}).get(self.round.index) or set()
+        if not heads or self.kind.endswith("Shock dart"):
+            return 0
+        return len({k.victim for k in m.my_round_kills(self.round)
+                    if k.victim in heads and "ability" not in (k.weapon_type or "").lower()
+                    and not is_shock_dart(m, k)})
 
 
 # ---------------------------------------------------------------- API
@@ -486,7 +502,32 @@ def split_riot_id(riot_id: str) -> tuple[str, str]:
 def fetch_recent_matches(riot_id: str, api_key: str, region: str = "eu",
                          platform: str = "pc", size: int = 10, start: int = 0,
                          mode: str = "competitive") -> list[dict]:
-    """Devuelve la lista de partidas en bruto (formato v4)."""
+    """Devuelve la lista de partidas en bruto (formato v4). Con varias cuentas separadas por comas
+    («Vortexs#vrtxs, Sovadin#linup»), junta las de todas, de la más nueva a la más vieja."""
+    ids = riot_ids(riot_id)
+    if len(ids) > 1:
+        allm, seen = [], set()
+        for rid in ids:
+            try:
+                got = fetch_recent_matches(rid, api_key, region, platform, size, start, mode)
+            except ApiError:
+                if rid == ids[0]:
+                    raise
+                continue
+            for g in got:
+                mid = (g.get("metadata") or {}).get("match_id") or (g.get("metadata") or {}).get("matchid")
+                if mid and mid in seen:
+                    continue
+                seen.add(mid)
+                allm.append(g)
+
+        def when(g):
+            md = g.get("metadata") or {}
+            try:
+                return _parse_dt(md.get("started_at") or md.get("game_start")).timestamp()
+            except Exception:
+                return 0
+        return sorted(allm, key=when, reverse=True)
     name, tag = split_riot_id(riot_id)
     path = (f"/valorant/v4/matches/{region}/{platform}/"
             f"{urllib.parse.quote(name)}/{urllib.parse.quote(tag)}")
@@ -529,8 +570,41 @@ def _parse_dt(v) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _head_only(raw_rounds, my_puuid) -> dict:
+    """Por ronda, los rivales a los que todos tus impactos fueron a la cabeza (para «N a la cabeza»)."""
+    out: dict = {}
+    for i, rr in enumerate(raw_rounds or []):
+        for st in (rr.get("stats") or []) + (rr.get("player_stats") or []):
+            pu = (st.get("player") or {}).get("puuid") or st.get("player_puuid")
+            if pu != my_puuid:
+                continue
+            for de in st.get("damage_events") or []:
+                vic = (de.get("player") or {}).get("puuid") or de.get("receiver_puuid")
+                try:
+                    hs, bs, ls = int(de.get("headshots") or 0), int(de.get("bodyshots") or 0), int(de.get("legshots") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if vic and hs >= 1 and bs == 0 and ls == 0:
+                    out.setdefault(i, set()).add(vic)
+    return out
+
+
+def riot_ids(s: str) -> list[str]:
+    """«Vortexs#vrtxs, Sovadin#linup» -> ['Vortexs#vrtxs', 'Sovadin#linup']."""
+    return [x.strip() for x in re.split(r"[,;\n]+", s or "") if x.strip()]
+
+
 def parse_match(raw: dict, riot_id: str) -> Match:
     """Convierte una partida (v4, con compatibilidad v2/v3) al modelo interno."""
+    ids = riot_ids(riot_id)
+    if len(ids) > 1:
+        err = None
+        for rid in ids:
+            try:
+                return parse_match(raw, rid)
+            except ValueError as e:
+                err = e
+        raise err
     name, tag = split_riot_id(riot_id)
     md = raw.get("metadata", {})
 
@@ -722,6 +796,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
         allies=allies,
         enemies=enemies,
         agents=agents,
+        head_only=_head_only(raw_rounds, my_puuid),
     )
     compute_clutches(m_)
     return m_

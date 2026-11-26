@@ -358,7 +358,9 @@ class App(tk.Tk):
         self.v_key = tk.StringVar(value=self.cfg.get("api_key", ""))
         self.v_link = tk.StringVar()
         ttk.Label(p1, text="Riot ID").grid(row=1, column=0, sticky="w")
-        ttk.Entry(p1, textvariable=self.v_riot, width=22).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Entry(p1, textvariable=self.v_riot, width=34).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(p1, text="varias cuentas: sepáralas con comas", style="Muted.TLabel").grid(
+            row=1, column=2, sticky="w", padx=6)
         ttk.Label(p1, text="Región").grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Combobox(p1, textvariable=self.v_region, values=REGIONS, width=6,
                      state="readonly").grid(row=2, column=1, sticky="w", padx=6, pady=(8, 0))
@@ -472,6 +474,9 @@ class App(tk.Tk):
         self.cam = cfg.get("cam")
         self.v_channel = tk.StringVar(value=cfg.get("watch_channel", ""))
         self.v_watch = tk.BooleanVar(value=cfg.get("watch", False))
+        self.v_autodrive = tk.BooleanVar(value=cfg.get("auto_drive", False))
+        self.v_tg_token = tk.StringVar(value=cfg.get("tg_token", ""))
+        self.v_tg_on = tk.BooleanVar(value=cfg.get("tg_on", False))
         self.v_startup = tk.BooleanVar(value=cfg.get("startup", False))
 
         # ---- pestaña VOD
@@ -651,6 +656,26 @@ class App(tk.Tk):
         ui.Toggle(tw_, text="Top de la semana cada lunes (las 10 mejores jugadas, horizontal y vertical)",
                   variable=self.v_topweek).pack(side="left")
         ui.Button(tw_, text="Hacer el top ahora…", command=self.top_week_now).pack(side="left", padx=10)
+        ui.Toggle(t_auto, text="Al terminar un directo vigilado, subirlo a Google Drive solo (sin preguntar)",
+                  variable=self.v_autodrive).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        # --- avisos por Telegram
+        ttk.Separator(t_auto).grid(row=8, column=0, columnspan=4, sticky="we", pady=8)
+        tg_ = ttk.Frame(t_auto, style="Panel.TFrame")
+        tg_.grid(row=9, column=0, columnspan=4, sticky="w")
+        ttk.Label(tg_, text="Telegram: token del bot").grid(row=0, column=0, sticky="w")
+        ttk.Entry(tg_, textvariable=self.v_tg_token, width=50, show="•").grid(row=0, column=1, sticky="w", padx=6)
+        tgb = ttk.Frame(tg_, style="Panel.TFrame")
+        tgb.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ui.Button(tgb, text="Conectar", command=self.tg_connect).pack(side="left")
+        ui.Button(tgb, text="Mandar prueba", style="Ghost.TButton", command=self.tg_test).pack(side="left", padx=6)
+        self.lbl_tg = ttk.Label(tgb, text="", style="Muted.TLabel")
+        self.lbl_tg.pack(side="left", padx=8)
+        ui.Toggle(tg_, text="Avisarme al terminar (TOP 3 del día y el mejor clip), al subir a Drive y si algo falla",
+                  variable=self.v_tg_on).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(tg_, text="Crea el bot en Telegram con @BotFather (/newbot), pega aquí su token, escríbele "
+                            "cualquier cosa al bot y pulsa «Conectar».", style="Muted.TLabel").grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self._tg_status()
         # Google Drive: la carpeta del directo se sube tal cual a <enlace>/<subcarpeta>/<dd-mm-aaaa>/
         df_ = ttk.Frame(t_dir, style="Panel.TFrame")
         df_.grid(row=3, column=0, columnspan=4, sticky="we")
@@ -1431,6 +1456,8 @@ class App(tk.Tk):
                          "dart_pre": self.v_dartpre.get(),
                          "kill_gap": self.v_kgap.get(),
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
+                         "auto_drive": self.v_autodrive.get(), "tg_token": self.v_tg_token.get().strip(),
+                         "tg_on": self.v_tg_on.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
                          "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset(),
                          "top_week": self.v_topweek.get(), "capcut_subs": self.v_capcut.get(), "killfeed_vertical": self.v_kfeed.get(),
@@ -1849,6 +1876,92 @@ class App(tk.Tk):
             self.after(0, lambda: self.lbl_enc.configure(text=f"Detectado: {core.ENC_NAMES.get(e, e)}"))
         threading.Thread(target=work, daemon=True).start()
 
+    # ------------------------------------------------------------ avisos por Telegram
+    def _tg_status(self):
+        cid, who = self.cfg.get("tg_chat"), self.cfg.get("tg_who", "")
+        try:
+            self.lbl_tg.configure(text=(f"✔ Conectado ({who})" if who else "✔ Conectado") if cid and
+                                  self.v_tg_token.get().strip() else "Sin conectar")
+        except Exception:
+            pass
+
+    def tg_connect(self):
+        import avisos as telegram
+        tok = self.v_tg_token.get().strip()
+        if not tok:
+            messagebox.showinfo(APP_NAME, "Pega primero el token del bot (te lo da @BotFather en Telegram).")
+            return
+        self.lbl_tg.configure(text="Conectando…")
+
+        def work():
+            name = telegram.bot_name(tok)
+            return name, telegram.find_chat(tok)
+
+        def done(res):
+            name, chat = res
+            if not chat:
+                self.lbl_tg.configure(text=f"Bot {name}: escríbele algo en Telegram y vuelve a pulsar «Conectar».")
+                return
+            self.cfg["tg_chat"], self.cfg["tg_who"] = chat
+            self.v_tg_on.set(True)
+            self.persist()
+            self._tg_status()
+            threading.Thread(target=lambda: self._tg_safe_send(
+                f"✅ Vortexs Clips conectado. Te aviso aquí cuando termine cada directo."), daemon=True).start()
+        self.run_bg(work, done, "No se pudo conectar con Telegram")
+
+    def tg_test(self):
+        if not (self.cfg.get("tg_chat") and self.v_tg_token.get().strip()):
+            messagebox.showinfo(APP_NAME, "Conecta primero el bot de Telegram.")
+            return
+        threading.Thread(target=lambda: self._tg_safe_send("🔔 Prueba de Vortexs Clips: los avisos funcionan."),
+                         daemon=True).start()
+        self.lbl_tg.configure(text="Prueba enviada.")
+
+    def _tg_safe_send(self, text, video=None, caption=""):
+        """(en segundo plano) Manda el aviso; nunca rompe nada si Telegram falla."""
+        import avisos as telegram
+        tok, cid = self.v_tg_token.get().strip(), self.cfg.get("tg_chat")
+        if not tok or not cid:
+            return
+        try:
+            telegram.send(tok, cid, text)
+            if video:
+                telegram.send_video(tok, cid, video, caption)
+        except Exception as e:
+            self.errors_log.append(f"Telegram: {e}")
+
+    def tg_notify(self, text, video=None, caption=""):
+        if self.v_tg_on.get() and self.cfg.get("tg_chat") and self.v_tg_token.get().strip():
+            threading.Thread(target=lambda: self._tg_safe_send(text, video, caption), daemon=True).start()
+
+    def after_generated(self, path, clips, ranking, kf_stats):
+        """Al terminar unos vídeos: aviso por Telegram y, si viene de la vigilancia, subida a Drive."""
+        day = os.path.basename(os.path.dirname(path))
+        lines = [f"🎬 Vídeos listos: {day}", f"{len({c.group for c in clips})} jugadas"]
+        if kf_stats.get("total"):
+            lines[-1] += f" · killfeed {kf_stats.get('ok', 0)}/{kf_stats['total']}"
+        best = None
+        if ranking:
+            lines.append("")
+            lines.append("TOP del día:")
+            for j, (sc, lab, p, why) in enumerate(ranking[:3]):
+                lines.append(f"{j + 1}. {lab}" + (f" — {', '.join(why)}" if why else ""))
+            best = ranking[0][2]
+            vb = os.path.splitext(best)[0]
+            if not vb.endswith(" (vertical)") and os.path.isfile(vb + " (vertical).mp4"):
+                best = vb + " (vertical).mp4"
+        if getattr(self, "sync_warning", ""):
+            lines.append("")
+            lines.append("⚠ " + self.sync_warning[:300])
+        auto_up = self.v_autodrive.get() and self.flow_source == "watch" and drive.is_connected()
+        if auto_up:
+            lines.append("")
+            lines.append("Subiendo a Google Drive…")
+        self.tg_notify("\n".join(lines), best, os.path.basename(best or "")[:-4] if best else "")
+        if auto_up:
+            self.after(3000, lambda: self.drive_upload_last(auto=True))
+
     # ------------------------------------------------------------ vigilar el canal
     def on_watch_toggle(self):
         ch = twitch.channel_name(self.v_channel.get())
@@ -2021,6 +2134,7 @@ class App(tk.Tk):
         self.after(1500, self.next_in_queue)
 
     def flow_failed(self, msg):
+        self.tg_notify("⚠ Vortexs Clips no pudo terminar un directo:\n\n" + msg[:800])
         if not self.unattended():
             messagebox.showerror(APP_NAME, msg)
         self.errors_log.append(msg)
@@ -3476,17 +3590,10 @@ class App(tk.Tk):
         vod = self.v_vod.get()
         if not out:
             d = self.stream_folder()
-            made_dir = not os.path.isdir(d)
             os.makedirs(d, exist_ok=True)
             self._mark_stream_folder(d)
-            out = filedialog.asksaveasfilename(title="Guardar vídeo", defaultextension=".mp4",
-                                               initialdir=d, initialfile=os.path.basename(self.default_out()),
-                                               filetypes=[("MP4", "*.mp4")])
-            if not out and made_dir:
-                try:
-                    os.rmdir(d)
-                except OSError:
-                    pass
+            # siempre en la carpeta del día (dd-mm-aaaa), sin preguntar: si ya estaba, se rehace
+            out = self.default_out()
         if not out:
             return
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
@@ -3699,6 +3806,10 @@ class App(tk.Tk):
                                    f"estar desfasados: {', '.join(dud)}.")
             if warnings:
                 self.status(path + "   ⚠ " + " · ".join(warnings)[:200])
+            try:
+                self.after_generated(path, clips, ranking or [], st_)
+            except Exception as e:
+                self.errors_log.append(f"Aviso: {e}")
             if self.unattended():
                 self.flow_done(f"Listo: {os.path.basename(path)}")
                 return
@@ -3934,8 +4045,9 @@ class App(tk.Tk):
                            "¿Subir a Google Drive los vídeos del último directo?\n\n")
                           + f"Carpeta: {os.path.basename(folder)}\n"
                           f"{n_files} archivos · {n_bytes / 2**30:.1f} GB\n\nSe guardan en Drive en:\n"
-                          f"{(sub + ' / ') if sub else ''}{date_txt} /\n\nRevisa antes que los vídeos estén bien: "
-                          f"lo que subas queda en la carpeta compartida."):
+                          f"{(sub + ' / ') if sub else ''}{date_txt} /\n\nEsa carpeta de Drive queda igual que la tuya: "
+                          f"si ya estaba subida, lo que ya no tengas (clips de antes) va a la papelera de Drive.\n\n"
+                          f"Revisa antes que los vídeos estén bien: lo que subas queda en la carpeta compartida."):
             return
         if many:
             self._drive_many_ok = True
@@ -3955,6 +4067,9 @@ class App(tk.Tk):
         def done(dst):
             self.finish_steps("Subido a Google Drive")
             self.status(f"Subido a Drive: {dst}")
+            if then is None or not getattr(self, "_drive_left", lambda: 0)():
+                self.tg_notify(f"☁️ Subido a Google Drive: {dst}" if then is None else
+                               "☁️ Subidos a Google Drive:\n" + "\n".join((getattr(self, "_drive_done", []) or []) + [dst]))
             if then is not None:
                 self._drive_done = getattr(self, "_drive_done", []) + [dst]
                 if getattr(self, "_drive_left", lambda: 0)():
