@@ -1066,7 +1066,9 @@ class App(tk.Tk):
             self.refresh_matches()
             self.auto_check()
             n_in = len(self.checked)
-            extra = f" · {n_in} en el VOD" if self.vod_info else ""
+            n_vod = getattr(self, "in_vod_count", n_in)
+            extra = (f" · {n_vod} en el VOD" + (f", {n_in} con rondas que cortar" if n_vod != n_in else "")
+                     if self.vod_info else "")
             if core.API_STATUS.get("from_cache"):
                 extra += " · ⚠ la API no respondía: uso las partidas guardadas (pueden faltar las más nuevas)"
             self.set_progress(1, f"{len(self.matches)} partidas cargadas{extra}.")
@@ -1162,9 +1164,13 @@ class App(tk.Tk):
         except ValueError:
             return
         st = self.settings()
-        self.checked = {m.match_id for m in self.matches.values()
-                        if core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib,
-                                            self.delay_fn_for_vod())}
+        inside = [m for m in self.matches.values()
+                  if core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib,
+                                       self.delay_fn_for_vod())]
+        self.in_vod_count = len(inside)
+        # las partidas sin ninguna ronda que cortar no se marcan: sincronizarlas es tiempo perdido
+        # (se pueden marcar a mano si se quiere)
+        self.checked = {m.match_id for m in inside if m.highlight_rounds(st.min_kills, st.clutch_min)}
         self.refresh_matches()
 
     def selected_match(self):
@@ -1928,6 +1934,14 @@ class App(tk.Tk):
                 self.matches[m.match_id] = m
             self.next_start = max(self.next_start, len(ms))
             self.auto_check()
+            if not self.checked and getattr(self, "in_vod_count", 0):
+                self.set_step(None, "Sin rondas que cortar")
+                self.set_progress(0, "Las partidas de este VOD no tienen ninguna ronda que cumpla tus ajustes.")
+                if not self.unattended():
+                    messagebox.showinfo(APP_NAME, "En este VOD hay partidas, pero ninguna tiene rondas que "
+                                                  "cumplan tus ajustes (kills mínimas / clutch).")
+                self.flow_done("Sin rondas que cortar en este VOD.")
+                return
             if not self.checked:
                 self.set_step(None, "No hay partidas en este VOD")
                 self.set_progress(0, "No hay partidas de competitivo dentro de este VOD.")
