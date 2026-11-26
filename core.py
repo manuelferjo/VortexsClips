@@ -278,7 +278,10 @@ class Clip:
     def weapons(self) -> list[str]:
         """Con qué has matado en esa ronda, de lo más usado a lo menos (la flecha de Sova, «Shock dart»)."""
         cnt: dict = {}
-        for k in self.match.my_round_kills(self.round):
+        ks = self.match.my_round_kills(self.round)
+        if self.kind.endswith("Shock dart"):        # clip solo de la flecha: el resto de kills no sale
+            ks = [k for k in ks if is_shock_dart(self.match, k)]
+        for k in ks:
             if is_shock_dart(self.match, k):
                 w = "Shock dart"
             else:
@@ -1921,9 +1924,37 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
                  vertical_cam, words, highlight, _venc(encoder), bool(vsrc))
     same = bool(_sig_get(src)) and _sig_get(folder) == ssig
     _sig_set(folder, ssig)
-    for i, (c, d) in enumerate(groups):
+
+    def where(i, c):
         name = _safe(f"{i + 1:02d} - {c.title} - Ronda {c.round.index + 1}")
         sub = os.path.join(folder, "Shock dart" if c.kind.endswith("Shock dart") else clip_folder(c.round))
+        return name, sub
+    # al volver a generar: fuera los clips de antes que ya no tocan (otro nombre u otra jugada), para que
+    # no se queden repetidos al lado de los nuevos; y el TOP se rehace entero
+    keep = {os.path.normcase(os.path.join(s, nm)) for nm, s in (where(i, c) for i, (c, _d) in enumerate(groups))}
+    for sd in ("3K", "4K", "ACE", "Clutch", "Shock dart", "2K", "1K", "TOP"):
+        p_ = os.path.join(folder, sd)
+        if not os.path.isdir(p_):
+            continue
+        for fn in os.listdir(p_):
+            if not fn.lower().endswith((".mp4", ".txt", ".srt")):
+                continue
+            stem = os.path.splitext(fn)[0]
+            for suf in (" (vertical)",):
+                if stem.endswith(suf):
+                    stem = stem[:-len(suf)]
+            if sd == "TOP" or os.path.normcase(os.path.join(p_, stem)) not in keep:
+                try:
+                    os.remove(os.path.join(p_, fn))
+                except OSError:
+                    pass
+        try:
+            if not os.listdir(p_):
+                os.rmdir(p_)
+        except OSError:
+            pass
+    for i, (c, d) in enumerate(groups):
+        name, sub = where(i, c)
         os.makedirs(sub, exist_ok=True)
         h = os.path.join(sub, name + ".mp4")
         if progress:
