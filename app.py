@@ -436,6 +436,7 @@ class App(tk.Tk):
         self.v_min = tk.IntVar(value=cfg.get("min_kills", 3))
         self.v_clutch = tk.BooleanVar(value=cfg.get("clutch_on", True))
         self.v_clutchn = tk.IntVar(value=cfg.get("clutch_min", 2))
+        self.v_darts = tk.BooleanVar(value=cfg.get("dart_kills", False))
         self.v_skipbuy = tk.BooleanVar(value=cfg.get("skip_buy", True))
         self.v_pre = tk.StringVar(value=str(cfg.get("pre", 3)))
         self.v_post = tk.StringVar(value=str(cfg.get("post", 4)))
@@ -542,6 +543,7 @@ class App(tk.Tk):
         ui.Toggle(clf, text="y clutches ganados de 1 contra", variable=self.v_clutch).pack(side="left")
         ttk.Spinbox(clf, from_=1, to=5, textvariable=self.v_clutchn, width=3).pack(side="left", padx=4)
         ttk.Label(clf, text="o más").pack(side="left")
+        ui.Toggle(clf, text="y las kills con la flecha de choque de Sova", variable=self.v_darts).pack(side="left", padx=(14, 0))
         ttk.Label(t_cut, text="Qué cortar").grid(row=1, column=0, sticky="w", pady=(8, 2))
         ttk.Radiobutton(t_cut, text="Solo las kills (de la primera a la última, con cortes entre ellas)",
                         value="kills", variable=self.v_mode).grid(row=1, column=1, columnspan=4, sticky="w", pady=(8, 2))
@@ -927,6 +929,8 @@ class App(tk.Tk):
                 parts.append(f"clutches 1v{int(self.v_clutchn.get() or 2)} o más")
             except (tk.TclError, ValueError):
                 parts.append("clutches")
+        if self.v_darts.get():
+            parts.append("kills con shock dart")
         parts.append("solo las kills" if self.v_mode.get() == "kills" else "la ronda entera")
         return "Se corta: " + " · ".join(parts)
 
@@ -945,11 +949,13 @@ class App(tk.Tk):
 
     def _round_tags(self, m, st):
         out = []
-        for r in m.highlight_rounds(st.min_kills, st.clutch_min):
+        for r in m.highlight_rounds(st.min_kills, st.clutch_min, st.dart_kills):
             k = r.my_kills
             lab = {3: "3K", 4: "4K"}.get(k, "ACE" if k >= 5 else "")
             if core.is_clutch(r, st.clutch_min):
                 lab = (lab + " " if lab else "") + f"1v{r.clutch_vs}"
+            if not lab and st.dart_kills and m.dart_kills(r):
+                lab = "Dart"
             out.append(f"{lab or f'{k}K'} R{r.index + 1}")
         return out
 
@@ -1229,6 +1235,7 @@ class App(tk.Tk):
         except (tk.TclError, ValueError):
             cmin = 2 if self.v_clutch.get() else 0
         return core.CutSettings(min_kills=int(self.v_min.get() or 3), clutch_min=cmin,
+                                dart_kills=bool(self.v_darts.get()),
                                 skip_buy_phase=self.v_skipbuy.get(),
                                 pre_roll_s=max(0.0, f(self.v_pre, 3)), post_roll_s=max(0.0, f(self.v_post, 4)),
                                 global_adjust_s=f(self.v_delay, 0),
@@ -1411,6 +1418,7 @@ class App(tk.Tk):
                          "api_key": self.v_key.get(), "delay": self.v_delay.get(),
                          "min_kills": int(self.v_min.get() or 3), "skip_buy": self.v_skipbuy.get(),
                          "clutch_on": self.v_clutch.get(), "clutch_min": self.settings().clutch_min or 2,
+                         "dart_kills": self.v_darts.get(),
                          "pre": self.v_pre.get(), "post": self.v_post.get(),
                          "encoder": ENCODERS[self.v_enc.get()],
                          "calib_by_vod": {k: v for k, v in self._calib_by_vod.items() if k and v},
@@ -1540,7 +1548,7 @@ class App(tk.Tk):
             vs = None
         for m in sorted(self.matches.values(), key=lambda x: x.started_at, reverse=True):
             local = m.started_at.astimezone()
-            n = len(m.highlight_rounds(st.min_kills, st.clutch_min))
+            n = len(m.highlight_rounds(st.min_kills, st.clutch_min, st.dart_kills))
             if vs and self.vod_info:
                 inv = core.match_in_vod(m, vs, self.vod_info["duration"], st, self.calib, self.delay_fn_for_vod())
                 invt = "Sí" if inv else "No"
@@ -1612,7 +1620,7 @@ class App(tk.Tk):
         self.in_vod_count = len(inside)
         # las partidas sin ninguna ronda que cortar no se marcan: sincronizarlas es tiempo perdido
         # (se pueden marcar a mano si se quiere)
-        self.checked = {m.match_id for m in inside if m.highlight_rounds(st.min_kills, st.clutch_min)}
+        self.checked = {m.match_id for m in inside if m.highlight_rounds(st.min_kills, st.clutch_min, st.dart_kills)}
         self.refresh_matches()
 
     def selected_match(self):

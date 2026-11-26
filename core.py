@@ -83,9 +83,18 @@ class Match:
         mine = [k.t_match for k in self.kills if self.is_mine(k)]
         return min(mine) if mine else None
 
-    def highlight_rounds(self, min_kills: int, clutch_min: int = 0) -> list[Round]:
-        """Rondas con min_kills o más kills tuyas, o clutches ganados de 1 contra clutch_min o más."""
-        return [r for r in self.rounds if r.my_kills >= min_kills or is_clutch(r, clutch_min)]
+    def highlight_rounds(self, min_kills: int, clutch_min: int = 0, darts: bool = False) -> list[Round]:
+        """Rondas con min_kills o más kills tuyas, o clutches ganados de 1 contra clutch_min o más
+        (y, si se pide, las rondas en las que matas con la flecha de choque de Sova)."""
+        return [r for r in self.rounds if r.my_kills >= min_kills or is_clutch(r, clutch_min)
+                or (darts and self.dart_kills(r))]
+
+    def dart_kills(self, r) -> list:
+        """Tus kills de esa ronda con la flecha de choque de Sova."""
+        return [k for k in self.kills if k.round == r.index and self.is_mine(k) and is_shock_dart(self, k)]
+
+    def my_round_kills(self, r) -> list:
+        return [k for k in self.kills if k.round == r.index and self.is_mine(k)]
 
 
 # ---------------------------------------------------------------- flecha de choque de Sova: cuándo la tiras
@@ -245,11 +254,18 @@ class Clip:
 
     @property
     def kind(self) -> str:
-        """'3K', '4K', 'ACE', '1v3', '4K 1v3'…"""
+        """'3K', '4K', 'ACE', '1v3', '4K 1v3', 'Shock dart'…"""
         r = self.round
         k = r.my_kills
         kname = {3: "3K", 4: "4K", 5: "ACE"}.get(k, f"{k}K")
         clutch = f"1v{r.clutch_vs}" if (r.won and r.clutch_vs >= 1) else ""
+        if k < 3 and not (clutch and getattr(self, "_clutch_ok", True)):
+            try:
+                nd = len(self.match.dart_kills(r))
+            except Exception:
+                nd = 0
+            if nd:
+                return "Shock dart" if nd == 1 else f"{nd}x Shock dart"
         if clutch and k < 3:
             return clutch
         return f"{kname} {clutch}".strip()
@@ -257,6 +273,34 @@ class Clip:
     @property
     def label(self) -> str:
         return f"{self.kind} · {self.match.map_name} · Ronda {self.round.index + 1}"
+
+    @property
+    def weapons(self) -> list[str]:
+        """Con qué has matado en esa ronda, de lo más usado a lo menos (la flecha de Sova, «Shock dart»)."""
+        cnt: dict = {}
+        for k in self.match.my_round_kills(self.round):
+            if is_shock_dart(self.match, k):
+                w = "Shock dart"
+            else:
+                w = (k.weapon or "").strip()
+            if not w:
+                continue
+            cnt[w] = cnt.get(w, 0) + 1
+        return [w for w, _ in sorted(cnt.items(), key=lambda x: -x[1])]
+
+    @property
+    def title(self) -> str:
+        """«4K con Phoenix en Haven con Bandit»: qué jugada es, para saber de un vistazo si te sirve."""
+        m = self.match
+        t = self.kind
+        if m.agent:
+            t += f" con {m.agent}"
+        if m.map_name:
+            t += f" en {m.map_name}"
+        ws = [w for w in self.weapons if w.lower() not in t.lower()][:3]
+        if ws:
+            t += " con " + (ws[0] if len(ws) == 1 else ", ".join(ws[:-1]) + " y " + ws[-1])
+        return t
 
 
 # ---------------------------------------------------------------- API
@@ -695,6 +739,7 @@ class CutSettings:
     throw_fn: object = None       # (vod_s de la kill) -> vod_s en que empezaste a tirar la flecha, o None
     merge_gap_s: float = 4.0      # modo kills: si entre dos kills hay menos de esto, no se corta
     clutch_min: int = 2           # también clutches ganados de 1 contra X o más (0 = no)
+    dart_kills: bool = False      # también las rondas en las que matas con la flecha de choque de Sova
     clutch_pre_s: float = 3.0     # clutch en modo kills: segundos antes de quedarte solo
     residual_s: float = 0.0       # con registro de delay de Vortexs Live: corrección fija aprendida
     cut_shift_s: float = 0.0      # ajuste fino de TODOS los cortes (− = antes, + = después)
@@ -777,11 +822,13 @@ def kill_vod_time(m: "Match", base: float, t_ms: float) -> float:
 
 
 def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
-                   vod_duration_s: float, synced: bool = True) -> list[tuple[float, float]]:
+                   vod_duration_s: float, synced: bool = True, only_darts: bool = False) -> list[tuple[float, float]]:
     """Modo solo kills: un trozo alrededor de cada kill tuya; las kills seguidas se juntan.
-    Si la partida no está sincronizada al segundo, se deja margen extra para no perder la jugada."""
+    Si la partida no está sincronizada al segundo, se deja margen extra para no perder la jugada.
+    only_darts: solo las kills con la flecha de choque (rondas que entran solo por eso)."""
     ks = sorted(((kill_vod_time(m, base, k.t_match), k) for k in m.kills
-                 if k.round == r.index and m.is_mine(k)), key=lambda x: x[0])
+                 if k.round == r.index and m.is_mine(k) and (not only_darts or is_shock_dart(m, k))),
+                key=lambda x: x[0])
     extra = 0 if synced else settings.unsynced_extra_pre_s
     post = settings.kill_post_s + (0 if synced else settings.unsynced_extra_post_s)
     segs: list[list[float]] = []
@@ -861,7 +908,7 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
     for m in matches:
         uses_calib = is_synced(calib, m.match_id)
         base = match_base_s(m, vod_start_utc, settings, calib, delay_fn)
-        for r in m.highlight_rounds(settings.min_kills, settings.clutch_min):
+        for r in m.highlight_rounds(settings.min_kills, settings.clutch_min, settings.dart_kills):
             if r.start_match_ms is None:
                 continue
             if settings.mode == "kills":
@@ -869,8 +916,10 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
                 precise = uses_calib and not c_.get("approx")
                 # también los clutches: solo los trozos de tus kills (no la ronda entera desde que te
                 # quedas solo), igual que el resto de jugadas
-                segs = _kill_segments(m, r, base, settings, vod_duration_s, synced=precise) \
-                    if (r.my_kills >= settings.min_kills or is_clutch(r, settings.clutch_min)) else []
+                full = r.my_kills >= settings.min_kills or is_clutch(r, settings.clutch_min)
+                # ronda que entra solo por la flecha de Sova: solo esas kills (desde que la tiras)
+                segs = _kill_segments(m, r, base, settings, vod_duration_s, synced=precise,
+                                      only_darts=not full)
                 if segs and (segs[0][0] < (vod_duration_s or 1e12)) and segs[-1][1] > 0:
                     for i, (a, b) in enumerate(segs):
                         clips.append(Clip(m, r, a, b, i, len(segs), base))
@@ -1873,8 +1922,8 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
     same = bool(_sig_get(src)) and _sig_get(folder) == ssig
     _sig_set(folder, ssig)
     for i, (c, d) in enumerate(groups):
-        name = _safe(f"{i + 1:02d} - {c.label.replace(' · ', ' ')}")
-        sub = os.path.join(folder, clip_folder(c.round))
+        name = _safe(f"{i + 1:02d} - {c.title} - Ronda {c.round.index + 1}")
+        sub = os.path.join(folder, "Shock dart" if c.kind.endswith("Shock dart") else clip_folder(c.round))
         os.makedirs(sub, exist_ok=True)
         h = os.path.join(sub, name + ".mp4")
         if progress:

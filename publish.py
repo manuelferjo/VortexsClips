@@ -12,7 +12,8 @@ import re
 
 INSTAGRAM = "@vortexs_mc"
 BASE_TAGS = ["#valorant", "#valorantclips"]
-KIND_TAGS = {"3K": ["#3k"], "4K": ["#4k"], "ACE": ["#ace", "#valorantace"]}
+KIND_TAGS = {"3K": ["#3k"], "4K": ["#4k"], "ACE": ["#ace", "#valorantace"],
+             "DART": ["#sova", "#shockdart", "#sovalineup"]}
 
 TITLES = {
     "ACE": ["ACE con {agent} en {map}", "{agent} ACE en {map} 🔥", "No dejé a nadie vivo ({map})",
@@ -23,6 +24,8 @@ TITLES = {
            "3 de golpe en {map}"],
     "CLUTCH": ["Clutch 1v{n} con {agent} en {map}", "1v{n} y ronda para casa ({map})",
                "Me quedé solo contra {n} ({agent})"],
+    "DART": ["Shock dart desde la otra punta ({map})", "La flecha de Sova no perdona ({map})",
+             "Lineup de Sova en {map} 🏹", "Shock dart y fuera"],
 }
 
 
@@ -69,6 +72,12 @@ def kind_key(c) -> tuple[str, int]:
         return "4K", 0
     if r.my_kills >= 3:
         return "3K", 0
+    if not (r.won and r.clutch_vs >= 1):
+        try:
+            if c.match.dart_kills(r):
+                return "DART", 0
+        except Exception:
+            pass
     return "CLUTCH", r.clutch_vs
 
 
@@ -95,7 +104,11 @@ def clip_texts(c, words: list[dict] | None = None, why: list[str] | None = None,
     lines = []
     if phrase:
         lines.append(f"«{phrase}»")
-    lines.append(f"{c.kind} con {agent} en {mp} · Ronda {r.index + 1}" + (f" · {m.score}" if m.score else ""))
+    try:
+        what = c.title
+    except Exception:
+        what = f"{c.kind} con {agent} en {mp}"
+    lines.append(f"{what} · Ronda {r.index + 1}" + (f" · {m.score}" if m.score else ""))
     if channel:
         lines.append(f"🔴 En directo en twitch.tv/{channel}")
     lines.append(f"📸 {INSTAGRAM}")
@@ -128,7 +141,7 @@ def video_texts(clips, date_txt: str = "", channel: str = "") -> dict:
         k, _ = kind_key(c)
         cnt[k] = cnt.get(k, 0) + 1
     parts = [f"{cnt[k]} {k if k != 'CLUTCH' else 'clutch'}{'s' if k in ('ACE', 'CLUTCH') and cnt[k] > 1 else ''}"
-             for k in ("ACE", "4K", "3K", "CLUTCH") if cnt.get(k)]
+             for k in ("ACE", "4K", "3K", "CLUTCH", "DART") if cnt.get(k)]
     agents = sorted({c.match.agent for c in groups if c.match.agent})
     maps = sorted({c.match.map_name for c in groups if c.match.map_name})
     title = "Mis mejores rondas" + (f" del directo del {date_txt}" if date_txt else "") + \
