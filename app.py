@@ -719,8 +719,8 @@ class App(tk.Tk):
         self.btn_more_menu = ui.Button(row, text="Más  ▾", style="Ghost.TButton")
         self.btn_more_menu.configure(command=self.show_more_menu)
         self.btn_more_menu.pack(side="right", padx=8)
-        self.btn_cancel = ui.Button(row, text="Cancelar", style="Ghost.TButton", command=self.cancel,
-                                    state="disabled")
+        self.btn_cancel = ui.Button(row, text="Cancelar", style="Ghost.TButton", command=self.cancel)
+        self.btn_cancel.configure(state="disabled")      # (el botón no toma state= al crearse)
         self.btn_cancel.pack(side="right")
         self._lay = None
         self.show_page("vod")
