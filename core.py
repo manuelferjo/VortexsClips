@@ -39,6 +39,7 @@ class Kill:
     victim: str
     weapon: str = ""
     weapon_type: str = ""    # «Weapon», «Ability», «Bomb» (la spike al explotar)…
+    weapon_id: str = ""      # en habilidades: «Ability1» (Q), «Ability2» (E), «Grenade» (C), «Ultimate» (X)
 
 
 @dataclass
@@ -54,6 +55,7 @@ class Round:
     end_match_ms: int | None = None     # momento EXACTO del final (para el cartel WON/LOST)
     clutch_vs: int = 0                  # te quedaste solo contra X enemigos vivos (0 = no)
     clutch_from_ms: int | None = None   # momento (ms de partida) en que te quedaste solo
+    absent: set = field(default_factory=set)   # jugadores desconectados / AFK en esa ronda
 
 
 @dataclass
@@ -71,13 +73,28 @@ class Match:
     enemies: set = field(default_factory=set)
     agents: dict = field(default_factory=dict)   # puuid -> agente (para reconocer a quién mataste)
 
+    def is_mine(self, k: "Kill") -> bool:
+        """Kill tuya a un enemigo (no a un compañero ni a ti mismo)."""
+        if k.killer != self.my_puuid:
+            return False
+        return k.victim in self.enemies if self.enemies else k.victim != self.my_puuid
+
     def first_my_kill_ms(self) -> int | None:
-        mine = [k.t_match for k in self.kills if k.killer == self.my_puuid]
+        mine = [k.t_match for k in self.kills if self.is_mine(k)]
         return min(mine) if mine else None
 
     def highlight_rounds(self, min_kills: int, clutch_min: int = 0) -> list[Round]:
         """Rondas con min_kills o más kills tuyas, o clutches ganados de 1 contra clutch_min o más."""
         return [r for r in self.rounds if r.my_kills >= min_kills or is_clutch(r, clutch_min)]
+
+
+def is_shock_dart(m: "Match", k: "Kill") -> bool:
+    """¿Kill con la flecha de choque de Sova (su Q)?"""
+    txt = f"{k.weapon} {k.weapon_id}".lower()
+    if "shock" in txt or "choque" in txt:
+        return True
+    agent = (getattr(m, "agents", None) or {}).get(k.killer) or (m.agent if k.killer == m.my_puuid else "")
+    return "sova" in str(agent).lower() and "ability1" in txt
 
 
 def is_spike_kill(k: "Kill", rounds) -> bool:
@@ -110,7 +127,11 @@ def compute_clutches(m: "Match") -> None:
         by_round.setdefault(k.round, []).append(k)
     for r in m.rounds:
         r.clutch_vs, r.clutch_from_ms = 0, None
-        alive_a, alive_e = set(m.allies), set(m.enemies)
+        gone = getattr(r, "absent", set()) or set()
+        alive_a, alive_e = set(m.allies) - (gone - {m.my_puuid}), set(m.enemies) - gone
+        if alive_a == {m.my_puuid} and alive_e and r.start_match_ms is not None:   # (compañeros fuera)
+            r.clutch_vs, r.clutch_from_ms = len(alive_e), r.start_match_ms
+            continue
         for k in sorted(by_round.get(r.index, []), key=lambda x: x.t_match):
             if k.victim in alive_a:
                 alive_a.discard(k.victim)
@@ -437,6 +458,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
                 victim=(k.get("victim") or {}).get("puuid", ""),
                 weapon=(k.get("weapon") or {}).get("name", "") or "",
                 weapon_type=str((k.get("weapon") or {}).get("type") or ""),
+                weapon_id=str((k.get("weapon") or {}).get("id") or ""),
             ))
         else:                            # v2/v3
             kills.append(Kill(
@@ -447,6 +469,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
                 victim=k.get("victim_puuid", ""),
                 weapon=k.get("damage_weapon_name", "") or "",
                 weapon_type=str(k.get("damage_type") or ""),
+                weapon_id=str(k.get("damage_weapon_id") or ""),
             ))
 
     # --- rondas
@@ -514,6 +537,19 @@ def parse_match(raw: dict, riot_id: str) -> Match:
             r.end_match_ms = last_kill[r.index]   # sin dato de resultado: sin spike, acaba en la última muerte
         # tiempo agotado / rendición: sin momento exacto -> no se usa
 
+    # quién no jugó la ronda (desconectado o AFK): para los clutches no cuenta como vivo
+    for i, rr in enumerate(raw_rounds):
+        sts = rr.get("stats") or rr.get("player_stats") or []
+        seen_p = set()
+        for st in sts:
+            pu = (st.get("player") or {}).get("puuid") or st.get("player_puuid")
+            if not pu:
+                continue
+            seen_p.add(pu)
+            if st.get("was_afk") or (st.get("stats") or {}).get("was_afk"):
+                rounds[i].absent.add(pu)
+        if seen_p:
+            rounds[i].absent |= {pu for pu in (allies | enemies) if pu not in seen_p}
     # si existe stats por ronda (v4) úsalo como fuente fiable del número de kills
     for i, rr in enumerate(raw_rounds):
         for st in rr.get("stats") or []:
@@ -529,10 +565,15 @@ def parse_match(raw: dict, riot_id: str) -> Match:
     # (ni se cortan, ni cuentan para 3K/ACE, ni van al killfeed de la vertical)
     spike = [k for k in kills if is_spike_kill(k, rounds)]
     if spike:
-        for k in spike:
-            if k.killer == my_puuid and k.round < len(rounds) and rounds[k.round].my_kills > 0:
-                rounds[k.round].my_kills -= 1
         kills = [k for k in kills if k not in spike]
+    # tus kills de verdad: solo a enemigos (una molly tuya a un compañero o un suicidio no son jugadas)
+    real: dict[int, int] = {}
+    for k in kills:
+        if k.killer == my_puuid and (k.victim in enemies if enemies else k.victim != my_puuid):
+            real[k.round] = real.get(k.round, 0) + 1
+    for r in rounds:
+        if real or kills:
+            r.my_kills = min(r.my_kills, real.get(r.index, 0)) if r.my_kills else real.get(r.index, 0)
 
     m_ = Match(
         match_id=md.get("match_id") or md.get("matchid") or "",
@@ -563,6 +604,7 @@ class CutSettings:
     mode: str = "round"           # "round" = ronda completa · "kills" = solo las kills
     kill_pre_s: float = 2.5       # modo kills: segundos antes de cada kill
     kill_post_s: float = 1.5      # modo kills: segundos después de cada kill
+    dart_pre_s: float = 6.0       # modo kills: antes de una kill con la flecha de choque de Sova
     merge_gap_s: float = 4.0      # modo kills: si entre dos kills hay menos de esto, no se corta
     clutch_min: int = 2           # también clutches ganados de 1 contra X o más (0 = no)
     clutch_pre_s: float = 3.0     # clutch en modo kills: segundos antes de quedarte solo
@@ -650,13 +692,15 @@ def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
                    vod_duration_s: float, synced: bool = True) -> list[tuple[float, float]]:
     """Modo solo kills: un trozo alrededor de cada kill tuya; las kills seguidas se juntan.
     Si la partida no está sincronizada al segundo, se deja margen extra para no perder la jugada."""
-    ts = sorted(kill_vod_time(m, base, k.t_match) for k in m.kills
-                if k.round == r.index and k.killer == m.my_puuid)
-    pre = settings.kill_pre_s + (0 if synced else settings.unsynced_extra_pre_s)
+    ks = sorted(((kill_vod_time(m, base, k.t_match), k) for k in m.kills
+                 if k.round == r.index and m.is_mine(k)), key=lambda x: x[0])
+    extra = 0 if synced else settings.unsynced_extra_pre_s
     post = settings.kill_post_s + (0 if synced else settings.unsynced_extra_post_s)
     segs: list[list[float]] = []
     last = None
-    for t in ts:
+    for t, k in ks:
+        # con la flecha de choque (Sova, Q) se ve desde que la tiras: puede cruzar medio mapa
+        pre = (max(settings.kill_pre_s, settings.dart_pre_s) if is_shock_dart(m, k) else settings.kill_pre_s) + extra
         a, b = t - pre, t + post
         if segs and (a <= segs[-1][1] + 0.05 or (last is not None and t - last <= settings.merge_gap_s)):
             segs[-1][1] = max(segs[-1][1], b)
@@ -1622,7 +1666,7 @@ def clip_score(c: "Clip", react: float | None = None) -> tuple[float, list[str]]
     if r.won and r.clutch_vs >= 1:
         pts += 2.5 * r.clutch_vs
         why.append(f"clutch 1v{r.clutch_vs}")
-    mine = sorted(x.t_match for x in m.kills if x.round == r.index and x.killer == m.my_puuid)
+    mine = sorted(x.t_match for x in m.kills if x.round == r.index and m.is_mine(x))
     if len(mine) >= 3:
         span = (mine[-1] - mine[0]) / 1000
         b = max(0.0, 4.0 - span / 3)

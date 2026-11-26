@@ -441,6 +441,7 @@ class App(tk.Tk):
         self.v_post = tk.StringVar(value=str(cfg.get("post", 4)))
         self.v_mode = tk.StringVar(value=cfg.get("mode", "round"))
         self.v_kpre = tk.StringVar(value=str(cfg.get("kill_pre", 2.5)))
+        self.v_dartpre = tk.StringVar(value=str(cfg.get("dart_pre", 6.0)))
         self.v_kpost = tk.StringVar(value=str(cfg.get("kill_post", 1.5)))
         self.v_kgap = tk.StringVar(value=str(cfg.get("kill_gap", 4.0)))
         enc_default = next((k for k, v in ENCODERS.items() if v == cfg.get("encoder", "auto")), list(ENCODERS)[0])
@@ -554,6 +555,12 @@ class App(tk.Tk):
         ttk.Spinbox(kf2, from_=-3.0, to=3.0, increment=0.1, textvariable=self.v_cutshift, width=6,
                     format="%.1f").pack(side="left", padx=4)
         ttk.Label(kf2, text="− si la kill pasa antes de tiempo (sobra al final) · + si se corta",
+                  style="Muted.TLabel").pack(side="left", padx=(2, 0))
+        kf3 = ttk.Frame(kfc, style="Panel.TFrame")
+        kf3.pack(anchor="w", pady=(4, 0))
+        ttk.Label(kf3, text="Kills con la flecha de choque de Sova (Q): segundos antes").pack(side="left")
+        ttk.Entry(kf3, textvariable=self.v_dartpre, width=4).pack(side="left", padx=4)
+        ttk.Label(kf3, text="para que se vea desde que tiras la flecha (o las dos)",
                   style="Muted.TLabel").pack(side="left", padx=(2, 0))
         ttk.Label(kf, text="Segundos antes de cada kill").pack(side="left")
         ttk.Entry(kf, textvariable=self.v_kpre, width=4).pack(side="left", padx=4)
@@ -1219,6 +1226,7 @@ class App(tk.Tk):
                                 global_adjust_s=f(self.v_delay, 0),
                                 # sin negativos: cortarían la propia kill
                                 mode=self.v_mode.get(), kill_pre_s=max(0.0, f(self.v_kpre, 2.5)),
+                                dart_pre_s=max(0.0, f(self.v_dartpre, 6.0)),
                                 kill_post_s=max(0.0, f(self.v_kpost, 1.5)),
                                 merge_gap_s=f(self.v_kgap, 4.0),
                                 residual_s=float(self.cfg.get("residual_s", 0.0)),
@@ -1404,6 +1412,7 @@ class App(tk.Tk):
                          "cam": self.cam, "subtitles": self.v_subs.get(), "mode": self.v_mode.get(),
                          "sub_highlight": self.v_subhl.get(), "sub_edit": self.v_subedit.get(),
                          "kill_pre": self.v_kpre.get(), "kill_post": self.v_kpost.get(),
+                         "dart_pre": self.v_dartpre.get(),
                          "kill_gap": self.v_kgap.get(),
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
@@ -1613,7 +1622,7 @@ class App(tk.Tk):
         if first is None:
             messagebox.showinfo(APP_NAME, "No tienes kills en esa partida.")
             return
-        k = min((x for x in m.kills if x.killer == m.my_puuid), key=lambda x: x.t_match)
+        k = min((x for x in m.kills if m.is_mine(x)), key=lambda x: x.t_match)
         guess = ""
         if self.vod_info:
             try:
@@ -3061,7 +3070,7 @@ class App(tk.Tk):
         tmp = tempfile.mkdtemp(prefix="vortexsclips_rev_")
         jobs, rows = [], []
         for m in ms:
-            mine = sorted((k for k in m.kills if k.killer == m.my_puuid), key=lambda k: k.t_match)
+            mine = sorted((k for k in m.kills if m.is_mine(k)), key=lambda k: k.t_match)
             pick = mine[:1] + ([mine[len(mine) // 2]] if len(mine) > 2 else [])
             base = core.match_base_s(m, vs, st, self.calib, dfn)
             ks = []

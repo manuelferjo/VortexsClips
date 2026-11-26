@@ -754,7 +754,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             continue
         m, r = c.match, c.round
         for k in m.kills:
-            if k.round != r.index or k.killer != m.my_puuid:
+            if k.round != r.index or not m.is_mine(k):
                 continue
             tv = core.kill_vod_time(m, c.base, k.t_match)
             key = (c.group, k.t_match, k.victim)     # con la ulti puedes matar a dos en el mismo instante
@@ -774,7 +774,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
         rounds_done.add(c.group)
         m, r = c.match, c.round
         for k in m.kills:
-            if k.round == r.index and k.killer == m.my_puuid and (c.group, k.t_match, k.victim) not in seen:
+            if k.round == r.index and m.is_mine(k) and (c.group, k.t_match, k.victim) not in seen:
                 fuera.append(f"{core.fmt_ts(core.kill_vod_time(m, c.base, k.t_match))}  ronda {r.index + 1}: "
                              f"esta kill cae fuera del corte (no sale en el vídeo)")
     # rondas del vídeo en las que no se encontró ninguna kill tuya (para el registro)

@@ -49,6 +49,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Retratos de agentes al día (para el killfeed; los nuevos agentes entran solos)
+        shell: pwsh
+        continue-on-error: true
+        run: python tools/retratos.py
+
       - name: Construir el programa (.exe)
         shell: pwsh
         run: |

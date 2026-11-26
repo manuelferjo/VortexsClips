@@ -60,12 +60,19 @@ class Player(ttk.Frame):
         bar = ttk.Frame(self, style=style)
         bar.pack(fill="x")
         self._bar = bar
-        for txt, d in (("−1 min", -60), ("−10 s", -10)):
-            ui.Button(bar, text=txt, width=6, compact=True, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
-        self.btn_play = ui.Button(bar, text="▶  Reproducir", width=13, compact=True, style="Purple.TButton", command=self.toggle)
+        def jump(d):
+            # (desde donde va ahora mismo, aunque se esté reproduciendo)
+            try:
+                now = self._now() if self.playing else self.pos
+            except Exception:
+                now = self.pos
+            self.seek(now + d)
+        for txt, d in (("−1 min", -60), ("−30 s", -30), ("−10 s", -10), ("−5 s", -5)):
+            ui.Button(bar, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
+        self.btn_play = ui.Button(bar, text="▶  Reproducir", width=12, compact=True, style="Purple.TButton", command=self.toggle)
         self.btn_play.pack(side="left", padx=4)
-        for txt, d in (("+10 s", 10), ("+1 min", 60)):
-            ui.Button(bar, text=txt, width=6, compact=True, command=lambda d=d: self.seek(self.pos + d)).pack(side="left", padx=(0, 4))
+        for txt, d in (("+5 s", 5), ("+10 s", 10), ("+30 s", 30), ("+1 min", 60)):
+            ui.Button(bar, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
         if on_pick:
             ui.Button(bar, text="✔ Usar este momento", style="Accent.TButton", compact=True,
                       command=lambda: on_pick(self.pos)).pack(side="right")
