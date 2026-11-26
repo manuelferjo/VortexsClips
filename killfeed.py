@@ -395,10 +395,20 @@ def find_new_lines(before, after, src_h: int = 1080, n: int = 1, known=()) -> li
         # el «III» / «IV» de racha va a la izquierda del marcador, separado por un hueco
         win0 = max(0, int(x0 - lh * 1.8))
         rr = red[:, win0:x0]
+        badge = False
         if rr.any():
             cols = np.flatnonzero(rr.sum(axis=0) >= 3)
             if len(cols):
-                x0 = win0 + int(cols.min()) - 2
+                c0, c1 = win0 + int(cols.min()), win0 + int(cols.max()) + 1
+                # solo si es de verdad un distintivo: pequeño, sin tocar el borde de la ventana y sin
+                # seguir por encima ni por debajo de la línea (un fondo rojo o naranja sí sigue)
+                _t2, red_all, _y2 = _masks(after)
+                above = red_all[max(0, y0 - 6):max(0, y0 - 2), c0:c1]
+                below = red_all[min(h, y1 + 2):min(h, y1 + 6), c0:c1]
+                bg_ = (above.mean() if above.size else 0) > 0.25 or (below.mean() if below.size else 0) > 0.25
+                if c1 - c0 <= lh * 1.3 and cols.min() > 2 and not bg_:
+                    x0 = c0 - 2
+                    badge = True
         x0 = max(0, x0)
         # transparencia: desde el marcador (inclinado, por fila) hasta el borde derecho, más el distintivo
         sub_r, sub_y = red[:, x0:x1], yel[:, x0:x1]
@@ -409,7 +419,7 @@ def find_new_lines(before, after, src_h: int = 1080, n: int = 1, known=()) -> li
             yy = np.flatnonzero(sub_y[r, max(0, m0 - 2): m0 + int(lh * 1.2)])
             start = max(0, m0 - 2) + (int(yy[0]) if len(yy) else 2)
             alpha[r, start:] = 255
-            idx = np.flatnonzero(sub_r[r, : max(0, m0 - 2)])
+            idx = np.flatnonzero(sub_r[r, : max(0, m0 - 2)]) if badge else []
             if len(idx) >= 2:
                 alpha[r, idx[0]: idx[-1] + 1] = 255
         out.append((x0, y0, x1, y1, alpha))
