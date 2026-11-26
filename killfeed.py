@@ -41,7 +41,7 @@ def _masks(img):
     import numpy as np
     a = img.astype(np.int16)
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
-    teal = (g > 140) & (b > 110) & (r < 130) & (g > r + 50)
+    teal = (g > 140) & (b > 110) & (r < 130) & (g > r + 50) & (b < g + 10)   # (no el azul cielo de Abyss)
     red = (r > 190) & (g < 120) & (b < 130)
     yel = (r > 190) & (g > 170) & (b < 110)
     return teal, red, yel
