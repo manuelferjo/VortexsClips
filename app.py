@@ -1980,6 +1980,13 @@ class App(tk.Tk):
             try:
                 vods = twitch.latest_vods(ch, 5)
                 ids = [v["id"] for v in vods]
+                # si estás en directo, el VOD de ese directo ya sale en la lista: ese NO se da por hecho,
+                # para procesarlo en cuanto acabe
+                try:
+                    if ids and twitch.is_live(ch):
+                        ids = ids[1:]
+                except Exception:
+                    pass
                 self.after(0, lambda: (self.cfg.__setitem__("processed_vods", ids), self.persist(),
                                        self.lbl_watch.configure(
                                            text=f"Vigilando twitch.tv/{ch}. Procesaré los directos NUEVOS a partir de ahora.")))
