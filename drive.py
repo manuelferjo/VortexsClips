@@ -18,10 +18,13 @@ import core
 
 RCLONE_ZIP = "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
 REMOTE = "vcdrive"
-DEFAULT_LINK = "https://drive.google.com/drive/folders/1RoEymSQfnisgH6HiiMfK5AeAjw-q2dbZ"
-DEFAULT_SUB = "Vortexs Clips"
+DEFAULT_LINK = ""
+# el enlace de ejemplo que se puso al principio es una carpeta de UN día (24-11-2025), no la de
+# «Vortexs Clips»: si es el que hay guardado, se pide el enlace bueno
+EXAMPLE_DAY_ID = "1RoEymSQfnisgH6HiiMfK5AeAjw-q2dbZ"
+DEFAULT_SUB = ""
 # lo que nunca se sube: trozos a medio hacer y temporales
-EXCLUDE = ["* (partes en curso)/**", "* (vertical en curso)/**", "*.tmp.mp4", "*.part", "*.pkl", "desktop.ini",
+EXCLUDE = [".vod", "* (partes en curso)/**", "* (vertical en curso)/**", "*.tmp.mp4", "*.part", "*.pkl", "desktop.ini",
            "Thumbs.db"]
 
 

@@ -334,7 +334,10 @@ class App(tk.Tk):
         self.v_kfeed = tk.BooleanVar(value=cfg.get("killfeed_vertical", True))
         self.v_capcut = tk.BooleanVar(value=cfg.get("capcut_subs", False))
         self.v_drive_link = tk.StringVar(value=cfg.get("drive_link", drive.DEFAULT_LINK))
-        self.v_drive_sub = tk.StringVar(value=cfg.get("drive_sub", drive.DEFAULT_SUB))
+        _sub = cfg.get("drive_sub", drive.DEFAULT_SUB)
+        if drive.EXAMPLE_DAY_ID in (cfg.get("drive_link") or ""):
+            _sub = ""
+        self.v_drive_sub = tk.StringVar(value=_sub)
         self.v_topweek = tk.BooleanVar(value=cfg.get("top_week", True))
         self.v_partial = tk.BooleanVar(value=cfg.get("partial_download", True))
         self.v_autodel = tk.BooleanVar(value=cfg.get("auto_delete_vod", True))
@@ -2893,13 +2896,47 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ render
     def stream_folder(self) -> str:
-        """Carpeta de este directo: el vídeo completo, la vertical y los clips (3K, 4K, ACE…) juntos."""
+        """Carpeta de este directo, con su fecha como en el Drive (dd-mm-aaaa): el vídeo completo, la
+        vertical y los clips (3K, 4K, ACE…) juntos. Si ese día hubo otro directo, «dd-mm-aaaa (2)»."""
         vod = self.v_vod.get()
-        base = core.vod_display_base(vod)
-        return os.path.join(os.path.dirname(os.path.abspath(vod)), f"{base} - rondas {self.settings().min_kills}K+")
+        root = os.path.dirname(os.path.abspath(vod))
+        try:
+            day = self.vod_start_utc().astimezone().strftime("%d-%m-%Y")
+        except Exception:
+            day = datetime.fromtimestamp(os.path.getmtime(vod)).strftime("%d-%m-%Y") if os.path.exists(vod) \
+                else datetime.now().strftime("%d-%m-%Y")
+        me = os.path.basename(vod)
+        n = 1
+        while True:
+            d = os.path.join(root, day if n == 1 else f"{day} ({n})")
+            mark = os.path.join(d, ".vod")
+            try:
+                with open(mark, encoding="utf-8") as f:
+                    owner = f.read().strip()
+            except OSError:
+                owner = None
+            if owner in (None, me):
+                if owner is None and os.path.isdir(d) and any(
+                        x.lower().endswith(".mp4") for x in os.listdir(d)):
+                    n += 1               # carpeta de ese día ya usada por otro directo (sin marca)
+                    continue
+                return d
+            n += 1
+
+    def _mark_stream_folder(self, d: str) -> None:
+        try:
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, ".vod"), "w", encoding="utf-8") as f:
+                f.write(os.path.basename(self.v_vod.get()))
+            if os.name == "nt":
+                import ctypes
+                ctypes.windll.kernel32.SetFileAttributesW(os.path.join(d, ".vod"), 0x02)   # oculto
+        except Exception:
+            pass
 
     def default_out(self) -> str:
         d = self.stream_folder()
+        self._mark_stream_folder(d)
         return os.path.join(d, os.path.basename(d) + ".mp4")
 
     def render(self, out=None):
@@ -2912,6 +2949,7 @@ class App(tk.Tk):
             d = self.stream_folder()
             made_dir = not os.path.isdir(d)
             os.makedirs(d, exist_ok=True)
+            self._mark_stream_folder(d)
             out = filedialog.asksaveasfilename(title="Guardar vídeo", defaultextension=".mp4",
                                                initialdir=d, initialfile=os.path.basename(self.default_out()),
                                                filetypes=[("MP4", "*.mp4")])
@@ -3252,11 +3290,18 @@ class App(tk.Tk):
             self.drive_connect()
             return
         try:
-            drive.folder_id(self.v_drive_link.get())
-        except ValueError as e:
-            messagebox.showwarning(APP_NAME, f"{e}\n\nPega el enlace de la carpeta en la pestaña Automático.")
+            fid = drive.folder_id(self.v_drive_link.get())
+        except ValueError:
+            fid = None
+        if not fid or fid == drive.EXAMPLE_DAY_ID:
+            messagebox.showwarning(APP_NAME, "Falta el enlace de tu carpeta «Vortexs Clips» de Drive (donde van las "
+                                             "carpetas de cada día).\n\nEn Drive, abre «Vortexs Clips» → Compartir → "
+                                             "Copiar enlace, y pégalo en la pestaña Automático.")
             return
-        date_txt = proj.get("date") or datetime.fromtimestamp(os.path.getmtime(proj["out"])).strftime("%d-%m-%Y")
+        # en Drive, la carpeta se llama igual que en tu PC (dd-mm-aaaa, o «dd-mm-aaaa (2)»)
+        fname = os.path.basename(folder)
+        date_txt = fname if re.match(r"^\d{2}-\d{2}-\d{4}( \(\d+\))?$", fname) else (
+            proj.get("date") or datetime.fromtimestamp(os.path.getmtime(proj["out"])).strftime("%d-%m-%Y"))
         sub = self.v_drive_sub.get().strip()
         n_files, n_bytes = 0, 0
         for root, dirs, files in os.walk(folder):
@@ -3555,9 +3600,9 @@ def selftest(out_path):
             old = "Paste the following into your remote machine --->\n" + json.dumps(tok) + "\n<---End paste"
             new = "Paste the following into your remote machine --->\n" + base64.b64encode(
                 json.dumps({"token": json.dumps(tok)}).encode()).decode() + "\n<---End paste"
-            ok_d = drive.folder_id(drive.DEFAULT_LINK) == "1RoEymSQfnisgH6HiiMfK5AeAjw-q2dbZ" and \
+            ok_d = drive.folder_id("https://drive.google.com/drive/folders/" + drive.EXAMPLE_DAY_ID + "?usp=drive_link") == drive.EXAMPLE_DAY_ID and \
                 drive._parse_token(old) == tok and drive._parse_token(new) == tok and \
-                drive.dest_path("Vortexs Clips", "25-11-2026") == "vcdrive:Vortexs Clips/25-11-2026"
+                drive.dest_path("", "25-11-2026") == "vcdrive:25-11-2026"
             exe = drive.ensure_rclone()
             ver = subprocess.run([exe, "version"], capture_output=True, text=True, timeout=60).stdout
             log(ok_d and "rclone v" in ver, f"Google Drive (enlace, permiso y {ver.splitlines()[0] if ver else 'rclone'})")
