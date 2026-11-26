@@ -3567,9 +3567,38 @@ class App(tk.Tk):
                         import hashlib
                         kdir = os.path.join(core.data_dir(), "killfeed",
                                             hashlib.sha1(os.path.abspath(out).encode("utf-8")).hexdigest()[:12])
-                        kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop,
-                                                    log_path=os.path.join(os.path.dirname(os.path.abspath(out)),
-                                                                          "registro killfeed.txt"))
+                        kf_log = os.path.join(os.path.dirname(os.path.abspath(out)), "registro killfeed.txt")
+                        kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop, log_path=kf_log)
+                        # si en alguna partida las líneas entran después de la kill, la sincronización
+                        # quedó un poco corta: se retrasan sus cortes y se vuelve a buscar
+                        shifts = killfeed.match_shifts(killfeed.LAST_STATS)
+                        if shifts:
+                            for c_ in clips:
+                                d_ = shifts.get(c_.match.match_id)
+                                if d_:
+                                    c_.vod_start += d_
+                                    c_.vod_end += d_
+                                    if c_.base is not None:
+                                        c_.base += d_
+                            sub(f"Ajustando {len(shifts)} partida(s) que iban algo adelantadas…")
+                            if words is not None:
+                                try:
+                                    miss = subtitles.missing_ranges(vod, clips)
+                                    if miss:
+                                        subtitles.transcribe_ranges(vod, miss, cb, stop)
+                                    w2 = subtitles.words_for_clips(vod, clips)
+                                    if w2 is not None:
+                                        words = self.prepare_words(w2)
+                                except Exception as e:
+                                    if "Cancelado" in str(e):
+                                        raise
+                            kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop, log_path=kf_log)
+                            try:
+                                with open(kf_log, "a", encoding="utf-8") as f_:
+                                    f_.write("\nCortes retrasados por ir adelantados: "
+                                             + ", ".join(f"{d_:+.2f} s" for d_ in shifts.values()) + "\n")
+                            except OSError:
+                                pass
                     except Exception as e:
                         if "Cancelado" in str(e):
                             raise

@@ -734,6 +734,21 @@ def _check_victims(found, src, seq, t0, cl, H, known, last_in, g, victim_of, ene
 LAST_STATS: dict = {}
 
 
+def match_shifts(stats: dict | None) -> dict:
+    """Partidas cuya sincronización ha quedado corta: sus líneas del killfeed entran DESPUÉS de la kill
+    de los datos (lo normal es entre 0,1 y 0,6 s antes). -> {partida: segundos a retrasar sus cortes}"""
+    out = {}
+    for mid, ds in ((stats or {}).get("drift") or {}).items():
+        if len(ds) < 2:
+            continue
+        ds = sorted(ds)
+        med = ds[len(ds) // 2] if len(ds) % 2 else (ds[len(ds) // 2 - 1] + ds[len(ds) // 2]) / 2
+        # todas tarde y con la mediana claramente pasada (un fallo suelto no mueve la partida)
+        if med > 0.25 and sum(1 for d in ds if d > 0.1) >= max(2, int(0.75 * len(ds))):
+            out[mid] = round(med + 0.3, 2)
+    return out
+
+
 def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             log_path: str | None = None) -> list[dict]:
     """
@@ -798,6 +813,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
     # justo debajo de la cámara y de los subtítulos (que van en su borde de abajo), pegadas a la derecha
     y_top = core.cam_bottom_y(cam, W, H) + 95 if cam else 700
     out, log = [], list(pre_log) + fuera
+    drift: dict = {}                 # partida -> [cuánto después de la kill de los datos entra su línea]
     total = sum(len(v) for v in by_group.values())
     missing = []                     # [(segundo del VOD, ronda, foto)]
     pics = os.path.join(os.path.dirname(log_path), "killfeed sin línea") if log_path else None
@@ -861,6 +877,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                            f"({len(cl)} kill(s))")
                 continue
             for (tv, tout), box, appear, src in found:
+                drift.setdefault(g[0], []).append(appear - tv)
                 known.append((src, box[1], box[3]))
                 placed.append((src, box, (victim_of.get((g, round(tv, 3))) or ("", ""))[0]))
                 last_in = appear if last_in is None else max(last_in, appear)
@@ -878,7 +895,8 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                            f"{f' ({who})' if who else ''}, entra a {core.fmt_ts(appear)}")
                 slot += 1
     global LAST_STATS
-    LAST_STATS = {"total": total, "ok": len(out), "missing": missing, "pics": pics if missing else None}
+    LAST_STATS = {"total": total, "ok": len(out), "missing": missing, "pics": pics if missing else None,
+                  "drift": drift}
     for p in [os.path.join(folder, "registro_killfeed.txt")] + ([log_path] if log_path else []):
         try:
             with open(p, "w", encoding="utf-8") as f:
