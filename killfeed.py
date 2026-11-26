@@ -256,11 +256,30 @@ def _name_mask(img, y0, y1):
     if band.shape[0] < 6:
         return None
     _t, red, _y = _masks(band)
-    xa = int(w * 0.30)
-    cols = np.flatnonzero(red[:, xa:].mean(axis=0) >= 0.3)
-    if not len(cols):
+    xa, xe = int(w * 0.30), int(w * 0.978)
+    # la parte roja de la propia línea es el último tramo rojo largo antes del retrato (a la derecha);
+    # un fondo rojo o naranja a la izquierda de la línea o el distintivo de racha no cuentan
+    # (con la mitad de abajo de la línea: la de arriba puede taparla la pastilla «Sin delay»)
+    hb = red.shape[0]
+    on = red[int(hb * 0.5):, xa:xe].mean(axis=0) >= 0.3
+    runs, i = [], 0
+    while i < len(on):
+        if on[i]:
+            j = i
+            while j < len(on) and on[j]:
+                j += 1
+            runs.append((i, j))
+            i = j
+        else:
+            i += 1
+    runs = [r for r in runs if r[1] - r[0] >= 16]
+    if not runs:
         return None
-    x0 = xa + int(cols[0])
+    # el tramo que llega hasta el retrato (en tus líneas, el nombre de a quién mataste); si ninguno
+    # llega (línea de otro: su rojo va a la izquierda), el primero
+    lhp = max(8, y1 - y0)
+    near = [r for r in runs if r[1] >= (xe - xa) - 3 * lhp]
+    x0 = xa + (near[0][0] if near else runs[0][0])
     # umbral relativo: cuando la línea se desvanece (va a caducar) o hay un destello, todo cambia de
     # brillo a la vez, pero el texto sigue siendo lo más claro de la parte roja
     mn = band.min(axis=2).astype(np.int16)
@@ -284,7 +303,7 @@ def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
     na, nb = _name_mask(img_a, a0, a1), _name_mask(img_b, b0, b1)
     if na and nb:
         # la misma línea tiene su parte roja empezando en el mismo sitio (solo se mueve en vertical)
-        if abs(na[0] - nb[0]) > 6:
+        if abs(na[0] - nb[0]) > 10:
             return False
         x0 = min(na[0], nb[0])
         # hasta el retrato (el retrato tiene brillos blancos que cambian con el fondo)
@@ -300,7 +319,7 @@ def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
             nbm = nb[1][r0:r1, x0:xb]
             ma = ma[r0:r1]
             n = r1 - r0
-            for dy in range(-3, 4):
+            for dy in range(-6, 7):        # (mientras sube al caducar la de encima, va unos píxeles movida)
                 A, B = (ma[0:n - dy], nbm[dy:n]) if dy >= 0 else (ma[-dy:n], nbm[0:n + dy])
                 for dx in range(-6, 7):
                     Bs = np.roll(B, dx, axis=1)
@@ -322,6 +341,32 @@ def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
     return best < tol
 
 
+def _match_lines(before, after, src_h: int = 1080, known=(), own_only: bool = True):
+    """Líneas de «después» (de arriba a abajo) y si cada una ya estaba antes (o es de las ya colocadas)."""
+    olds = lines(before, src_h) if before is not None and before.shape == after.shape else []
+    # las que ya estaban: las de «antes» y tus líneas ya colocadas (sin repetir la misma línea dos veces)
+    pool = [(before, b0, b1) for b0, b1, _bmx in olds]
+    for img, k0, k1 in known:
+        if not any(same_line(img, k0, k1, pi, p0, p1) for pi, p0, p1 in pool[:len(olds)]):
+            pool.append((img, k0, k1))
+    # emparejado de arriba a abajo y una a una: dos líneas iguales (p. ej. matas dos veces a la misma
+    # Clove que se revive) no se «explican» con una sola de antes
+    # (y en orden: el killfeed no cambia el orden de las líneas, así que una de «después» que está debajo
+    # de otra solo puede ser una de «antes» que también estaba debajo)
+    al = [(y0, y1, mx) for y0, y1, mx in lines(after, src_h) if mx is not None or not own_only]
+    used, was, last = set(), [], -1
+    nold = len(olds)
+    for y0, y1, mx in al:
+        hit = next((k for k, (pi, p0, p1) in enumerate(pool)
+                    if k not in used and (k >= nold or k > last) and same_line(pi, p0, p1, after, y0, y1)), None)
+        if hit is not None:
+            used.add(hit)
+            if hit < nold:
+                last = hit
+        was.append(hit is not None)
+    return al, was
+
+
 def find_new_lines(before, after, src_h: int = 1080, n: int = 1, known=()) -> list:
     """
     Las n líneas TUYAS (marcador amarillo) más bajas del killfeed «después» que no estaban ya igual
@@ -332,15 +377,11 @@ def find_new_lines(before, after, src_h: int = 1080, n: int = 1, known=()) -> li
         return []
     h, w = after.shape[:2]
     lh = LINE_H_1080 * src_h / 1080.0
-    olds = lines(before, src_h) if before is not None and before.shape == after.shape else []
+    al, was = _match_lines(before, after, src_h, known)
     news = []
-    for y0, y1, mx in reversed(lines(after, src_h)):
-        if mx is None:
-            continue
+    for (y0, y1, mx), old in zip(reversed(al), reversed(was)):
         # ¿ya estaba antes (en cualquier altura: cuando caduca una de arriba, todas suben)?
-        # (y también las tuyas de esta ronda ya colocadas, aunque entraran después de «antes»)
-        if any(same_line(before, b0, b1, after, y0, y1) for b0, b1, _bmx in olds) or \
-                any(same_line(img, k0, k1, after, y0, y1) for img, k0, k1 in known):
+        if old:
             break                       # por encima de una que ya estaba, todo es anterior
         news.append((y0, y1, mx))
         if len(news) >= n:
@@ -424,17 +465,33 @@ def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS, after_t=None):
     # la imagen «después»: el primer momento en que tus líneas nuevas están enteras (y estables);
     # no un fotograma fijo, que puede caer cuando el killfeed está tapado (destello, muerte…)
     best_i, boxes = None, []
+    cache = {}
+
+    def new_c(i):
+        if i not in cache:
+            cache[i] = new(i) if 0 < i < len(seq) else []
+        return cache[i]
+
+    def steady(i, got):
+        """Que no sea un fotograma suelto (transición, destello): sigue ahí en alguno de los 3 siguientes."""
+        if i + 1 >= len(seq):
+            return True
+        for j in range(i + 1, min(len(seq), i + 4)):
+            nxt = new_c(j)
+            if len(nxt) >= len(got) and all(any(abs(b[1] - c[1]) <= 8 for c in nxt) for b in got):
+                return True
+        return False
     for i in range(1, len(seq)):
-        got = new(i)
-        if len(got) > len(boxes):
+        got = new_c(i)
+        if len(got) > len(boxes) and steady(i, got):
             best_i, boxes = i, got
-        if len(boxes) == n and i >= best_i + 2:
+        if boxes and len(boxes) == n and i >= best_i + 2:
             break
     if not boxes:
         return [], None
     # se recorta un par de fotogramas después de que entre (ya con su amarillo pleno)
     src_i = min(len(seq) - 1, best_i + 2)
-    again = new(src_i)
+    again = new_c(src_i)
     if len(again) == len(boxes):
         boxes = again
     else:
@@ -447,8 +504,9 @@ def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS, after_t=None):
             # (comparando su contenido: con varias seguidas, cada una con la suya)
             # (por su contenido, a cualquier altura y aunque aún no se reconozca su marcador amarillo:
             # al entrar, con su destello, puede salir más abajo y subir cuando caduca la de encima)
+            al_, was_ = _match_lines(before, seq[i], H, known, own_only=False)
             if any(same_line(seq[i], y0, y1, seq[src_i], box[1], box[3])
-                   for y0, y1, _m in lines(seq[i], H)):
+                   for (y0, y1, _m), old_ in zip(al_, was_) if not old_):
                 appear = t0 + i / fps - 0.1      # el amarillo llega ~0,1 s después de la línea
                 break
         if appear is None:
@@ -478,6 +536,20 @@ def portraits() -> dict:
         import json
         import urllib.request
         from PIL import Image
+        # primero los que vienen con el programa (por si en ese PC no se pueden descargar)
+        try:
+            import ui as _ui
+            bd = os.path.join(_ui.res_dir(), "agentes")
+        except Exception:
+            bd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agentes")
+        if os.path.isdir(bd):
+            for fn in os.listdir(bd):
+                if fn.endswith(".png"):
+                    try:
+                        _PORTRAITS[fn[:-4]] = Image.open(os.path.join(bd, fn)).convert("RGBA").transpose(
+                            Image.FLIP_LEFT_RIGHT)
+                    except Exception:
+                        pass
         d = os.path.join(core.data_dir(), "agentes")
         os.makedirs(d, exist_ok=True)
         idx = os.path.join(d, "agentes.json")
@@ -507,6 +579,8 @@ def portraits() -> dict:
             except Exception:
                 pass
         for n, url in items.items():
+            if n in _PORTRAITS:
+                continue
             p = os.path.join(d, n + ".png")
             try:
                 if not os.path.isfile(p):
@@ -754,8 +828,12 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: no se pudo leer el vídeo")
                 missing += [(tv_, g[1] + 1, None) for tv_, _ in cl]
                 continue
-            found, src = locate(seq, t0, cl, H, known, SEQ_FPS, last_in)
-            found, src = _check_victims(found, src, seq, t0, cl, H, known, last_in, g,
+            # si a este enemigo ya lo mataste en la ronda (Clove que se revive, Sage…), su línea anterior se
+            # parece a la nueva (mismo nombre): no se usa para descartar
+            vics = {(victim_of.get((g, round(tv_, 3))) or ("", ""))[0] for tv_, _ in cl}
+            known_c = [k for k, pl in zip(known, placed) if not (pl[2] and pl[2] in vics)]
+            found, src = locate(seq, t0, cl, H, known_c, SEQ_FPS, last_in)
+            found, src = _check_victims(found, src, seq, t0, cl, H, known_c, last_in, g,
                                         victim_of, enemy_agents.get(g) or [], placed, log)
             got = {round(x[0][0], 3) for x in found}
             for tv_, _ in cl:
