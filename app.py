@@ -379,8 +379,12 @@ class App(tk.Tk):
             n_.pack(side="left")
             tk.Label(sumr, text=" " + cap + "     ", bg=PANEL, fg=MUTED, font=ui.body(10)).pack(side="left")
             self.kpi[key] = n_
+        lk = tk.Label(sumr, text="Marcar las que tienen rondas", bg=PANEL, fg=PURPLE, font=ui.body(10),
+                      cursor="hand2")
+        lk.pack(side="right")
+        lk.bind("<Button-1>", lambda e: self.auto_check())
         self.lbl_hidden = tk.Label(sumr, text="", bg=PANEL, fg=PURPLE, font=ui.body(10), cursor="hand2")
-        self.lbl_hidden.pack(side="right")
+        self.lbl_hidden.pack(side="right", padx=(0, 18))
         self.lbl_hidden.bind("<Button-1>", lambda e: self._toggle_hidden())
         self._show_hidden = False
         self.mcards = tk.Frame(p3, bg=PANEL)
@@ -392,14 +396,19 @@ class App(tk.Tk):
         self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse", height=5)
         mb = ttk.Frame(p3, style="Panel.TFrame")
         mb.grid(row=3, column=0, sticky="we", pady=(10, 0))
+        # izquierda: qué partidas · derecha: su sincronización
         self.btn_load = ui.Button(mb, text="Buscar partidas", command=self.load_matches)
         self.btn_load.pack(side="left")
         self.btn_more = ui.Button(mb, text="Cargar 10 más", style="Ghost.TButton",
                                   command=lambda: self.load_matches(True))
-        self.btn_more.pack(side="left", padx=6)
-        ui.Button(mb, text="Revisar sincro", style="Ghost.TButton", command=self.review_sync).pack(side="right")
-        ui.Button(mb, text="Sincronizar a mano…", style="Ghost.TButton",
-                  command=self.calibrate).pack(side="right", padx=6)
+        self.btn_more.pack(side="left", padx=(6, 0))
+        ui.Button(mb, text="Añadir por enlace…", style="Ghost.TButton",
+                  command=self.add_link_dialog).pack(side="left", padx=(6, 0))
+        ui.Button(mb, text="Informes", style="Ghost.TButton", command=self.open_reports).pack(side="right")
+        ui.Button(mb, text="Quitar sincro", style="Ghost.TButton", command=self.clear_calib).pack(side="right")
+        ui.Button(mb, text="Revisar sincro", style="Ghost.TButton",
+                  command=self.review_sync).pack(side="right", padx=(6, 0))
+        ui.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="right", padx=(6, 0))
         ttk.Label(p3, text="Clic en una partida para elegirla (para sincronizar a mano) · clic en ☐ para "
                            "incluirla o no", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(6, 0))
 
@@ -721,12 +730,9 @@ class App(tk.Tk):
         self.pb.pack(fill="x", pady=(6, 0))
         self.btn_render = ui.Button(right, text="Descargar VOD", style="Yellow.TButton", command=self.primary_action)
         self.btn_render.pack(side="right")
-        self.btn_more_menu = ui.Button(right, text="Más  ▾")
-        self.btn_more_menu.configure(command=self.show_more_menu)
-        self.btn_more_menu.pack(side="right", padx=8)
         self.btn_cancel = ui.Button(right, text="Cancelar", style="Ghost.TButton", command=self.cancel)
         self.btn_cancel.configure(state="disabled")      # (el botón no toma state= al crearse)
-        self.btn_cancel.pack(side="right")
+        self.btn_cancel.pack(side="right", padx=(0, 8))
         self._lay = None
         self.show_page("vod")
         self.after(500, self._ui_tick)
@@ -1004,33 +1010,6 @@ class App(tk.Tk):
         except Exception:
             pass
         self.after(700, self._ui_tick)
-
-    def show_more_menu(self):
-        m = tk.Menu(self, tearoff=0, bg=FIELD, fg=TEXT, activebackground=ui.SEL, activeforeground=TEXT,
-                    font=ui.body(10), bd=0, relief="flat")
-        m.add_command(label="Buscar partidas", command=lambda: (self.show_page("partidas"), self.load_matches()))
-        m.add_command(label="Cargar 10 partidas más", command=lambda: self.load_matches(True))
-        m.add_command(label="Añadir una partida por enlace de tracker.gg…", command=self.add_link_dialog)
-        m.add_command(label="Marcar las que tienen rondas en este VOD", command=self.auto_check)
-        m.add_separator()
-        m.add_command(label="Sincronizar las marcadas", command=self.sync_checked)
-        m.add_command(label="Sincronizar a mano la elegida…", command=self.calibrate)
-        m.add_command(label="Revisar la sincronización…", command=self.review_sync)
-        m.add_command(label="Quitar la sincronización de la elegida", command=self.clear_calib)
-        m.add_command(label="Informes de sincronización", command=self.open_reports)
-        m.add_separator()
-        m.add_command(label="Calcular rondas", command=lambda: (self.show_page("videos"), self.compute()))
-        m.add_command(label="Corregir subtítulos del último vídeo…", command=self.fix_subtitles_later)
-        m.add_command(label="Subir a Drive…", command=self.drive_upload_last)
-        m.add_command(label="Hacer el top de la semana ahora…", command=self.top_week_now)
-        m.add_separator()
-        m.add_command(label="Abrir la carpeta de vídeos", command=self.open_outdir)
-        m.add_command(label="Ajustes…", command=lambda: self.open_settings())
-        b = self.btn_more_menu
-        try:
-            m.tk_popup(b.winfo_rootx(), b.winfo_rooty() - 10 - 22 * 18)
-        finally:
-            m.grab_release()
 
     def add_link_dialog(self):
         from tkinter import simpledialog
