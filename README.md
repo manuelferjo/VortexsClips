@@ -260,3 +260,9 @@ Si algo falla, pulsa **Informes** y pasa la carpeta (o el `sincronizacion.txt`) 
 - **Publicar una versión:** sube `VERSION` en `version.py` y súbelo a `main`. GitHub Actions construye en Windows el instalador (PyInstaller + Inno Setup, con ffmpeg y whisper.cpp), ejecuta la **autoprueba** del programa empaquetado (ventana, vista previa, vídeo vertical con subtítulos, horizontal + vertical en una pasada, clips por copia, descarga por tramos, textos para publicar, editor de subtítulos con vídeo, sincronización por cartel, transcripción con comprobación de tiempos…) y, solo si pasa, crea la Release con `VortexsClips-Setup.exe` y el zip del código. Los programas instalados se actualizan solos.
 - El modelo de voz está en la Release `modelo-voz` (para redes donde HuggingFace está bloqueado).
 - `pruebas/`: prueba con VODs y partidas reales en GitHub (no publica nada).
+
+### Killfeed: resumen al terminar
+Al generar, si alguna kill se queda sin su línea en la vertical, el programa lo dice al terminar («27 de 28 kills con su línea») y guarda una foto del killfeed de cada una en la carpeta **«killfeed sin línea»** del directo, para revisarla o mandarla.
+
+### Cambios de delay a mitad de partida
+Con el registro de delay de Vortexs Live, cada kill usa el delay que había en SU momento: si cambias el delay a mitad de una partida, los cortes y el killfeed de antes y de después del cambio caen en su sitio.

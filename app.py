@@ -811,6 +811,7 @@ class App(tk.Tk):
         except Exception:
             rows = []
         self.delay_fn = core.make_delay_fn(rows)
+        core.DELAY_FN = self.delay_fn          # cada kill con el delay de SU momento (cambios a mitad de partida)
         if rows:
             self.lbl_delaylog.configure(text=f"✔ Registro de delay de Vortexs Live encontrado ({len(rows)} cambios): "
                                              "el delay de cada momento se suma al desfase solo.")
@@ -3115,6 +3116,23 @@ class App(tk.Tk):
         def finish(made):
             path = made[0]
             self.finish_steps("¡Vídeos listos!")
+            st_ = dict(getattr(killfeed, "LAST_STATS", {}) or {})
+            killfeed.LAST_STATS = {}
+            if st_.get("total") and kfeed:
+                if st_.get("missing"):
+                    lst = "\n".join(f"  · {core.fmt_ts(t)}  ronda {r}" for t, r, _p in st_["missing"][:8])
+                    more = "\n  …" if len(st_["missing"]) > 8 else ""
+                    if not self.unattended() and messagebox.askyesno(
+                            APP_NAME, f"Killfeed de la vertical: {st_['ok']} de {st_['total']} kills con su línea.\n\n"
+                                      f"Sin línea ({len(st_['missing'])}):\n{lst}{more}\n\nHe guardado una foto del "
+                                      "killfeed de cada una en la carpeta «killfeed sin línea». Si me la pasas, "
+                                      "lo ajusto.\n\n¿Abrir esa carpeta?"):
+                        try:
+                            os.startfile(st_["pics"])
+                        except Exception:
+                            pass
+                else:
+                    self.status(f"Killfeed: las {st_['total']} kills con su línea ✔")
             self.status(path)
             if getattr(self, "sync_warning", ""):
                 warnings.insert(0, self.sync_warning)

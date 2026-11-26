@@ -572,11 +572,51 @@ def is_synced(calib: dict, match_id: str) -> bool:
     return c.get("offset_s") is not None or c.get("first_kill_vod_s") is not None
 
 
+# ---- cambios de delay en MITAD de una partida (registro de Vortexs Live)
+DELAY_FN = None      # la ventana pone aquí la función del registro de delay del directo abierto
+_DELAY_REF: dict = {}
+
+
+def delay_shift(m: "Match", t_ms: float, delay_fn=None) -> float:
+    """Cuánto se mueve una kill porque el delay del directo cambió durante la partida: el delay de ese
+    momento menos el que hubo la mayor parte de la partida (al que se ajustó el corte/la sincronización).
+    0 si no hay registro o no cambió."""
+    fn = delay_fn if delay_fn is not None else DELAY_FN
+    if fn is None or m.started_at is None:
+        return 0.0
+    from datetime import timedelta
+    try:
+        key = (id(fn), m.match_id)
+        if key not in _DELAY_REF:
+            length = (m.length_ms or 0) / 1000 or 2400.0
+            samples = []
+            t = 0.0
+            while t <= length:
+                d = fn(m.started_at + timedelta(seconds=t))
+                if d is not None:
+                    samples.append(round(d * 2) / 2)
+                t += 15.0
+            _DELAY_REF[key] = None if (not samples or len(set(samples)) == 1) else \
+                max(set(samples), key=samples.count)
+        ref = _DELAY_REF[key]
+        if ref is None:
+            return 0.0
+        dk = fn(m.started_at + timedelta(seconds=t_ms / 1000.0))
+        return 0.0 if dk is None else float(dk - ref)
+    except Exception:
+        return 0.0
+
+
+def kill_vod_time(m: "Match", base: float, t_ms: float) -> float:
+    """Segundo del VOD de una kill (con los cambios de delay a mitad de partida, si los hubo)."""
+    return base + t_ms / 1000.0 + delay_shift(m, t_ms)
+
+
 def _kill_segments(m: Match, r: Round, base: float, settings: CutSettings,
                    vod_duration_s: float, synced: bool = True) -> list[tuple[float, float]]:
     """Modo solo kills: un trozo alrededor de cada kill tuya; las kills seguidas se juntan.
     Si la partida no está sincronizada al segundo, se deja margen extra para no perder la jugada."""
-    ts = sorted(base + k.t_match / 1000 for k in m.kills
+    ts = sorted(kill_vod_time(m, base, k.t_match) for k in m.kills
                 if k.round == r.index and k.killer == m.my_puuid)
     pre = settings.kill_pre_s + (0 if synced else settings.unsynced_extra_pre_s)
     post = settings.kill_post_s + (0 if synced else settings.unsynced_extra_post_s)

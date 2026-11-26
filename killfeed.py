@@ -327,6 +327,9 @@ def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS):
     return found, seq[src_i]
 
 
+LAST_STATS: dict = {}
+
+
 def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             log_path: str | None = None) -> list[dict]:
     """
@@ -354,7 +357,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
         for k in m.kills:
             if k.round != r.index or k.killer != m.my_puuid:
                 continue
-            tv = c.base + k.t_match / 1000.0
+            tv = core.kill_vod_time(m, c.base, k.t_match)
             key = (c.group, k.t_match, k.victim)     # con la ulti puedes matar a dos en el mismo instante
             if key in seen or not (c.vod_start <= tv <= c.vod_end):
                 continue
@@ -370,7 +373,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
         m, r = c.match, c.round
         for k in m.kills:
             if k.round == r.index and k.killer == m.my_puuid and (c.group, k.t_match, k.victim) not in seen:
-                fuera.append(f"{core.fmt_ts(c.base + k.t_match / 1000.0)}  ronda {r.index + 1}: "
+                fuera.append(f"{core.fmt_ts(core.kill_vod_time(m, c.base, k.t_match))}  ronda {r.index + 1}: "
                              f"esta kill cae fuera del corte (no sale en el vídeo)")
     # rondas del vídeo en las que no se encontró ninguna kill tuya (para el registro)
     sin = []
@@ -386,6 +389,23 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
     # justo debajo de la cámara y de los subtítulos (que van en su borde de abajo), pegadas a la derecha
     y_top = core.cam_bottom_y(cam, W, H) + 95 if cam else 700
     out, log = [], list(pre_log) + fuera
+    total = sum(len(v) for v in by_group.values())
+    missing = []                     # [(segundo del VOD, ronda, foto)]
+    pics = os.path.join(os.path.dirname(log_path), "killfeed sin línea") if log_path else None
+
+    def photo(seq_, t0_, tv_, rnd):
+        """Foto del killfeed de una kill sin línea (para revisarla o mandarla)."""
+        if not pics or not seq_:
+            return None
+        try:
+            from PIL import Image
+            i = max(0, min(len(seq_) - 1, int(round((tv_ + 0.6 - t0_) * SEQ_FPS))))
+            os.makedirs(pics, exist_ok=True)
+            p = os.path.join(pics, f"{core.fmt_ts(tv_).replace(':', '-')} ronda {rnd}.png")
+            Image.fromarray(seq_[i]).save(p)
+            return p
+        except Exception:
+            return None
     groups = list(by_group.items())
     for gi, (g, ks) in enumerate(groups):
         if should_stop and should_stop():
@@ -412,8 +432,13 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             seq = grab_seq(vod, t0, (cl[-1][0] + 1.0) - t0, SEQ_FPS)
             if len(seq) < 4:
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: no se pudo leer el vídeo")
+                missing += [(tv_, g[1] + 1, None) for tv_, _ in cl]
                 continue
             found, src = locate(seq, t0, cl, H, known, SEQ_FPS)
+            got = {round(x[0][0], 3) for x in found}
+            for tv_, _ in cl:
+                if round(tv_, 3) not in got and len(found) < len(cl):
+                    missing.append((tv_, g[1] + 1, photo(seq, t0, tv_, g[1] + 1)))
             if not found:
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: NO se ve tu línea en el killfeed "
                            f"({len(cl)} kill(s))")
@@ -431,10 +456,14 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                             "start": start, "end": gend[g]})
                 log.append(f"{core.fmt_ts(tv)}  ronda {g[1] + 1}: línea {slot + 1}, entra a {core.fmt_ts(appear)}")
                 slot += 1
+    global LAST_STATS
+    LAST_STATS = {"total": total, "ok": len(out), "missing": missing, "pics": pics if missing else None}
     for p in [os.path.join(folder, "registro_killfeed.txt")] + ([log_path] if log_path else []):
         try:
             with open(p, "w", encoding="utf-8") as f:
-                f.write("Killfeed de la vertical: una línea por cada kill tuya (segundo del VOD)\n\n")
+                f.write("Killfeed de la vertical: una línea por cada kill tuya (segundo del VOD)\n")
+                f.write(f"Resumen: {len(out)} de {total} kills con su línea"
+                        + (f" · faltan {len(missing)} (fotos en «killfeed sin línea»)" if missing else "") + "\n\n")
                 f.write("\n".join(log) + "\n")
         except OSError:
             pass
