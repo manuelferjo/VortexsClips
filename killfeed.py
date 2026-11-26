@@ -149,6 +149,11 @@ def lines(img, src_h: int = 1080):
     h, w = teal.shape
     lh = LINE_H_1080 * src_h / 1080.0
     bar = (teal | red)[:, int(w * 0.30):int(w * 0.98)]
+    # fondo del juego del mismo color (pared verde azulada, humo rojo…): esas columnas son de ese color
+    # en casi toda la altura, no solo en una línea; no cuentan
+    bg = bar.mean(axis=0) > 0.6
+    if bg.any() and (~bg).sum() >= bar.shape[1] * 0.3:
+        bar = bar[:, ~bg]
     cov = bar.mean(axis=1)
     on = cov >= 0.15
     # dentro de una línea corta (nombre corto, icono de habilidad) algunas filas tienen poco color por
@@ -190,6 +195,37 @@ def lines(img, src_h: int = 1080):
                 ya = max(0, y - int(round(lh)))
                 out.append((ya, y, own_marker(img[ya:y], src_h)))
         y += 1
+    # tus líneas tienen un borde amarillo fino abajo: con un fondo del mismo color que las líneas (pared
+    # verde azulada…) las franjas de color no sirven, pero ese borde sí
+    import numpy as np
+    L = int(round(lh))
+    for yy in range(max(top, L), h - 2):
+        row = yel[yy]
+        if row.sum() < lh * 1.7:
+            continue
+        idx = np.flatnonzero(row)
+        # tramo continuo más largo
+        cuts = np.flatnonzero(np.diff(idx) > 2)
+        starts = np.r_[idx[0], idx[cuts + 1]]
+        ends = np.r_[idx[cuts], idx[-1]]
+        k = int(np.argmax(ends - starts))
+        xs, xe = int(starts[k]), int(ends[k]) + 1
+        if xe - xs < lh * 1.7 or (yy + 1 < h and yel[yy + 1, xs:xe].mean() > 0.5):
+            continue                      # (la fila de abajo del borde: se toma la última)
+        # fino: ni encima (dentro de la línea) ni debajo es amarillo
+        if yel[max(0, yy - L // 2), xs:xe].mean() > 0.3 or (yy + 3 < h and yel[yy + 3, xs:xe].mean() > 0.3):
+            continue
+        yb = yy + 1
+        ya = yb - L
+        # y su borde de arriba, una línea más arriba (así no se confunde con el de arriba de otra
+        # línea ni con el borde de la pastilla «Sin delay»)
+        if max(yel[r, xs:xe].mean() for r in range(max(0, ya - 3), ya + 4)) < 0.25:
+            continue
+        if any(o[0] < yb - 4 and ya + 4 < o[1] for o in out):   # (ya hay una línea ahí)
+            continue
+        mx = own_marker(img[ya:yb], src_h)
+        out.append((ya, yb, mx if mx is not None else xs))
+    out.sort()
     return out
 
 
@@ -212,15 +248,68 @@ def grab_seq(vod: str, t: float, dur: float, fps: int = 10) -> list:
     return [np.frombuffer(r.stdout[i * sz:(i + 1) * sz], dtype=np.uint8).reshape(ch, cw, 3) for i in range(n)]
 
 
-def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
-    """¿Es la misma línea del killfeed (aunque esté a otra altura)? Se compara su parte derecha."""
+def _name_mask(img, y0, y1):
+    """Texto blanco (nombre de a quién mataste) de la parte roja de una línea, o None."""
     import numpy as np
-    # (la banda de una línea puede salir unos píxeles más arriba o más abajo, sobre todo mientras sube
-    # en el killfeed al caducar la de encima: se prueba con ese pequeño desplazamiento)
+    w = img.shape[1]
+    band = img[max(0, y0 + 2):max(0, y1 - 2)]
+    if band.shape[0] < 6:
+        return None
+    _t, red, _y = _masks(band)
+    xa = int(w * 0.30)
+    cols = np.flatnonzero(red[:, xa:].mean(axis=0) >= 0.3)
+    if not len(cols):
+        return None
+    x0 = xa + int(cols[0])
+    # umbral relativo: cuando la línea se desvanece (va a caducar) o hay un destello, todo cambia de
+    # brillo a la vez, pero el texto sigue siendo lo más claro de la parte roja
+    mn = band.min(axis=2).astype(np.int16)
+    part = mn[:, x0:int(w * 0.97)]
+    if part.size == 0:
+        return None
+    top = float(np.percentile(part, 97))
+    thr = max(110.0, top * 0.82)
+    return x0, mn > thr
+
+
+def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
+    """¿Es la misma línea del killfeed (aunque esté a otra altura)?
+    Se compara sobre todo el NOMBRE (texto blanco de la parte roja): no depende del fondo, que se
+    transparenta, ni de la pastilla que tapa parte de la línea. Si no hay nombre que comparar, el color."""
+    import numpy as np
     h = min(a1 - a0, b1 - b0) - 8
     if h < 8:
         return False
     w = img_a.shape[1]
+    na, nb = _name_mask(img_a, a0, a1), _name_mask(img_b, b0, b1)
+    if na and nb:
+        # la misma línea tiene su parte roja empezando en el mismo sitio (solo se mueve en vertical)
+        if abs(na[0] - nb[0]) > 6:
+            return False
+        x0 = min(na[0], nb[0])
+        # hasta el retrato (el retrato tiene brillos blancos que cambian con el fondo)
+        xb = int(w * 0.978 - 1.6 * (a1 - a0))
+        if xb - x0 < 20:
+            xb = int(w * 0.97)
+        ma = na[1][:, x0:xb]
+        n = min(ma.shape[0], nb[1].shape[0])
+        if ma[:n].sum() >= 25 and nb[1][:n, x0:xb].sum() >= 25:   # (hay nombre que comparar)
+            best = 0.0
+            # solo la mitad de abajo de la línea: la de arriba puede taparla la pastilla «Sin delay»
+            r0, r1 = int(n * 0.38), int(n * 0.92)
+            nbm = nb[1][r0:r1, x0:xb]
+            ma = ma[r0:r1]
+            n = r1 - r0
+            for dy in range(-3, 4):
+                A, B = (ma[0:n - dy], nbm[dy:n]) if dy >= 0 else (ma[-dy:n], nbm[0:n + dy])
+                for dx in range(-6, 7):
+                    Bs = np.roll(B, dx, axis=1)
+                    u = (A | Bs).sum()
+                    if u:
+                        best = max(best, (A & Bs).sum() / u)
+            return best >= 0.55
+    # (la banda de una línea puede salir unos píxeles más arriba o más abajo, sobre todo mientras sube
+    # en el killfeed al caducar la de encima: se prueba con ese pequeño desplazamiento)
     xa, xb = int(w * 0.45), int(w * 0.97)
     pa = img_a[a0 + 4:a0 + 4 + h, xa:xb].astype(np.int16)
     best = 1e9
@@ -356,7 +445,10 @@ def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS, after_t=None):
         for i in range(1, src_i + 1):
             # primer fotograma en que esta línea ya se reconoce como TUYA y nueva, en su sitio
             # (comparando su contenido: con varias seguidas, cada una con la suya)
-            if any(same_line(seq[i], b[1], b[3], seq[src_i], box[1], box[3]) for b in new(i)):
+            # (por su contenido, a cualquier altura y aunque aún no se reconozca su marcador amarillo:
+            # al entrar, con su destello, puede salir más abajo y subir cuando caduca la de encima)
+            if any(same_line(seq[i], y0, y1, seq[src_i], box[1], box[3])
+                   for y0, y1, _m in lines(seq[i], H)):
                 appear = t0 + i / fps - 0.1      # el amarillo llega ~0,1 s después de la línea
                 break
         if appear is None:
