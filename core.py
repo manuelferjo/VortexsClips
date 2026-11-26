@@ -38,6 +38,7 @@ class Kill:
     killer: str           # puuid
     victim: str
     weapon: str = ""
+    weapon_type: str = ""    # «Weapon», «Ability», «Bomb» (la spike al explotar)…
 
 
 @dataclass
@@ -77,6 +78,20 @@ class Match:
     def highlight_rounds(self, min_kills: int, clutch_min: int = 0) -> list[Round]:
         """Rondas con min_kills o más kills tuyas, o clutches ganados de 1 contra clutch_min o más."""
         return [r for r in self.rounds if r.my_kills >= min_kills or is_clutch(r, clutch_min)]
+
+
+def is_spike_kill(k: "Kill", rounds) -> bool:
+    """¿Esa muerte la causó la spike al explotar?"""
+    wt, wn = (k.weapon_type or "").lower(), (k.weapon or "").lower()
+    if "bomb" in wt or "spike" in wt or "spike" in wn or "bomb" in wn:
+        return True
+    # sin dato del arma: si coincide con la explosión (45 s después de plantar) de una ronda que acabó así
+    if not wn and 0 <= k.round < len(rounds):
+        r = rounds[k.round]
+        if r.plant_round_ms and "deton" in (r.result or "").lower() and \
+                abs(k.t_round - (r.plant_round_ms + 45000)) <= 2000:
+            return True
+    return False
 
 
 def is_clutch(r: "Round", clutch_min: int) -> bool:
@@ -421,6 +436,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
                 killer=(k.get("killer") or {}).get("puuid", ""),
                 victim=(k.get("victim") or {}).get("puuid", ""),
                 weapon=(k.get("weapon") or {}).get("name", "") or "",
+                weapon_type=str((k.get("weapon") or {}).get("type") or ""),
             ))
         else:                            # v2/v3
             kills.append(Kill(
@@ -430,6 +446,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
                 killer=k.get("killer_puuid", ""),
                 victim=k.get("victim_puuid", ""),
                 weapon=k.get("damage_weapon_name", "") or "",
+                weapon_type=str(k.get("damage_type") or ""),
             ))
 
     # --- rondas
@@ -507,6 +524,15 @@ def parse_match(raw: dict, riot_id: str) -> Match:
         for st in rr.get("player_stats") or []:
             if st.get("player_puuid") == my_puuid and isinstance(st.get("kills"), int):
                 rounds[i].my_kills = st["kills"]
+
+    # la spike al explotar: Riot da esas muertes al que la plantó, pero no son jugadas tuyas
+    # (ni se cortan, ni cuentan para 3K/ACE, ni van al killfeed de la vertical)
+    spike = [k for k in kills if is_spike_kill(k, rounds)]
+    if spike:
+        for k in spike:
+            if k.killer == my_puuid and k.round < len(rounds) and rounds[k.round].my_kills > 0:
+                rounds[k.round].my_kills -= 1
+        kills = [k for k in kills if k not in spike]
 
     m_ = Match(
         match_id=md.get("match_id") or md.get("matchid") or "",
