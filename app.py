@@ -621,7 +621,8 @@ class App(tk.Tk):
         self.body.pack(fill="both", expand=True)
         mid.pack(fill="both", expand=True)
         self._lay = {"top": top, "mid": mid, "p": (p1, p2, p3, p4o), "mode": None, "maxw": [0, 0, 0, 0]}
-        self.bind("<Configure>", lambda e: self._relayout() if e.widget is self else None, add="+")
+        self.bind("<Configure>", lambda e: ui.later(self, "_relay_id", 80, self._relayout)
+                  if e.widget is self else None, add="+")
         chips = ttk.Frame(foot, style="Panel.TFrame")
         chips.pack(fill="x")
         self.step_names = ["1 · Descargar VOD", "2 · Buscar partidas", "3 · Sincronizar",

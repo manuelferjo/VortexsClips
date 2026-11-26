@@ -299,6 +299,35 @@ def apply_style(root):
     return s
 
 
+# ---------------------------------------------------------------- redibujar sin atascos
+def later(widget, key, ms, fn):
+    """Ejecuta fn dentro de ms milisegundos; si se vuelve a pedir antes, solo cuenta la última vez.
+    Con la ventana minimizada no se dibuja nada (se hará al volver)."""
+    old = getattr(widget, key, None)
+    if old:
+        try:
+            widget.after_cancel(old)
+        except Exception:
+            pass
+
+    def run():
+        setattr(widget, key, None)
+        try:
+            if widget.winfo_toplevel().state() == "iconic":
+                setattr(widget, key, widget.after(400, run))
+                return
+        except Exception:
+            pass
+        try:
+            fn()
+        except tk.TclError:
+            pass
+    try:
+        setattr(widget, key, widget.after(ms, run))
+    except tk.TclError:
+        pass
+
+
 # ---------------------------------------------------------------- tarjeta redondeada
 _CARDS = []
 
@@ -361,7 +390,9 @@ class Card(ttk.Frame):
         if self._last == (w, h):
             return
         self._last = (w, h)
-        self._draw(w, h)
+        # redibujar el fondo solo cuando la ventana deja de cambiar de tamaño (al arrastrar o minimizar
+        # llegan decenas de cambios por segundo y redibujar cada uno atasca la ventana)
+        later(self._cv, "_card_draw", 90, lambda: self._draw(*self._last) if self._last else None)
 
     def _draw_glow(self, w, h):
         self._gimg = _card_glow_image(self, w, h)
@@ -731,7 +762,7 @@ class GradBar(tk.Canvas):
         super().__init__(parent, height=self.H, bg=bg, highlightthickness=0, bd=0)
         self._mode, self._max, self._val, self._bgc = mode, float(maximum), 0.0, bg
         self._anim, self._phase = None, 0.0
-        self.bind("<Configure>", lambda e: self._build())
+        self.bind("<Configure>", lambda e: later(self, "_bar_build", 60, self._build))
 
     def _build(self):
         w, h = self.winfo_width(), self.H
@@ -1468,7 +1499,7 @@ class GlowHeader(tk.Canvas):
         super().__init__(parent, height=height, bg=BG, highlightthickness=0, bd=0)
         self._hh = height
         self._last = None
-        self.bind("<Configure>", lambda e: self._redraw(e.width))
+        self.bind("<Configure>", lambda e: later(self, "_hdr", 90, lambda w=e.width: self._redraw(w)))
         self.items = []
 
     def _redraw(self, w):
