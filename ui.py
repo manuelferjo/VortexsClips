@@ -11,22 +11,22 @@ import tkinter.font as tkfont
 from tkinter import ttk
 
 # ---------------------------------------------------------------- colores (los de Vortexs Live)
-BG = "#09090c"
-SURFACE = "#111116"
-ELEVATED = "#171720"
-INPUT = "#0e0e13"
-BORDER = "#26262e"
-BORDER_HI = "#383646"
-TEXT = "#f4f4f5"
-MUTED = "#b2b2bc"
-DIM = "#868692"
+BG = "#1c1c1b"
+SURFACE = "#252524"
+ELEVATED = "#2e2e2c"
+INPUT = "#1f1f1e"
+BORDER = "#3a3a37"
+BORDER_HI = "#4d4c48"
+TEXT = "#f3f2ee"
+MUTED = "#b4b2aa"
+DIM = "#8d8b83"
 VIOLET = "#c09afd"
 VIOLET_L = "#d6bfff"
 YELLOW = "#ede103"
 RED = "#ff4655"
 GREEN = "#34d399"
-SEL = "#2a2340"          # fila / pestaña seleccionada (morado muy oscuro)
-HOVER = "#1f1f2a"
+SEL = "#3a3350"          # fila / pestaña seleccionada (morado muy oscuro)
+HOVER = "#343432"
 
 
 def res_dir() -> str:
@@ -250,11 +250,11 @@ def apply_style(root):
     # botones redondeados: normal (elevado con borde), principal (degradado), secundario (morado suave)
     imgs = {
         "n": cached("b_n", lambda: rrect_img(30, 30, 9, ELEVATED, BORDER_HI)),
-        "h": cached("b_h", lambda: rrect_img(30, 30, 9, "#20202c", "#4a4760")),
-        "p": cached("b_p", lambda: rrect_img(30, 30, 9, "#262434", VIOLET)),
+        "h": cached("b_h", lambda: rrect_img(30, 30, 9, "#363634", "#5a5852")),
+        "p": cached("b_p", lambda: rrect_img(30, 30, 9, "#3a3646", VIOLET)),
         "d": cached("b_d", lambda: rrect_img(30, 30, 9, SURFACE, BORDER)),
-        "vn": cached("v_n", lambda: rrect_img(30, 30, 9, "#211b33", "#6b569a")),
-        "vh": cached("v_h", lambda: rrect_img(30, 30, 9, "#2b2244", VIOLET)),
+        "vn": cached("v_n", lambda: rrect_img(30, 30, 9, "#352e48", "#6b569a")),
+        "vh": cached("v_h", lambda: rrect_img(30, 30, 9, "#40365a", VIOLET)),
     }
     root._ui_imgs = imgs
     for name, n_, h_, p_, d_ in (("VBtn", "n", "h", "p", "d"),
@@ -288,7 +288,7 @@ def apply_style(root):
     for o in ("Vertical", "Horizontal"):
         s.configure(f"{o}.TScrollbar", background=BORDER_HI, troughcolor=SURFACE, bordercolor=SURFACE,
                     lightcolor=BORDER_HI, darkcolor=BORDER_HI, arrowcolor=DIM, gripcount=0, arrowsize=10)
-        s.map(f"{o}.TScrollbar", background=[("active", "#4a4760")])
+        s.map(f"{o}.TScrollbar", background=[("active", "#5a5852")])
 
     s.configure("TSeparator", background=BORDER)
     s.configure("TCheckbutton", background=SURFACE, foreground=TEXT, indicatorbackground=INPUT,
@@ -516,7 +516,7 @@ class Toggle(tk.Frame):
         def off():
             return compose(W, H, [
                 (lambda x, y: _in_rrect(x, y, 0, 0, W, H, r), lambda x, y: _rgb(BORDER_HI)),
-                (lambda x, y: _in_rrect(x, y, 1, 1, W - 1, H - 1, r - 1), lambda x, y: _rgb("#22212c")),
+                (lambda x, y: _in_rrect(x, y, 1, 1, W - 1, H - 1, r - 1), lambda x, y: _rgb("#363634")),
                 (lambda x, y: (x - r) ** 2 + (y - r) ** 2 <= (r - 4) ** 2, lambda x, y: _rgb(DIM))], under=bg)
         return cached(("tg_on", bg), on), cached(("tg_off", bg), off)
 
@@ -604,12 +604,12 @@ class Tabs(ttk.Frame):
         H = h + 8
         cv.configure(width=total, height=H)
         track = cached(("tabtrack", total, H, self._bg),
-                       lambda: rrect_img(total, H, H // 2, "#14141b", BORDER, under=self._bg))
+                       lambda: rrect_img(total, H, H // 2, "#1f1f1e", BORDER, under=self._bg))
         cv.create_image(0, 0, image=track, anchor="nw")
         for i, ((bx, bw), n) in enumerate(zip(boxes, self.names)):
             sel = i == self.cur
             if sel:
-                pill = cached(("tabpill", bw, h), lambda bw=bw: rrect_img(bw, h, h // 2, SEL, VIOLET, under="#14141b"))
+                pill = cached(("tabpill", bw, h), lambda bw=bw: rrect_img(bw, h, h // 2, SEL, VIOLET, under="#1f1f1e"))
                 cv.create_image(bx, 4, image=pill, anchor="nw")
             col = TEXT if sel else (VIOLET_L if self._hover == i else MUTED)
             t = cv.create_text(bx + bw / 2, 4 + h / 2, text=n, fill=col, font=f)
@@ -636,7 +636,7 @@ def status_pill(parent, bg=BG):
         f = mono(8)
         fm = tkfont.Font(root=cv, font=f)
         w = fm.measure(text) + 44
-        img = cached(("pill", w, bg), lambda: rrect_img(w, 30, 15, "#121218", BORDER_HI, under=bg))
+        img = cached(("pill", w, bg), lambda: rrect_img(w, 30, 15, "#232322", BORDER_HI, under=bg))
         cv.configure(width=w + 2)
         cv.create_image(1, 2, image=img, anchor="nw")
         cv.create_oval(14, 13, 22, 21, fill=color, outline="")
@@ -686,7 +686,7 @@ class GradButton(tk.Canvas):
 
         def mk(kind):
             if kind == "d":
-                return rrect_img(w, h, r, "#24232d", BORDER_HI, under=self._bgc)
+                return rrect_img(w, h, r, "#363634", BORDER_HI, under=self._bgc)
             mix = 0.16 if kind == "h" else 0.0
             return compose(w, h, [(lambda x, y: _in_rrect(x, y, 0, 0, w, h, r),
                                    lambda x, y: _lerp(grad_at(x / w), (255, 255, 255), mix))], under=self._bgc)
@@ -1137,7 +1137,7 @@ class VButton(tk.Canvas):
                 fill = _lerp(_lerp(_rgb(self._bgc), _rgb(VIOLET), 38 / 255), _lerp(_rgb(self._bgc), _rgb(VIOLET), 60 / 255), hq)
                 bord = _lerp(_rgb(self._bgc), _rgb(VIOLET), (200 if not dis else 90) / 255)
             else:
-                fill = _lerp(_rgb(ELEVATED), (32, 32, 42), hq)
+                fill = _lerp(_rgb(ELEVATED), (58, 58, 55), hq)
                 bord = _lerp(_rgb(BORDER), _rgb(BORDER_HI), hq)
             outer = _rr_cov(W, H, x0, y0, x1, y1, r)
             bw = 1.2 if k in ("pill", "danger") else 1.0

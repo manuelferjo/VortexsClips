@@ -39,12 +39,12 @@ BG = ui.BG
 PANEL = ui.SURFACE
 FIELD = ui.ELEVATED
 TEXT = ui.TEXT
-MUTED = "#9a9aa6"
+MUTED = "#a8a69e"
 YELLOW = ui.YELLOW
 PURPLE = ui.VIOLET
 BORDER = ui.BORDER
 HOVER = ui.HOVER
-ROW_ALT = "#14141a"       # filas alternas de las tablas
+ROW_ALT = "#2a2a28"       # filas alternas de las tablas
 DARK = "#0b0a10"
 
 REGIONS = ["eu", "na", "ap", "kr", "latam", "br"]
@@ -297,6 +297,8 @@ class App(tk.Tk):
             sl.pack(side="left", padx=(10, 0), pady=9)
             for w_ in (f_, ic, tl, sl):
                 w_.bind("<Button-1>", lambda e, k=key: self.show_page(k))
+                w_.bind("<Enter>", lambda e, f=f_: f.configure(highlightbackground=ui.VIOLET_L), add="+")
+                w_.bind("<Leave>", lambda e: self._paint_steps(), add="+")
             self._steps.append((key, f_, ic, tl, sl))
         stepper.columnconfigure(3, weight=0)
         fa = tk.Frame(stepper, bg=PANEL, cursor="hand2", highlightthickness=1, highlightbackground=BORDER)
@@ -305,6 +307,8 @@ class App(tk.Tk):
         la.pack(padx=18, pady=9)
         for w_ in (fa, la):
             w_.bind("<Button-1>", lambda e: self.open_settings())
+            w_.bind("<Enter>", lambda e: fa.configure(highlightbackground=ui.VIOLET_L), add="+")
+            w_.bind("<Leave>", lambda e: self._paint_steps(), add="+")
         self._tab_set = (fa, la)
         pages = ttk.Frame(self.body.inner, padding=(16, 8, 16, 8))
         pages.pack(fill="both", expand=True)
@@ -339,6 +343,8 @@ class App(tk.Tk):
                           padx=8, pady=9, cursor="hand2")
             lb.pack(fill="x", pady=1)
             lb.bind("<Button-1>", lambda e, k=key: self.open_settings(k))
+            lb.bind("<Enter>", lambda e, k=key, l=lb: l.configure(fg=TEXT) if k != self._set_cur else None)
+            lb.bind("<Leave>", lambda e, k=key, l=lb: l.configure(fg=MUTED) if k != self._set_cur else None)
             self._set_btns[key] = lb
         self._set_cur = None
         tk.Label(nav, text="Se guarda solo.", bg=BG, fg=ui.DIM, font=ui.body(9)).pack(anchor="w", padx=10,
@@ -770,13 +776,49 @@ class App(tk.Tk):
             self._page = key        # (open_settings vuelve a llamar aquí con la sección elegida)
             self.open_settings("cuenta")
             return
+        old = self._page
         self._page = key
         self._pages[key].tkraise()
+        order = ("vod", "partidas", "videos", "ajustes")
+        if old and old != key:
+            self._slide_in(self._pages[key], 1 if order.index(key) > order.index(old) else -1)
         self._paint_steps()
         try:
             self.body.cv.yview_moveto(0)
         except Exception:
             pass
+
+    def _slide_in(self, w, direction=1, dist=46, frames=10, ms=16):
+        """Animación al cambiar de pestaña: la página entra deslizándose y frenando (≈0,16 s)."""
+        tok = object()
+        self._slide_tok = tok
+
+        def step(i):
+            if getattr(self, "_slide_tok", None) is not tok:
+                return
+            t = i / frames
+            d = int(round(dist * (1 - t) ** 3))          # frena al final (ease-out)
+            try:
+                w.grid_configure(padx=(d, 0) if direction > 0 else (0, d))
+            except tk.TclError:
+                return
+            if i < frames:
+                self.after(ms, lambda: step(i + 1))
+        step(0)
+
+    def _hoverable(self, widgets, base_bg, hover_bg, keep=()):
+        """Al pasar el ratón por encima, todo el bloque se ilumina un poco (menos lo de `keep`)."""
+        def paint(bg):
+            for w_ in widgets:
+                if w_ in keep:
+                    continue
+                try:
+                    w_.configure(bg=bg)
+                except tk.TclError:
+                    pass
+        for w_ in widgets:
+            w_.bind("<Enter>", lambda e: paint(hover_bg), add="+")
+            w_.bind("<Leave>", lambda e: paint(base_bg), add="+")
 
     def _step_state(self):
         """(estado, texto) de cada paso: 'done', 'now' o 'todo'."""
@@ -812,7 +854,7 @@ class App(tk.Tk):
         fa.configure(bg=ui.SEL if on else PANEL, highlightthickness=2 if on else 1,
                      highlightbackground=PURPLE if on else BORDER)
         la.configure(bg=ui.SEL if on else PANEL, fg=TEXT if on else MUTED)
-        tint = {"done": ("#0f2a20", ui.GREEN), "now": ("#2b2908", YELLOW), "todo": (PANEL, ui.DIM)}
+        tint = {"done": ("#203a2f", ui.GREEN), "now": ("#3a3712", YELLOW), "todo": (PANEL, ui.DIM)}
         for (key, f_, ic, tl, sl), (st, txt) in zip(self._steps, states):
             cur = key == self._page
             bg, fg = tint[st]
@@ -830,7 +872,10 @@ class App(tk.Tk):
         if self._set_cur and self._set_cur != key:
             self._set_pages[self._set_cur][0].grid_forget()
         pg, txt = self._set_pages[key]
+        changed = self._set_cur != key
         pg.grid(row=1, column=0, sticky="nsew")
+        if changed and self._set_cur:
+            self._slide_in(pg, 1, dist=30)
         self._set_title.configure(text=txt)
         for k, lb in self._set_btns.items():
             lb.configure(bg=ui.SEL if k == key else BG, fg=TEXT if k == key else MUTED)
@@ -993,6 +1038,10 @@ class App(tk.Tk):
                     pass
                 self.render_match_cards()
 
+            chips_ = [c_ for c_ in mid_.winfo_children() if c_.cget("bg") != bg]
+            if not sel:
+                self._hoverable([card, chk, info, mid_, stl] + list(info.winfo_children()) +
+                                list(mid_.winfo_children()), bg, HOVER, keep=chips_)
             chk.bind("<Button-1>", toggle)
             for w_ in [card, info, mid_, stl] + list(info.winfo_children()) + list(mid_.winfo_children()):
                 w_.bind("<Button-1>", pick)
