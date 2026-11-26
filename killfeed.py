@@ -193,14 +193,22 @@ def grab_seq(vod: str, t: float, dur: float, fps: int = 10) -> list:
 def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
     """¿Es la misma línea del killfeed (aunque esté a otra altura)? Se compara su parte derecha."""
     import numpy as np
-    h = min(a1 - a0, b1 - b0)
+    # (la banda de una línea puede salir unos píxeles más arriba o más abajo, sobre todo mientras sube
+    # en el killfeed al caducar la de encima: se prueba con ese pequeño desplazamiento)
+    h = min(a1 - a0, b1 - b0) - 8
     if h < 8:
         return False
     w = img_a.shape[1]
-    xa = int(w * 0.45)
-    pa = img_a[a0:a0 + h, xa:int(w * 0.97)].astype(np.int16)
-    pb = img_b[b0:b0 + h, xa:int(w * 0.97)].astype(np.int16)
-    return float(np.abs(pa - pb).mean()) < tol
+    xa, xb = int(w * 0.45), int(w * 0.97)
+    pa = img_a[a0 + 4:a0 + 4 + h, xa:xb].astype(np.int16)
+    best = 1e9
+    for dy in range(-4, 5):
+        y = b0 + 4 + dy
+        if y < 0 or y + h > img_b.shape[0]:
+            continue
+        pb = img_b[y:y + h, xa:xb].astype(np.int16)
+        best = min(best, float(np.abs(pa - pb).mean()))
+    return best < tol
 
 
 def find_new_lines(before, after, src_h: int = 1080, n: int = 1, known=()) -> list:
@@ -283,13 +291,21 @@ GAP = 10
 SEQ_FPS = 10
 
 
-def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS):
+def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS, after_t=None):
     """
     En los fotogramas seq (desde t0, fps por segundo): las líneas de las kills cl [(t_vod, t_vídeo)].
     Devuelve ([((t_vod, t_vídeo), caja, momento en que entra)], fotograma del que se recortan).
     known: tus líneas de la ronda ya colocadas, que no cuentan como nuevas.
     """
     n = len(cl)
+    # after_t: momento en que entró tu kill anterior de la ronda. Con kills muy seguidas, su línea
+    # podría verse aún como «nueva» desde t0 (sobre todo si mientras tanto ha subido de sitio);
+    # entonces la imagen «antes» se toma justo después de que esa entrara.
+    if after_t is not None:
+        import math
+        k = int(math.ceil((after_t + 0.4 - t0) * fps))
+        if 0 < k < len(seq) - 2:
+            seq, t0 = seq[k:], t0 + k / fps
     before = seq[0]
 
     def new(i):
@@ -424,6 +440,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             clusters.append(cur)
         slot = 0
         known = []                      # tus líneas de esta ronda ya colocadas
+        last_in = None                  # cuándo entró la última de ellas
         for cl in clusters:
             # se mira el directo 10 veces por segundo alrededor de la(s) kill(s): la línea sale en el
             # instante exacto en que entra en el killfeed (no en la hora de Riot, que puede ir desfasada)
@@ -434,7 +451,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: no se pudo leer el vídeo")
                 missing += [(tv_, g[1] + 1, None) for tv_, _ in cl]
                 continue
-            found, src = locate(seq, t0, cl, H, known, SEQ_FPS)
+            found, src = locate(seq, t0, cl, H, known, SEQ_FPS, last_in)
             got = {round(x[0][0], 3) for x in found}
             for tv_, _ in cl:
                 if round(tv_, 3) not in got and len(found) < len(cl):
@@ -445,6 +462,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 continue
             for (tv, tout), box, appear in found:
                 known.append((src, box[1], box[3]))
+                last_in = appear if last_in is None else max(last_in, appear)
                 png = os.path.join(folder, f"kf_{len(out):03d}.png")
                 ww, hh = save_rgba(src, box, png)
                 sc = OUT_LINE_H / max(1, hh)
