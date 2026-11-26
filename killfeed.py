@@ -149,7 +149,29 @@ def lines(img, src_h: int = 1080):
     h, w = teal.shape
     lh = LINE_H_1080 * src_h / 1080.0
     bar = (teal | red)[:, int(w * 0.30):int(w * 0.98)]
-    on = bar.mean(axis=1) >= 0.15
+    cov = bar.mean(axis=1)
+    on = cov >= 0.15
+    # dentro de una línea corta (nombre corto, icono de habilidad) algunas filas tienen poco color por
+    # el texto blanco: un hueco corto con algo de color entre dos tramos de línea se rellena
+    gmax = max(2, int(round(LINE_H_1080 * src_h / 1080.0 * 0.4)))
+    y = 0
+    while y < h:
+        if not on[y] and y > 0 and on[y - 1]:
+            y1 = y
+            while y1 < h and not on[y1] and cov[y1] >= 0.08:
+                y1 += 1
+            if y1 < h and on[y1] and y1 - y <= gmax:
+                # (solo si todo junto sigue midiendo como una línea: no se juntan dos líneas)
+                ya = y
+                while ya > 0 and on[ya - 1]:
+                    ya -= 1
+                yb = y1
+                while yb < h and on[yb]:
+                    yb += 1
+                if yb - ya <= LINE_H_1080 * src_h / 1080.0 * 1.3:
+                    on[y:y1] = True
+            y = y1
+        y += 1
     out, y = [], 0
     top = int(h * 0.20)                 # por encima: marcador y pastilla «Sin delay», nunca líneas
     while y < h:
@@ -343,6 +365,189 @@ def locate(seq, t0, cl, H, known=(), fps=SEQ_FPS, after_t=None):
     return found, seq[src_i]
 
 
+# ---------------------------------------------------------------- a quién mataste (retrato del agente)
+# En el killfeed, a la derecha de cada línea sale el retrato del agente al que mataste: el
+# «killfeedPortrait» de Riot (valorant-api.com), en espejo y del alto de la línea. Se descarga una vez
+# y se guarda; si no se puede descargar, la comprobación simplemente no se hace.
+_PORTRAITS: dict | None = None
+
+
+def _norm_agent(n: str) -> str:
+    return "".join(ch for ch in str(n).lower() if ch.isalnum())
+
+
+def portraits() -> dict:
+    """{agente normalizado: imagen RGBA en espejo} (vacío si no hay forma de tenerlas)."""
+    global _PORTRAITS
+    if _PORTRAITS is not None:
+        return _PORTRAITS
+    _PORTRAITS = {}
+    try:
+        import json
+        import urllib.request
+        from PIL import Image
+        d = os.path.join(core.data_dir(), "agentes")
+        os.makedirs(d, exist_ok=True)
+        idx = os.path.join(d, "agentes.json")
+
+        def get(url, path):
+            req = urllib.request.Request(url, headers={"User-Agent": "VortexsClips/1.0"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = r.read()
+            with open(path, "wb") as f:
+                f.write(data)
+
+        def load_idx():
+            with open(idx, encoding="utf-8") as f:
+                return {_norm_agent(a["displayName"]): a.get("killfeedPortrait")
+                        for a in json.load(f)["data"] if a.get("killfeedPortrait")}
+        try:
+            items = load_idx()
+        except Exception:
+            items = {}
+        # agentes nuevos: la lista se refresca como mucho una vez al día
+        import time
+        if not items or time.time() - os.path.getmtime(idx) > 86400:
+            try:
+                get("https://valorant-api.com/v1/agents?isPlayableCharacter=true", idx + ".tmp")
+                os.replace(idx + ".tmp", idx)
+                items = load_idx()
+            except Exception:
+                pass
+        for n, url in items.items():
+            p = os.path.join(d, n + ".png")
+            try:
+                if not os.path.isfile(p):
+                    get(url, p + ".tmp")
+                    os.replace(p + ".tmp", p)
+                _PORTRAITS[n] = Image.open(p).convert("RGBA").transpose(Image.FLIP_LEFT_RIGHT)
+            except Exception:
+                continue
+    except Exception:
+        _PORTRAITS = {}
+    return _PORTRAITS
+
+
+_PCACHE: dict = {}
+
+
+def agent_scores(img, box, agents) -> dict:
+    """Parecido (0..1) del retrato de la derecha de la línea `box` con cada uno de esos agentes."""
+    import numpy as np
+    from PIL import Image
+    P = portraits()
+    x0b, y0b, x1b, y1b = box[:4]
+    c = img[y0b:y1b, max(0, x1b - 3 * (y1b - y0b)):x1b].astype(np.float32)
+    h, W = c.shape[:2]
+    out = {}
+    if h < 12:
+        return out
+    for ag in agents:
+        n = _norm_agent(ag)
+        im = P.get(n)
+        if im is None:
+            continue
+        best = -1.0
+        for sc in (0.94, 1.0, 1.06, 1.12, 1.18):
+            hh = int(round(h * sc))
+            key = (n, hh)
+            a = _PCACHE.get(key)
+            if a is None:
+                a = _PCACHE[key] = np.asarray(im.resize((2 * hh, hh), Image.LANCZOS)).astype(np.float32)
+            ww = a.shape[1]
+            for e in range(-16, 13, 2):
+                x0 = W + e - ww
+                for y0 in range(min(-2, -(hh - h) - 2), 3):
+                    xa, xb = max(0, x0), min(W, x0 + ww)
+                    ya, yb = max(0, y0), min(h, y0 + hh)
+                    if xb - xa < h or yb - ya < h * 0.7:
+                        continue
+                    t = a[ya - y0:yb - y0, xa - x0:xb - x0]
+                    m = t[..., 3] > 200
+                    if m.sum() < 150:
+                        continue
+                    A = c[ya:yb, xa:xb][m]
+                    B = t[..., :3][m]
+                    A = A - A.mean(0)
+                    B = B - B.mean(0)
+                    v = float((A * B).sum() / np.sqrt((A * A).sum() * (B * B).sum() + 1e-6))
+                    if v > best:
+                        best = v
+        out[ag] = best
+    return out
+
+
+def victim_check(img, box, want, enemies) -> tuple[str, float, str]:
+    """
+    ¿La línea es de tu kill a `want` (agente)? Devuelve (veredicto, parecido con want, agente que más se
+    parece). veredicto: "ok" (es él), "otro" (claramente es otro enemigo), "?" (no se puede saber).
+    """
+    if not want or not enemies or not portraits():
+        return "?", 0.0, ""
+    sc = agent_scores(img, box, set(enemies) | {want})
+    if _norm_agent(want) not in {_norm_agent(k) for k in sc}:
+        return "?", 0.0, ""
+    w = sc.get(want, -1.0)
+    best = max(sc, key=sc.get)
+    if _norm_agent(best) == _norm_agent(want) or w >= 0.5:
+        return ("ok" if w >= 0.45 else "?"), w, best
+    if sc[best] >= 0.5 and sc[best] - w >= 0.15:
+        return "otro", w, best
+    return "?", w, best
+
+
+def _check_victims(found, src, seq, t0, cl, H, known, last_in, g, victim_of, enemies, placed, log):
+    """
+    Revisa las líneas encontradas antes de ponerlas:
+    1) con varias kills seguidas, cada línea va con la kill cuyo agente sale en su retrato;
+    2) si el retrato es claramente de OTRO enemigo, se busca otra vez sin esa línea (y si tampoco, no se pone);
+    3) nunca la misma línea dos veces en la ronda (salvo que sea el mismo enemigo, p. ej. revivido).
+    """
+    import itertools
+    if not found:
+        return [], src
+    want = lambda tv: (victim_of.get((g, round(tv, 3))) or ("", ""))
+    # 1) reparto por retrato
+    if len(found) > 1 and enemies:
+        boxes = [f[1] for f in found]
+        kills = [f[0] for f in found]
+        S = [[agent_scores(src, b, [want(k[0])[1]]).get(want(k[0])[1], 0.0) if want(k[0])[1] else 0.0
+              for k in kills] for b in boxes]
+        best = max(itertools.permutations(range(len(kills))),
+                   key=lambda p: sum(S[i][p[i]] for i in range(len(boxes))))
+        if list(best) != list(range(len(kills))):
+            found = [(kills[best[i]], boxes[i], found[i][2]) for i in range(len(boxes))]
+    def problem(s_, b_, vic, ag):
+        """Por qué no vale esa línea para esta kill (o None si vale)."""
+        v, _w, other = victim_check(s_, b_, ag, enemies)
+        if v == "otro":
+            return f"el retrato es de {other}, no de {ag}"
+        for (ps, pb, pv) in placed:
+            if pv and vic and pv == vic:        # el mismo enemigo otra vez (revivido): puede repetirse
+                continue
+            if same_line(ps, pb[1], pb[3], s_, b_[1], b_[3]):
+                return "es la misma línea que la de una kill anterior de la ronda"
+        return None
+
+    out = []
+    for (tv, tout), box, appear in found:
+        vic, ag = want(tv)
+        cur = (src, box, appear)
+        why = problem(src, box, vic, ag)
+        if why and len(cl) == 1:
+            # se busca otra vez sin contar esa línea
+            f2, s2 = locate(seq, t0, cl, H, list(known) + [(src, box[1], box[3])], SEQ_FPS, last_in)
+            if f2 and problem(s2, f2[0][1], vic, ag) is None:
+                log.append(f"{core.fmt_ts(tv)}  la primera línea que salía no valía ({why}): se usa otra")
+                cur, why = (s2, f2[0][1], f2[0][2]), None
+        if why:
+            log.append(f"{core.fmt_ts(tv)}  no se pone la línea: {why}")
+            continue
+        # (con la imagen de la que se recorta: si vino de la segunda búsqueda, es otra)
+        out.append(((tv, tout), cur[1], cur[2], cur[0]))
+    return out, src
+
+
 LAST_STATS: dict = {}
 
 
@@ -365,6 +570,8 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
         t += d
     # tus kills, en orden, con su momento en el VOD y en el vídeo
     by_group: dict = {}
+    victim_of: dict = {}             # (grupo, segundo) -> (puuid, agente) de a quién mataste
+    enemy_agents: dict = {}          # grupo -> agentes del equipo rival
     seen = set()
     for c, t0 in spans:
         if c.base is None:
@@ -379,6 +586,9 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 continue
             seen.add(key)
             by_group.setdefault(c.group, []).append((tv, t0 + (tv - c.vod_start)))
+            ags = getattr(m, "agents", None) or {}
+            victim_of[(c.group, round(tv, 3))] = (k.victim, ags.get(k.victim, ""))
+            enemy_agents[c.group] = [ags[p] for p in m.enemies if p in ags]
     # kills tuyas de esas rondas que no caen dentro de ningún corte (no pueden salir)
     fuera = []
     rounds_done = set()
@@ -440,6 +650,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             clusters.append(cur)
         slot = 0
         known = []                      # tus líneas de esta ronda ya colocadas
+        placed = []                     # (fotograma, caja, a quién) de esas líneas
         last_in = None                  # cuándo entró la última de ellas
         for cl in clusters:
             # se mira el directo 10 veces por segundo alrededor de la(s) kill(s): la línea sale en el
@@ -452,6 +663,8 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 missing += [(tv_, g[1] + 1, None) for tv_, _ in cl]
                 continue
             found, src = locate(seq, t0, cl, H, known, SEQ_FPS, last_in)
+            found, src = _check_victims(found, src, seq, t0, cl, H, known, last_in, g,
+                                        victim_of, enemy_agents.get(g) or [], placed, log)
             got = {round(x[0][0], 3) for x in found}
             for tv_, _ in cl:
                 if round(tv_, 3) not in got and len(found) < len(cl):
@@ -460,8 +673,9 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: NO se ve tu línea en el killfeed "
                            f"({len(cl)} kill(s))")
                 continue
-            for (tv, tout), box, appear in found:
+            for (tv, tout), box, appear, src in found:
                 known.append((src, box[1], box[3]))
+                placed.append((src, box, (victim_of.get((g, round(tv, 3))) or ("", ""))[0]))
                 last_in = appear if last_in is None else max(last_in, appear)
                 png = os.path.join(folder, f"kf_{len(out):03d}.png")
                 ww, hh = save_rgba(src, box, png)
@@ -472,7 +686,9 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 out.append({"png": png, "w": w2, "h": h2, "x": 1080 - w2,
                             "y": int(y_top + slot * (OUT_LINE_H + GAP)),
                             "start": start, "end": gend[g]})
-                log.append(f"{core.fmt_ts(tv)}  ronda {g[1] + 1}: línea {slot + 1}, entra a {core.fmt_ts(appear)}")
+                who = (victim_of.get((g, round(tv, 3))) or ("", ""))[1]
+                log.append(f"{core.fmt_ts(tv)}  ronda {g[1] + 1}: línea {slot + 1}"
+                           f"{f' ({who})' if who else ''}, entra a {core.fmt_ts(appear)}")
                 slot += 1
     global LAST_STATS
     LAST_STATS = {"total": total, "ok": len(out), "missing": missing, "pics": pics if missing else None}

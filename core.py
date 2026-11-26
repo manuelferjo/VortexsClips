@@ -68,6 +68,7 @@ class Match:
     kills: list[Kill] = field(default_factory=list)
     allies: set = field(default_factory=set)     # puuids de tu equipo (contigo)
     enemies: set = field(default_factory=set)
+    agents: dict = field(default_factory=dict)   # puuid -> agente (para reconocer a quién mataste)
 
     def first_my_kill_ms(self) -> int | None:
         mine = [k.t_match for k in self.kills if k.killer == self.my_puuid]
@@ -384,6 +385,12 @@ def parse_match(raw: dict, riot_id: str) -> Match:
             continue
         (allies if str(t_).lower() == str(my_team).lower() else enemies).add(p["puuid"])
     agent = (me.get("agent") or {}).get("name") if isinstance(me.get("agent"), dict) else me.get("character", "")
+    agents = {}
+    for p in players:
+        ag = p.get("agent")
+        ag = ag.get("name") if isinstance(ag, dict) else p.get("character")
+        if p.get("puuid") and ag:
+            agents[p["puuid"]] = str(ag)
 
     map_name = md.get("map")
     if isinstance(map_name, dict):
@@ -513,6 +520,7 @@ def parse_match(raw: dict, riot_id: str) -> Match:
         kills=kills,
         allies=allies,
         enemies=enemies,
+        agents=agents,
     )
     compute_clutches(m_)
     return m_
