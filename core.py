@@ -140,6 +140,7 @@ class ApiError(Exception):
     def __init__(self, msg, code=None):
         super().__init__(msg)
         self.code = code          # None = sin conexión
+        self.retry_after = None   # segundos que pide esperar la API (límite de peticiones)
 
 
 # Las respuestas de la API se guardan en disco: una partida no cambia nunca, así que se lee
@@ -189,14 +190,19 @@ def _get(path: str, api_key: str, params: dict | None = None, cache: str = "fall
             return hit
     import time as _time
     data, err = None, None
-    for attempt in range(3):
+    for attempt in range(6):
         try:
             data, err = _get_net(url, api_key), None
             break
         except ApiError as e:
             err = e
-            # límite de peticiones, fallo del servidor o sin conexión: esperar y reintentar
-            if (e.code == 429 or e.code is None or e.code >= 500) and attempt < 2:
+            if e.code == 429 and attempt < 5:
+                # límite de peticiones por minuto: esperar lo que diga la API (o hasta un minuto) y seguir
+                wait = e.retry_after if e.retry_after else 20 * (attempt + 1)
+                _api_wait(min(75.0, max(2.0, wait + 1)))
+                continue
+            # fallo del servidor o sin conexión: esperar un poco y reintentar
+            if (e.code is None or e.code >= 500) and attempt < 2:
                 _time.sleep(3 * (attempt + 1))
                 continue
             break
@@ -212,7 +218,53 @@ def _get(path: str, api_key: str, params: dict | None = None, cache: str = "fall
     return data
 
 
+# ---- ritmo de peticiones a la API (HenrikDev limita cuántas por minuto según la clave)
+import threading as _threading
+
+_API_LOCK = _threading.Lock()
+_API_NEXT = [0.0]          # no pedir antes de este momento
+API_WAIT_CB = None         # la ventana pone aquí una función para enseñar «esperando…»
+
+
+def _api_wait(seconds: float) -> None:
+    import time as _time
+    end = _time.time() + seconds
+    while True:
+        left = end - _time.time()
+        if left <= 0:
+            return
+        if API_WAIT_CB:
+            try:
+                API_WAIT_CB(left)
+            except Exception:
+                pass
+        _time.sleep(min(1.0, left))
+
+
+def _pace(headers) -> None:
+    """Con las cabeceras de la respuesta: si quedan pocas peticiones en este minuto, la siguiente
+    espera a que se reinicie el cupo (así no llega a saltar el error de «demasiadas peticiones»)."""
+    import time as _time
+    try:
+        left = int(headers.get("x-ratelimit-remaining") or headers.get("X-RateLimit-Remaining") or -1)
+        reset = float(headers.get("x-ratelimit-reset") or headers.get("X-RateLimit-Reset") or 0)
+    except (TypeError, ValueError):
+        return
+    if reset > 10**9:            # a veces viene como hora (epoch) en vez de segundos
+        reset = max(0.0, reset - _time.time())
+    with _API_LOCK:
+        if 0 <= left <= 1 and reset > 0:
+            _API_NEXT[0] = max(_API_NEXT[0], _time.time() + min(75.0, reset + 1))
+        else:
+            _API_NEXT[0] = max(_API_NEXT[0], _time.time() + 0.6)
+
+
 def _get_net(url: str, api_key: str) -> dict:
+    import time as _time
+    with _API_LOCK:
+        wait = _API_NEXT[0] - _time.time()
+    if wait > 0:
+        _api_wait(wait)
     req = urllib.request.Request(url, headers={
         "Authorization": api_key.strip(),
         "User-Agent": "VortexsClips/1.0",
@@ -220,6 +272,7 @@ def _get_net(url: str, api_key: str) -> dict:
     })
     try:
         with urllib.request.urlopen(req, timeout=40) as r:
+            _pace(r.headers)
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = ""
@@ -227,13 +280,26 @@ def _get_net(url: str, api_key: str) -> dict:
             body = e.read().decode("utf-8", "ignore")
         except Exception:
             pass
+        retry = None
+        if e.code == 429:
+            h = e.headers or {}
+            for k in ("Retry-After", "retry-after", "x-ratelimit-reset", "X-RateLimit-Reset"):
+                try:
+                    v = float(h.get(k))
+                except (TypeError, ValueError):
+                    continue
+                import time as _time
+                retry = max(0.0, v - _time.time()) if v > 10**9 else v
+                break
         msg = {
             401: "La clave de la API no es válida.",
             403: "La API ha rechazado la petición (¿clave correcta?).",
             404: "No se ha encontrado la cuenta o la partida.",
             429: "Demasiadas peticiones seguidas. Espera un minuto y vuelve a probar.",
         }.get(e.code, f"Error {e.code} de la API.")
-        raise ApiError(f"{msg}\n{body[:300]}", e.code) from None
+        err = ApiError(f"{msg}\n{body[:300]}", e.code)
+        err.retry_after = retry
+        raise err from None
     except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
         raise ApiError(f"No se pudo conectar con la API: {getattr(e, 'reason', e)}", None) from None
 

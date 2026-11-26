@@ -1,2 +1,2 @@
-VERSION = "1.24.3"
+VERSION = "1.24.4"
 REPO = "manuelferjo/VortexsClips"

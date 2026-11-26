@@ -139,6 +139,8 @@ class App(tk.Tk):
         self.after(1500, _relay_loop)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(1500, lambda: self.check_update(silent=True))
+        core.API_WAIT_CB = lambda left: self.after(0, lambda: self.status(
+            f"Esperando a la API de Riot: límite de peticiones por minuto ({left:.0f} s)…"))
         # con el programa abierto también: mira cada 10 min si hay versión nueva y, si está trabajando,
         # espera a que termine para avisar (sin tener que cerrarlo y volver a abrirlo)
         self._upd_declined = set()
