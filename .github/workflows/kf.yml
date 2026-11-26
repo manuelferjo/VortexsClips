@@ -19,7 +19,18 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           python -m pip install -q yt-dlp numpy pillow
       - name: Prueba
-        run: FPS=10 bash tools/trozo.sh 2931490150 11628-11639 1622-1634
+        run: |
+          mkdir -p out/agents
+          curl -s "https://valorant-api.com/v1/agents?isPlayableCharacter=true" -o out/agents/agents.json
+          python - <<'PY'
+          import json, urllib.request
+          d = json.load(open("out/agents/agents.json"))["data"]
+          for a in d:
+              for k in ("killfeedPortrait", "displayIconSmall"):
+                  u = a.get(k)
+                  if u:
+                      urllib.request.urlretrieve(u, f"out/agents/{a['displayName']}_{k}.png")
+          PY
       - name: Guardar
         if: always()
         run: |
