@@ -255,7 +255,10 @@ def _name_mask(img, y0, y1):
     band = img[max(0, y0 + 2):max(0, y1 - 2)]
     if band.shape[0] < 6:
         return None
-    _t, red, _y = _masks(band)
+    # rojo tolerante: cuando la línea se va apagando antes de caducar, su rojo se vuelve rosado
+    bi = band.astype(np.int16)
+    rr_, gg_, bb_ = bi[..., 0], bi[..., 1], bi[..., 2]
+    red = (rr_ > 140) & (rr_ > gg_ + 45) & (rr_ > bb_ + 35) & (np.abs(gg_ - bb_) < 40)  # rosado sí, naranja no
     xa, xe = int(w * 0.30), int(w * 0.978)
     # la parte roja de la propia línea es el último tramo rojo largo antes del retrato (a la derecha);
     # un fondo rojo o naranja a la izquierda de la línea o el distintivo de racha no cuentan
@@ -278,8 +281,9 @@ def _name_mask(img, y0, y1):
     # el tramo que llega hasta el retrato (en tus líneas, el nombre de a quién mataste); si ninguno
     # llega (línea de otro: su rojo va a la izquierda), el primero
     lhp = max(8, y1 - y0)
-    near = [r for r in runs if r[1] >= (xe - xa) - 3 * lhp]
-    x0 = xa + (near[0][0] if near else runs[0][0])
+    # el tramo largo más a la derecha (los trocitos junto al retrato, con el degradado rosado, no)
+    big = [r for r in runs if r[1] - r[0] >= lhp and r[0] < (xe - xa) - 2 * lhp]
+    x0 = xa + (big[-1][0] if big else runs[0][0])
     # umbral relativo: cuando la línea se desvanece (va a caducar) o hay un destello, todo cambia de
     # brillo a la vez, pero el texto sigue siendo lo más claro de la parte roja
     mn = band.min(axis=2).astype(np.int16)
