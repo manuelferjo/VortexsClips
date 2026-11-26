@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           python -m pip install -q yt-dlp numpy pillow
       - name: Prueba
-        run: bash tools/trozo.sh 2930625736 12262-12271 12275-12283
+        run: python tools/proxy.py 2939461539 1200 600 && python tools/proxy.py 2935116647 4400 600 && python tools/proxy.py 2930625736 12200 600
       - name: Guardar
         if: always()
         run: |
