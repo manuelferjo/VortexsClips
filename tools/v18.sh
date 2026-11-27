@@ -1,9 +1,18 @@
 set -x
-mkdir -p out/r4
-get(){ VOD=$1; a=$2; b=$3
-  yt-dlp -q -f "b/bv*" -S "res,fps" --download-sections "*$a-$b" -o "t_$a.mp4" "https://www.twitch.tv/videos/$VOD" || true
-  ffmpeg -loglevel error -i "t_$a.mp4" -vf "fps=10,crop=iw*0.31:ih*0.27:iw*0.685:ih*0.035" "out/r4/s${a}_%03d.png" || true
-}
-get 2932490878 8608 8624
-get 2933868132 14698 14724
-get 2933868132 14455 14480
+mkdir -p out
+cd app && python - <<'PY' > ../out/api20.txt 2>&1
+import os, core
+from datetime import datetime, timezone, timedelta
+key=os.environ.get("HDEV_KEY","").strip()
+print("key", bool(key))
+vs=datetime(2026,11,20,17,29,7,tzinfo=timezone.utc)
+lo,hi=vs-timedelta(hours=1),vs+timedelta(hours=16)
+for rid in ["Vortexs#vrtxs","Sovadin#linup"]:
+    for p in range(1,8):
+        try:
+            ids=core.fetch_stored_ids(rid,key,"eu",page=p)
+        except Exception as e:
+            print(rid,p,"ERR",e); break
+        print(rid,p,len(ids), ids[0][1] if ids else None, ids[-1][1] if ids else None, sum(1 for _,w in ids if lo<=w<=hi))
+        if not ids or min(w for _,w in ids)<lo: break
+PY

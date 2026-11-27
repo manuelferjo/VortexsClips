@@ -19,6 +19,8 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           python -m pip install -q yt-dlp numpy pillow
       - name: Prueba
+        env:
+          HDEV_KEY: ${{ secrets.HDEV_KEY }}
         run: |
           bash tools/v18.sh
           mkdir -p out/agents
