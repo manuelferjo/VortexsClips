@@ -492,6 +492,7 @@ class App(tk.Tk):
         self.v_subhl = tk.BooleanVar(value=cfg.get("sub_highlight", True))
         self.v_subedit = tk.BooleanVar(value=cfg.get("sub_edit", True))
         self.v_singles = tk.BooleanVar(value=cfg.get("singles", True))
+        self.v_extras = tk.BooleanVar(value=cfg.get("extras", True))
         self.v_suboff = tk.StringVar(value=f"{float(cfg.get('sub_offset', 0.0)):.1f}")
         self.v_cutshift = tk.StringVar(value=f"{float(cfg.get('cut_shift', 0.0)):.1f}")
         self.v_kfeed = tk.BooleanVar(value=cfg.get("killfeed_vertical", True))
@@ -675,6 +676,9 @@ class App(tk.Tk):
         ui.Toggle(t_out, text="Killfeed de tus kills en la vertical (recortado del directo, se apila en cada ronda, "
                               "con fade y destello)", variable=self.v_kfeed).grid(
             row=10, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ui.Toggle(t_out, text="Resumen de 60 s de cada partida con todas tus kills y compilación de tus mejores "
+                              "flechas de Sova (en «Resúmenes»)", variable=self.v_extras).grid(
+            row=11, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         # ---- pestaña Automático
         ttk.Label(t_auto, text="Tu canal de Twitch").grid(row=0, column=0, sticky="w")
@@ -1564,7 +1568,7 @@ class App(tk.Tk):
                          "calib_by_vod": {k: v for k, v in self._calib_by_vod.items() if k and v},
                          "out_dir": self.v_outdir.get(),
                          "auto_process": self.v_auto.get(), "auto_sync": self.v_autosync.get(),
-                         "vertical": self.v_vertical.get(), "singles": self.v_singles.get(),
+                         "vertical": self.v_vertical.get(), "singles": self.v_singles.get(), "extras": self.v_extras.get(),
                          "cam": self.cam, "subtitles": self.v_subs.get(), "mode": self.v_mode.get(),
                          "sub_highlight": self.v_subhl.get(), "sub_edit": self.v_subedit.get(),
                          "kill_pre": self.v_kpre.get(), "kill_post": self.v_kpost.get(),
@@ -3750,6 +3754,64 @@ class App(tk.Tk):
         self._mark_stream_folder(d)
         return os.path.join(d, os.path.basename(d) + ".mp4")
 
+    def make_extras(self, vod, clips, folder, enc, cam, kfeed, cb, sub, stop) -> list:
+        """Resumen de 60 s de cada partida (todas tus kills) y compilación de flechas de Sova.
+        Se usan las partidas del vídeo, con su sincronización ya corregida."""
+        dur = (self.vod_info or {}).get("duration") or 0
+        seen, items = set(), []
+        for c in clips:
+            if c.base is not None and c.match.match_id not in seen:
+                seen.add(c.match.match_id)
+                items.append((c.match, c.base))
+        jobs = []
+        for m, b in items:
+            nk = sum(1 for k in m.kills if m.is_mine(k))
+            if nk < 12:
+                continue
+            sc = core.summary_clips(m, b, dur)
+            if sc:
+                name = core._safe(f"Resumen 60s - {m.map_name} {m.score} - {nk} kills - {m.agent}")
+                jobs.append((name, sc))
+        st = self.settings()
+        st.throw_fn = lambda t, v=vod: core.sova_throw_start(v, t)
+        dc = core.dart_comp_clips(items, st, dur)
+        if dc:
+            jobs.append((core._safe(f"Compilación flechas de Sova - {len(dc)} flechas"), dc))
+        if not jobs:
+            return []
+        rdir = os.path.join(folder, "Resúmenes")
+        os.makedirs(rdir, exist_ok=True)
+        made = []
+        keep_stats = dict(getattr(killfeed, "LAST_STATS", {}) or {})
+        try:
+            for i, (name, cl) in enumerate(jobs):
+                if stop():
+                    raise RuntimeError("Cancelado.")
+                sub(f"Resúmenes: {name} ({i + 1} de {len(jobs)})…")
+                try:
+                    core.snap_clips(cl, core._fps_of(vod))
+                except Exception:
+                    pass
+                outp = os.path.join(rdir, name + ".mp4")
+                vout = os.path.join(rdir, name + " (vertical).mp4") if cam else None
+                lines = None
+                if vout and kfeed:
+                    try:
+                        import hashlib
+                        kd = os.path.join(core.data_dir(), "killfeed",
+                                          hashlib.sha1(os.path.abspath(outp).encode("utf-8")).hexdigest()[:12])
+                        lines = killfeed.prepare(vod, cl, cam, kd, cb, stop, log_path=None)
+                    except Exception as e:
+                        if "Cancelado" in str(e):
+                            raise
+                        lines = None
+                core.render(vod, cl, outp, encoder=enc, show_label=False, progress=cb, should_stop=stop,
+                            vout_path=vout, cam=cam, words=None, kf_lines=lines)
+                made += [outp] + ([vout] if vout else [])
+        finally:
+            killfeed.LAST_STATS = keep_stats
+        return made
+
     def render(self, out=None):
         if not self.clips:
             self.compute()
@@ -4004,6 +4066,14 @@ class App(tk.Tk):
                         semana.record(folder, self.vod_start_utc())
                     except Exception:
                         pass
+                if self.v_extras.get():
+                    try:
+                        made += self.make_extras(vod, clips, folder or od_, enc, cam if vertical else None,
+                                                 kfeed and vertical, cb, sub, stop)
+                    except Exception as e:
+                        if "Cancelado" in str(e):
+                            raise
+                        warnings.append(f"Resúmenes: {e}")
                 try:
                     sdate = self.vod_start_utc().strftime("%d-%m-%Y")
                 except Exception:

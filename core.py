@@ -1034,6 +1034,75 @@ def build_clips(matches: list[Match], vod_start_utc: datetime, vod_duration_s: f
     return clips
 
 
+def _segs_merge(ks: list, pre: float, post: float) -> list:
+    segs: list = []
+    for t in ks:
+        a, b = t - pre, t + post
+        if segs and a <= segs[-1][1] + 0.3:
+            segs[-1][1] = max(segs[-1][1], b)
+        else:
+            segs.append([a, b])
+    return segs
+
+
+def summary_clips(m: Match, base: float, vod_duration_s: float, target: float = 60.0) -> list[Clip]:
+    """Resumen de la partida: todas tus kills, cada una con lo justo para verla, en ~`target` segundos.
+    Si no caben ni con los trozos más cortos, se quedan las rondas con más kills (en orden)."""
+    byr: dict = {}
+    for k in m.kills:
+        if m.is_mine(k):
+            byr.setdefault(k.round, []).append(kill_vod_time(m, base, k.t_match))
+    rounds = {r.index: r for r in m.rounds}
+    byr = {ri: sorted(ts) for ri, ts in byr.items() if ri in rounds}
+    if not byr:
+        return []
+    for pre, post in ((2.0, 0.9), (1.6, 0.7), (1.3, 0.55)):
+        segs = {ri: _segs_merge(ts, pre, post) for ri, ts in byr.items()}
+        tot = sum(b - a for ss in segs.values() for a, b in ss)
+        if tot <= target:
+            break
+    keep = sorted(segs)
+    while len(keep) > 1 and sum(b - a for ri in keep for a, b in segs[ri]) > target:
+        # fuera la ronda con menos kills (la más tardía si empatan)
+        worst = min(keep, key=lambda ri: (len(byr[ri]), -ri))
+        keep.remove(worst)
+    out = []
+    for ri in sorted(keep):
+        ss = [(max(0.0, a), min(vod_duration_s or 1e12, b)) for a, b in segs[ri]]
+        ss = [(a, b) for a, b in ss if b - a >= 0.5]
+        for i, (a, b) in enumerate(ss):
+            out.append(Clip(m, rounds[ri], a, b, i, len(ss), base))
+    return out
+
+
+def dart_comp_clips(items: list, settings: "CutSettings", vod_duration_s: float,
+                    target: float = 60.0) -> list[Clip]:
+    """Compilación de flechas de choque de Sova (de todas las partidas): primero las mejores (varias
+    kills de una flecha y las que cruzan más mapa, que se ven desde que la tiras), hasta ~`target` s,
+    y luego en el orden en que pasaron. items: [(partida, base)]"""
+    cand = []
+    for m, base in items:
+        for r in m.rounds:
+            nd = len([k for k in m.kills if k.round == r.index and m.is_mine(k) and is_shock_dart(m, k)])
+            if not nd:
+                continue
+            for a, b in _kill_segments(m, r, base, settings, vod_duration_s, synced=True, only_darts=True):
+                score = nd * 10 + (b - a)
+                cand.append((score, m, r, a, b, base))
+    if len(cand) < 2:
+        return []
+    cand.sort(key=lambda x: -x[0])
+    pick, tot = [], 0.0
+    for c in cand:
+        d = c[4] - c[3]
+        if pick and tot + d > target:
+            continue
+        pick.append(c)
+        tot += d
+    pick.sort(key=lambda x: x[3])
+    return [Clip(m, r, a, b, 0, 1, base) for _s, m, r, a, b, base in pick]
+
+
 def match_in_vod(m: Match, vod_start_utc: datetime, vod_duration_s: float,
                  settings: CutSettings, calib: dict | None = None, delay_fn=None) -> bool:
     calib = calib or {}
