@@ -3763,6 +3763,59 @@ class App(tk.Tk):
                                              + ", ".join(f"{d_:+.2f} s" for d_ in shifts.values()) + "\n")
                             except OSError:
                                 pass
+                        # partidas donde casi no salen tus líneas: probar el «eco» de ±6,75 s de la
+                        # sincronización y quedarse con lo que mejor encaje con el killfeed
+                        bad = killfeed.badly_synced(killfeed.LAST_STATS)
+                        if bad:
+                            pm0 = dict((killfeed.LAST_STATS or {}).get("per_match") or {})
+                            best = {mid: (pm0.get(mid, [0, 0])[1], 0.0) for mid in bad}
+                            lines_best = kf_lines
+
+                            def move(mids, d_):
+                                for c_ in clips:
+                                    if c_.match.match_id in mids:
+                                        c_.vod_start += d_
+                                        c_.vod_end += d_
+                                        if c_.base is not None:
+                                            c_.base += d_
+                            cur = 0.0
+                            for d_ in (-6.75, 6.75):
+                                sub(f"Revisando la sincronización de {len(bad)} partida(s) con el killfeed…")
+                                move(bad, d_ - cur)
+                                cur = d_
+                                kl_ = killfeed.prepare(vod, clips, cam, kdir, cb, stop, log_path=None)
+                                pm_ = (killfeed.LAST_STATS or {}).get("per_match") or {}
+                                for mid in bad:
+                                    if pm_.get(mid, [0, 0])[1] > best[mid][0]:
+                                        best[mid] = (pm_[mid][1], d_)
+                            # cada partida, a su mejor sitio
+                            move(bad, -cur)
+                            fixed = {mid: d_ for mid, (_n, d_) in best.items() if d_}
+                            for mid, d_ in fixed.items():
+                                move({mid}, d_)
+                            if fixed:
+                                kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop, log_path=kf_log)
+                                try:
+                                    with open(kf_log, "a", encoding="utf-8") as f_:
+                                        f_.write("\nSincronización corregida con el killfeed: "
+                                                 + ", ".join(f"{d_:+.2f} s" for d_ in fixed.values()) + "\n")
+                                except OSError:
+                                    pass
+                                if words is not None:
+                                    try:
+                                        miss = subtitles.missing_ranges(vod, clips)
+                                        if miss:
+                                            subtitles.transcribe_ranges(vod, miss, cb, stop)
+                                        w2 = subtitles.words_for_clips(vod, clips)
+                                        if w2 is not None:
+                                            words = self.prepare_words(w2)
+                                    except Exception as e:
+                                        if "Cancelado" in str(e):
+                                            raise
+                            else:
+                                kf_lines = lines_best
+                                # (el registro y las fotos, los de la primera pasada)
+                                kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop, log_path=kf_log)
                     except Exception as e:
                         if "Cancelado" in str(e):
                             raise

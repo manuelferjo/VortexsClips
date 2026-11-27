@@ -803,6 +803,16 @@ def match_shifts(stats: dict | None) -> dict:
     return out
 
 
+def badly_synced(stats: dict | None) -> list:
+    """Partidas en las que casi no aparecen tus líneas donde dicen los datos: la sincronización pudo
+    quedarse en el «eco» del cartel o del marcador (~6,75 s de diferencia)."""
+    out = []
+    for mid, (tot, ok) in ((stats or {}).get("per_match") or {}).items():
+        if tot >= 2 and ok * 2 < tot:
+            out.append(mid)
+    return out
+
+
 def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             log_path: str | None = None) -> list[dict]:
     """
@@ -868,6 +878,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
     y_top = core.cam_bottom_y(cam, W, H) + 95 if cam else 700
     out, log = [], list(pre_log) + fuera
     drift: dict = {}                 # partida -> [cuánto después de la kill de los datos entra su línea]
+    placed_n: dict = {}              # (partida, ronda) -> líneas puestas
     total = sum(len(v) for v in by_group.values())
     missing = []                     # [(segundo del VOD, ronda, foto)]
     pics = os.path.join(os.path.dirname(log_path), "killfeed sin línea") if log_path else None
@@ -932,6 +943,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 continue
             for (tv, tout), box, appear, src in found:
                 drift.setdefault(g[0], []).append(appear - tv)
+                placed_n[g] = placed_n.get(g, 0) + 1
                 known.append((src, box[1], box[3]))
                 placed.append((src, box, (victim_of.get((g, round(tv, 3))) or ("", ""))[0]))
                 last_in = appear if last_in is None else max(last_in, appear)
@@ -950,8 +962,14 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                            f"{f' ({who})' if who else ''}, entra a {core.fmt_ts(appear)}")
                 slot += 1
     global LAST_STATS
+    per_match: dict = {}
+    for g_, v_ in by_group.items():
+        pm = per_match.setdefault(g_[0], [0, 0])
+        pm[0] += len(v_)
+    for g_, n_ in placed_n.items():
+        per_match.setdefault(g_[0], [0, 0])[1] += n_
     LAST_STATS = {"total": total, "ok": len(out), "missing": missing, "pics": pics if missing else None,
-                  "drift": drift}
+                  "drift": drift, "per_match": per_match}
     for p in [os.path.join(folder, "registro_killfeed.txt")] + ([log_path] if log_path else []):
         try:
             with open(p, "w", encoding="utf-8") as f:
