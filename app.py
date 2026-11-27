@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import threading
 import tkinter as tk
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from tkinter import filedialog, messagebox, ttk
 
 import core
@@ -1537,7 +1537,8 @@ class App(tk.Tk):
                 lo, hi = target - timedelta(hours=1), target + timedelta(hours=16)
             # (con varias cuentas, una puede tener partidas viejas y otra no llegar: se mira si hay
             # alguna partida de ESE día; si no, al historial guardado)
-            if target and not any(lo <= m.started_at <= hi for m in out):
+            if target and (not any(lo <= m.started_at <= hi for m in out)
+                           or datetime.now(timezone.utc) - target > timedelta(hours=30)):
                 have = {m.match_id for m in out}
                 for rid in core.riot_ids(riot):
                     for spage in range(1, 15):
@@ -2233,7 +2234,10 @@ class App(tk.Tk):
             if ms and min(m.started_at for m in ms) < vs:
                 break
         lo, hi = vs - timedelta(hours=1), vs + timedelta(hours=16)
-        if not any(lo <= m.started_at <= hi for m in found):
+        # (con varias cuentas, una puede salir en el historial reciente y otra no: un directo de hace más
+        # de un día se completa siempre con el historial guardado de cada cuenta)
+        if not any(lo <= m.started_at <= hi for m in found) or \
+                datetime.now(timezone.utc) - vs > timedelta(hours=30):
             have = {m.match_id for m in found}
             for rid in core.riot_ids(riot):
                 for spage in range(1, 15):
