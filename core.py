@@ -14,6 +14,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import urllib.request
@@ -2089,10 +2090,10 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
         if not os.path.isdir(p_):
             continue
         for fn in os.listdir(p_):
-            if not fn.lower().endswith((".mp4", ".txt", ".srt")):
+            if not fn.lower().endswith((".mp4", ".txt", ".srt", ".png")):
                 continue
             stem = os.path.splitext(fn)[0]
-            for suf in (" (vertical)",):
+            for suf in (" (vertical)", " (portada)"):
                 if stem.endswith(suf):
                     stem = stem[:-len(suf)]
             if sd == "TOP" or os.path.normcase(os.path.join(p_, stem)) not in keep:
@@ -2135,6 +2136,10 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
                 os.replace(v + ".tmp.mp4", v)
             outs.append(v)
             best = v
+            # portada vertical (imagen aparte para subirla como portada; no sale en el vídeo)
+            cov = os.path.join(sub, name + " (portada).png")
+            if not (same and os.path.isfile(cov)):
+                make_cover(v, _last_kill_offset(c, clips, d), cov, *cover_texts(c))
             if srt and words:
                 # para CapCut: la vertical va sin subtítulos y al lado su .srt para editarlos allí
                 try:
@@ -2187,6 +2192,85 @@ def export_singles(src: str, clips: list[Clip], folder: str, *, vertical_cam=Non
     if progress:
         progress(1.0, "Clips sueltos listos")
     return outs
+
+
+def _cover_font(size: int):
+    from PIL import ImageFont
+    here = os.path.dirname(os.path.abspath(__file__))
+    for base in (getattr(sys, "_MEIPASS", None), here):
+        if base and os.path.isfile(os.path.join(base, "fonts", "Outfit-Bold.ttf")):
+            return ImageFont.truetype(os.path.join(base, "fonts", "Outfit-Bold.ttf"), size)
+    f = _font_for_drawtext()
+    return ImageFont.truetype(f, size) if f else ImageFont.load_default()
+
+
+def cover_texts(c: "Clip") -> tuple[str, str]:
+    """(«4K», «CON SOVA EN LOTUS») para la portada."""
+    kind = c.kind.replace("Shock dart", "FLECHA DE SOVA")
+    m = c.match
+    sub = " ".join(x for x in ((f"con {m.agent}" if m.agent and "SOVA" not in kind else ""),
+                               (f"en {m.map_name}" if m.map_name else "")) if x)
+    return kind.upper(), sub.upper()
+
+
+def make_cover(video: str, at: float, out_png: str, title: str, sub: str) -> str | None:
+    """Portada vertical (imagen aparte, no va en el vídeo): un fotograma de la jugada con el texto en el
+    centro, en los colores del canal (amarillo y morado claro)."""
+    try:
+        from PIL import Image, ImageDraw, ImageEnhance
+        ffmpeg = find_tool("ffmpeg")
+        tmp = out_png + ".frame.png"
+        r = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0.0, at):.3f}",
+                            "-i", video, "-frames:v", "1", "-vf", "scale=1080:1920", tmp],
+                           capture_output=True, text=True, **_no_window())
+        if r.returncode != 0 or not os.path.isfile(tmp):
+            return None
+        im = Image.open(tmp).convert("RGB")
+        os.remove(tmp)
+        im = ImageEnhance.Contrast(ImageEnhance.Color(im).enhance(1.25)).enhance(1.08)
+        d = ImageDraw.Draw(im, "RGBA")
+        Y, P, K = (255, 210, 31), (196, 160, 255), (12, 10, 16)
+        cy = 1000                                   # el bloque de texto, en el centro de la pantalla
+        # banda oscura suave detrás del texto
+        for i in range(260):
+            a = int(170 * min(1.0, (260 - i) / 120))
+            d.line([(0, cy - i), (1080, cy - i)], fill=(10, 8, 14, a))
+            d.line([(0, cy + 40 + i), (1080, cy + 40 + i)], fill=(10, 8, 14, a))
+        d.rectangle((0, cy, 1080, cy + 40), fill=(10, 8, 14, 170))
+        ft = _cover_font(150 if len(title) <= 8 else 104)
+        tw = d.textlength(title, font=ft)
+        d.rounded_rectangle((540 - tw / 2 - 50, cy - 175, 540 + tw / 2 + 50, cy - 15), radius=30, fill=Y)
+        d.text((540, cy - 95), title, font=ft, fill=K, anchor="mm")
+        if sub:
+            fs = _cover_font(84)
+            while d.textlength(sub, font=fs) > 980 and fs.size > 50:
+                fs = _cover_font(fs.size - 4)
+            d.text((540, cy + 75), sub, font=fs, fill=(255, 255, 255), anchor="mm",
+                   stroke_width=8, stroke_fill=K)
+        d.rounded_rectangle((440, cy + 150, 640, cy + 160), radius=5, fill=P)
+        im.save(out_png)
+        return out_png
+    except Exception:
+        return None
+
+
+def _last_kill_offset(c: "Clip", clips: list, d: float) -> float:
+    """Segundo, dentro del clip suelto de la ronda, justo después de tu última kill (para la portada)."""
+    try:
+        m = c.match
+        ts = [kill_vod_time(m, c.base, k.t_match) for k in m.kills if k.round == c.round.index and m.is_mine(k)]
+        parts = sorted((x for x in clips if x.group == c.group), key=lambda x: x.vod_start)
+        acc, best = 0.0, None
+        for p_ in parts:
+            for tv in ts:
+                if p_.vod_start <= tv <= p_.vod_end:
+                    best = acc + (tv - p_.vod_start) + 0.35
+            acc += p_.vod_end - p_.vod_start
+        if best is not None:
+            return max(0.0, min(d - 0.15, best))
+    except Exception:
+        pass
+    return d * 0.6
 
 
 def grab_crop(vod: str, at: float, out_png: str, crop: str, width: int = 300) -> str:
