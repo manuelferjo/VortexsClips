@@ -144,6 +144,7 @@ class Player(ttk.Frame):
         for i, r in enumerate(rows[:3]):
             for part in r:
                 part.pack(in_=self._bar_rows[i], side="left", pady=(0 if i == 0 else 4, 0))
+                part.lift(self._bar_rows[i])      # (se crearon antes que las filas: si no, quedan tapados)
 
     def set_size(self, w, h):
         w, h = int(w), int(h)
