@@ -454,6 +454,7 @@ def save_rgba(after, box, path: str) -> tuple[int, int]:
 # ---------------------------------------------------------------- preparar las líneas de un vídeo
 OUT_LINE_H = 42          # alto de cada línea en la vertical (1080x1920): como en tus edits
 GAP = 10
+OUT_MAX_W = 486          # 45 % de los 1080 de ancho: la línea nunca llega al centro (la mira)
 SEQ_FPS = 10
 
 
@@ -712,15 +713,22 @@ def _check_victims(found, src, seq, t0, cl, H, known, last_in, g, victim_of, ene
                 return "es la misma línea que la de una kill anterior de la ronda"
         return None
 
+    def phoenix_far(ag, appear, tv):
+        """Phoenix con su ulti: matar a su «copia» sale en el killfeed pero no es una kill. Si la víctima
+        es Phoenix, la línea tiene que salir pegada a la kill de los datos (no segundos antes)."""
+        return ag == "Phoenix" and appear is not None and not (-1.5 <= appear - tv <= 1.2)
+
     out = []
     for (tv, tout), box, appear in found:
         vic, ag = want(tv)
         cur = (src, box, appear)
         why = problem(src, box, vic, ag)
+        if not why and phoenix_far(ag, appear, tv):
+            why = "es la de la copia de Phoenix (su ulti), no la kill"
         if why and len(cl) == 1:
             # se busca otra vez sin contar esa línea
             f2, s2 = locate(seq, t0, cl, H, list(known) + [(src, box[1], box[3])], SEQ_FPS, last_in)
-            if f2 and problem(s2, f2[0][1], vic, ag) is None:
+            if f2 and problem(s2, f2[0][1], vic, ag) is None and not phoenix_far(ag, f2[0][2], tv):
                 log.append(f"{core.fmt_ts(tv)}  la primera línea que salía no valía ({why}): se usa otra")
                 cur, why = (s2, f2[0][1], f2[0][2]), None
         if why:
@@ -883,7 +891,8 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 last_in = appear if last_in is None else max(last_in, appear)
                 png = os.path.join(folder, f"kf_{len(out):03d}.png")
                 ww, hh = save_rgba(src, box, png)
-                sc = OUT_LINE_H / max(1, hh)
+                # nunca más ancha que algo menos de media pantalla: así no tapa la mira del centro
+                sc = min(OUT_LINE_H / max(1, hh), OUT_MAX_W / max(1, ww))
                 w2 = int(round(ww * sc / 2)) * 2
                 h2 = int(round(hh * sc / 2)) * 2
                 start = max(0.0, tout + (appear - tv) - 0.03)

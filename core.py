@@ -229,7 +229,15 @@ def compute_clutches(m: "Match") -> None:
         if alive_a == {m.my_puuid} and alive_e and r.start_match_ms is not None:   # (compañeros fuera)
             r.clutch_vs, r.clutch_from_ms = len(alive_e), r.start_match_ms
             continue
-        for k in sorted(by_round.get(r.index, []), key=lambda x: x.t_match):
+        ks = sorted(by_round.get(r.index, []), key=lambda x: x.t_match)
+        # revividos (Sage, la ulti de Clove…): alguien que muere dos veces en la ronda volvió a la vida,
+        # así que solo «se va» en su última muerte
+        last_death = {}
+        for k in ks:
+            last_death[k.victim] = k.t_match
+        for k in ks:
+            if last_death.get(k.victim) != k.t_match:
+                continue
             if k.victim in alive_a:
                 alive_a.discard(k.victim)
             elif k.victim in alive_e:

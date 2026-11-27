@@ -1529,6 +1529,28 @@ class App(tk.Tk):
                 out += ms
                 if not raws or not target or (ms and min(m.started_at for m in ms) < target):
                     break
+            # directo antiguo: el historial reciente de la API no llega tan atrás -> historial guardado
+            # (por cuenta), solo las partidas de ese día
+            if target and not (out and min(m.started_at for m in out) < target):
+                from datetime import timedelta
+                lo, hi = target - timedelta(hours=1), target + timedelta(hours=16)
+                have = {m.match_id for m in out}
+                for rid in core.riot_ids(riot):
+                    for spage in range(1, 15):
+                        cb(None, f"Buscando partidas antiguas de {rid}… (página {spage})")
+                        try:
+                            ids = core.fetch_stored_ids(rid, key, reg, page=spage)
+                        except Exception:
+                            break
+                        for mid, when in ids:
+                            if lo <= when <= hi and mid not in have:
+                                try:
+                                    out.append(core.parse_match(core.fetch_match(mid, key, reg), riot))
+                                    have.add(mid)
+                                except Exception:
+                                    pass
+                        if not ids or min(w for _, w in ids) < lo:
+                            break
             return out, pos
 
         def done(res):
