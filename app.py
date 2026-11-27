@@ -3605,7 +3605,9 @@ class App(tk.Tk):
                     owner = f.read().strip()
             except OSError:
                 owner = None
-            if owner in (None, me):
+            vid = lambda s: (re.search(r"v(\d{8,})", s or "") or [None, s])[1]
+            if owner is None or owner == me or (vid(owner) and vid(owner) == vid(me)):
+                # (el mismo directo, bajado entero o solo sus partidas, va a la misma carpeta)
                 if owner is None and os.path.isdir(d) and any(
                         x.lower().endswith(".mp4") for x in os.listdir(d)):
                     n += 1               # carpeta de ese día ya usada por otro directo (sin marca)
