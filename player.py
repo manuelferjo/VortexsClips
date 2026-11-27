@@ -67,17 +67,23 @@ class Player(ttk.Frame):
             except Exception:
                 now = self.pos
             self.seek(now + d)
+        # dos bloques: atrás + reproducir | adelante + extras. Si no caben en una fila, el segundo baja
+        bL = ttk.Frame(bar, style=style)
+        bR = ttk.Frame(bar, style=style)
+        bL.grid(row=0, column=0, sticky="w")
+        bR.grid(row=0, column=1, sticky="w")
+        self._bar_parts = (bL, bR)
         for txt, d in (("−1 min", -60), ("−30 s", -30), ("−10 s", -10), ("−5 s", -5)):
-            ui.Button(bar, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
-        self.btn_play = ui.Button(bar, text="▶  Reproducir", width=12, compact=True, style="Purple.TButton", command=self.toggle)
+            ui.Button(bL, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
+        self.btn_play = ui.Button(bL, text="▶  Reproducir", width=12, compact=True, style="Purple.TButton", command=self.toggle)
         self.btn_play.pack(side="left", padx=4)
         for txt, d in (("+5 s", 5), ("+10 s", 10), ("+30 s", 30), ("+1 min", 60)):
-            ui.Button(bar, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
-        if on_pick:
-            ui.Button(bar, text="✔ Usar este momento", style="Accent.TButton", compact=True,
-                      command=lambda: on_pick(self.pos)).pack(side="right")
+            ui.Button(bR, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
         if on_expand:
-            ui.Button(bar, text="Ampliar ↗", compact=True, command=on_expand).pack(side="right")
+            ui.Button(bR, text="Ampliar ↗", compact=True, command=on_expand).pack(side="left", padx=(6, 0))
+        if on_pick:
+            ui.Button(bR, text="✔ Usar este momento", style="Accent.TButton", compact=True,
+                      command=lambda: on_pick(self.pos)).pack(side="left", padx=(6, 0))
         # el rango va encima de la barra (en la barra no cabía con ventanas estrechas)
         self.lbl_range = ttk.Label(self, text="", style="Muted.TLabel")
         self.lbl_range.pack(before=bar, anchor="e", pady=(0, 2))
@@ -107,7 +113,14 @@ class Player(ttk.Frame):
         if last and abs(last[0] - aw) < 12 and abs(last[1] - ah) < 12:
             return                       # el propio vídeo ha movido el hueco unos píxeles: no reajustar
         self._fit_last = (aw, ah)
-        ctrl = self.scale.winfo_reqheight() + self._bar.winfo_reqheight() + 14
+        bL, bR = self._bar_parts
+        two = bL.winfo_reqwidth() + bR.winfo_reqwidth() + 8 > aw
+        if two:
+            bR.grid_configure(row=1, column=0, pady=(4, 0))
+        else:
+            bR.grid_configure(row=0, column=1, pady=0)
+        self.update_idletasks()
+        ctrl = self.scale.winfo_reqheight() + self._bar.winfo_reqheight() + self.lbl_range.winfo_reqheight() + 16
         w = min(aw - 4, (ah - ctrl) * 16 / 9)
         w = max(256, int(w) // 4 * 4)
         self.set_size(w, w * 9 // 16 // 2 * 2)
