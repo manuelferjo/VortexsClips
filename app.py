@@ -1531,9 +1531,13 @@ class App(tk.Tk):
                     break
             # directo antiguo: el historial reciente de la API no llega tan atrás -> historial guardado
             # (por cuenta), solo las partidas de ese día
-            if target and not (out and min(m.started_at for m in out) < target):
-                from datetime import timedelta
+            from datetime import timedelta
+            lo = hi = None
+            if target:
                 lo, hi = target - timedelta(hours=1), target + timedelta(hours=16)
+            # (con varias cuentas, una puede tener partidas viejas y otra no llegar: se mira si hay
+            # alguna partida de ESE día; si no, al historial guardado)
+            if target and not any(lo <= m.started_at <= hi for m in out):
                 have = {m.match_id for m in out}
                 for rid in core.riot_ids(riot):
                     for spage in range(1, 15):
@@ -2208,15 +2212,14 @@ class App(tk.Tk):
                 self.flow_done(path)
         self.run_bg(work, done, "No se pudo descargar el VOD")
 
-    def _match_sections(self, info, prog):
-        """Tramos del VOD (segundos) donde están tus partidas de competitivo, con margen de sobra
-        para la sincronización (que busca ±2 min) y el delay del directo."""
-        vs, dur = info["start"], float(info.get("duration") or 0)
+    def _day_matches(self, vs, prog, pages=6):
+        """Tus partidas (de todas tus cuentas) del directo que empezó en vs: el historial reciente y, si no
+        llega a ese día (directos antiguos), el historial guardado de la API."""
+        from datetime import timedelta
         riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
-        st = self.settings()
-        secs = []
-        for page in range(6):
-            prog(None, f"Buscando qué trozos del directo tienen partidas ({page * 10 + 1}–{page * 10 + 10})…")
+        found = []
+        for page in range(pages):
+            prog(None, f"Revisando partidas {page * 10 + 1}–{page * 10 + 10}…")
             raws = core.fetch_recent_matches(riot, key, reg, size=10, start=page * 10)
             if not raws:
                 break
@@ -2226,6 +2229,38 @@ class App(tk.Tk):
                     ms.append(core.parse_match(r, riot))
                 except Exception:
                     pass
+            found += ms
+            if ms and min(m.started_at for m in ms) < vs:
+                break
+        lo, hi = vs - timedelta(hours=1), vs + timedelta(hours=16)
+        if not any(lo <= m.started_at <= hi for m in found):
+            have = {m.match_id for m in found}
+            for rid in core.riot_ids(riot):
+                for spage in range(1, 15):
+                    prog(None, f"Buscando partidas antiguas de {rid}… (página {spage})")
+                    try:
+                        ids = core.fetch_stored_ids(rid, key, reg, page=spage)
+                    except Exception:
+                        break
+                    for mid, when in ids:
+                        if lo <= when <= hi and mid not in have:
+                            try:
+                                found.append(core.parse_match(core.fetch_match(mid, key, reg), riot))
+                                have.add(mid)
+                            except Exception:
+                                pass
+                    if not ids or min(w for _, w in ids) < lo:
+                        break
+        return found
+
+    def _match_sections(self, info, prog):
+        """Tramos del VOD (segundos) donde están tus partidas de competitivo, con margen de sobra
+        para la sincronización (que busca ±2 min) y el delay del directo."""
+        vs, dur = info["start"], float(info.get("duration") or 0)
+        riot, key, reg = self.v_riot.get(), self.v_key.get(), self.v_region.get()
+        st = self.settings()
+        secs = []
+        for ms in [self._day_matches(vs, prog)]:
             for m in ms:
                 rel = (m.started_at - vs).total_seconds()
                 known = self.delay_fn_for_vod() is not None
@@ -2235,8 +2270,6 @@ class App(tk.Tk):
                 b = off + length + (5 if known else 9) * 60
                 if b > 0 and a < dur:
                     secs.append((a, b))
-            if ms and min(m.started_at for m in ms) < vs:
-                break
         return twitch.merge_sections(secs, dur)
 
     def _download_matches_only(self, url, out_dir, info, prog):
@@ -2532,22 +2565,7 @@ class App(tk.Tk):
         prog = self.progress_cb()
 
         def work():
-            found = []
-            for page in range(6):                     # hasta 60 partidas hacia atrás
-                prog(None, f"Revisando partidas {page * 10 + 1}–{page * 10 + 10}…")
-                raws = core.fetch_recent_matches(riot, key, reg, size=10, start=page * 10)
-                if not raws:
-                    break
-                ms = []
-                for r in raws:
-                    try:
-                        ms.append(core.parse_match(r, riot))
-                    except Exception:
-                        pass
-                found += ms
-                if ms and min(m.started_at for m in ms) < vs:
-                    break
-            return found
+            return self._day_matches(vs, prog)
 
         def done(ms):
             for m in ms:
