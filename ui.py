@@ -862,13 +862,13 @@ class ScrollArea(ttk.Frame):
     """Contenido que ocupa todo el alto disponible; si la ventana es más baja que lo que necesita,
     aparece una barra para desplazarse (y la rueda del ratón funciona fuera de las tablas)."""
 
-    def __init__(self, parent, bg=BG):
-        super().__init__(parent, style="TFrame")
-        self.cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+    def __init__(self, parent, bg=BG, style="TFrame"):
+        super().__init__(parent, style=style)
+        self.cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, width=10, height=10)
         self.sb = ttk.Scrollbar(self, orient="vertical", command=self.cv.yview)
         self.cv.configure(yscrollcommand=self.sb.set)
         self.cv.pack(side="left", fill="both", expand=True)
-        self.inner = ttk.Frame(self.cv, style="TFrame")
+        self.inner = ttk.Frame(self.cv, style=style)
         self._win = self.cv.create_window(0, 0, window=self.inner, anchor="nw")
         self._sb_on = False
         self.cv.bind("<Configure>", lambda e: self.sync())
@@ -1511,6 +1511,14 @@ class GlowHeader(tk.Canvas):
         self._last = None
         self.bind("<Configure>", lambda e: later(self, "_hdr", 90, lambda w=e.width: self._redraw(w)))
         self.items = []
+
+    def set_height(self, h):
+        if h == self._hh:
+            return
+        self._hh = h
+        self.configure(height=h)
+        self._last = None
+        self._redraw(self.winfo_width())
 
     def _redraw(self, w):
         if w < 50 or self._last == w:

@@ -117,10 +117,18 @@ class App(tk.Tk):
         super().__init__()
         self.title(f"{APP_NAME} {VERSION}")
         self.geometry("1180x820")
-        self.minsize(1000, 700)
-        if os.name == "nt":
+        self.minsize(960, 640)
+        _cfg0 = load_cfg()
+        _g = _cfg0.get("win_geom")
+        if _g and re.match(r"^\d+x\d+[+-]-?\d+[+-]-?\d+$", _g):
+            # donde la dejaste (también en el segundo monitor) y del mismo tamaño
             try:
-                self.state("zoomed")   # abrir maximizada
+                self.geometry(_g)
+            except tk.TclError:
+                pass
+        if os.name == "nt" and _cfg0.get("win_zoomed", True):
+            try:
+                self.state("zoomed")   # maximizada (en el monitor donde estaba)
             except tk.TclError:
                 pass
         self.configure(bg=BG)
@@ -157,6 +165,8 @@ class App(tk.Tk):
         ui.keep_cards_in_sync(self)
         ui.keep_scroll_in_sync(self)
         self.after(300, self._relayout)
+        self._compact = None
+        self.bind("<Configure>", self._on_root_cfg, add="+")
 
         def _relay_loop():
             self._relayout()
@@ -257,31 +267,40 @@ class App(tk.Tk):
         self.pill = ui.status_pill(head)
         self._head_vod = ""
 
+        self._logo_s = ui.logo_image(self, 32)
+
         def place_head(w):
             head.delete("fg")
+            small = bool(self._compact and self._compact[0]) if getattr(self, "_compact", None) else False
             x = 22
-            if self._logo:
-                head.create_image(x, 16, image=self._logo, anchor="nw", tags="fg")
-                x += 58
-            f1 = ui.display(22)
-            t1 = head.create_text(x, 14, text="Vortexs", font=f1, fill=TEXT, anchor="nw", tags="fg")
+            logo = self._logo_s if small and self._logo_s else self._logo
+            if logo:
+                head.create_image(x, 11 if small else 16, image=logo, anchor="nw", tags="fg")
+                x += 46 if small else 58
+            f1 = ui.display(17 if small else 22)
+            ty = 10 if small else 14
+            t1 = head.create_text(x, ty, text="Vortexs", font=f1, fill=TEXT, anchor="nw", tags="fg")
             bx = head.bbox(t1)
-            t2 = head.create_text(bx[2] + 8, 14, text="Clips", font=f1, fill=YELLOW, anchor="nw", tags="fg")
+            t2 = head.create_text(bx[2] + 8, ty, text="Clips", font=f1, fill=YELLOW, anchor="nw", tags="fg")
             bx2 = head.bbox(t2)
             if self._head_vod:
-                head.create_text(bx2[2] + 18, 24, text=self._head_vod, font=ui.body(10), fill=MUTED,
-                                 anchor="nw", tags="fg")
-            head.create_text(x + 1, 52, text=f"V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
-                             font=ui.mono(8), fill=ui.DIM, anchor="nw", tags="fg")
+                head.create_text(bx2[2] + 18, ty + (6 if small else 10), text=self._head_vod, font=ui.body(10),
+                                 fill=MUTED, anchor="nw", tags="fg")
+            if not small:
+                head.create_text(x + 1, 52, text=f"V{VERSION}  ·  TUS 3K, 4K, ACE Y CLUTCHES, LISTOS PARA TIKTOK",
+                                 font=ui.mono(8), fill=ui.DIM, anchor="nw", tags="fg")
             xr = w - 22
             for wdg in (b_dir, upd, self.pill):
-                head.create_window(xr, 40, window=wdg, anchor="e", tags="fg")
+                head.create_window(xr, 27 if small else 40, window=wdg, anchor="e", tags="fg")
                 xr -= wdg.winfo_reqwidth() + 10
         head.items.append(place_head)
         self._head = head
 
         # ---------------- cuerpo: pasos arriba y una página cada vez
-        self.body = ui.ScrollArea(self)
+        # (sin barra de scroll para toda la ventana: cada página cabe en lo que hay y solo hacen scroll
+        # las listas y los ajustes)
+        self.body = ttk.Frame(self)
+        self.body.inner = self.body
         stepper = tk.Frame(self.body.inner, bg=BG)
         stepper.pack(fill="x", padx=16, pady=(10, 2))
         self._steps = []
@@ -334,10 +353,14 @@ class App(tk.Tk):
         self._set_title = ttk.Label(scard, text="", style="H.TLabel")
         self._set_title.grid(row=0, column=0, sticky="w", pady=(0, 10))
         scard.columnconfigure(0, weight=1)
+        scard.rowconfigure(1, weight=1)
+        self._set_scroll = ui.ScrollArea(scard, bg=PANEL, style="Panel.TFrame")
+        self._set_scroll.grid(row=1, column=0, sticky="nsew")
+        self._set_scroll.inner.columnconfigure(0, weight=1)
         self._set_pages, self._set_btns = {}, {}
         for key, txt in (("cuenta", "Cuenta"), ("cortar", "Qué cortar"), ("videos", "Vídeos y subtítulos"),
                          ("carpeta", "Carpeta y Drive"), ("auto", "Automático"), ("otro", "Otro PC")):
-            pg = ttk.Frame(scard, style="Panel.TFrame")
+            pg = ttk.Frame(self._set_scroll.inner, style="Panel.TFrame")
             self._set_pages[key] = (pg, txt)
             lb = tk.Label(nav, text="   " + txt, anchor="w", bg=BG, fg=MUTED, font=ui.semi(10),
                           padx=8, pady=9, cursor="hand2")
@@ -393,15 +416,25 @@ class App(tk.Tk):
         self.lbl_hidden.pack(side="right", padx=(0, 18))
         self.lbl_hidden.bind("<Button-1>", lambda e: self._toggle_hidden())
         self._show_hidden = False
-        self.mcards = tk.Frame(p3, bg=PANEL)
-        self.mcards.grid(row=2, column=0, sticky="nsew")
+        self._mscroll = ui.ScrollArea(p3, bg=PANEL, style="Panel.TFrame")
+        self._mscroll.grid(row=2, column=0, sticky="nsew")
+        p3.rowconfigure(2, weight=1)
+        pp.rowconfigure(0, weight=1)
+        self.mcards = self._mscroll.inner
         self.mcards.columnconfigure(0, weight=1)
         self._msel = None
         # (la tabla de antes sigue existiendo, sin mostrarse: guarda la lista y la selección)
         cols = ("use", "date", "map", "agent", "score", "hl", "invod", "sync")
         self.tv_m = ttk.Treeview(p3, columns=cols, show="headings", selectmode="browse", height=5)
-        mb = ttk.Frame(p3, style="Panel.TFrame")
-        mb.grid(row=3, column=0, sticky="we", pady=(10, 0))
+        mbo = ttk.Frame(p3, style="Panel.TFrame")
+        mbo.grid(row=3, column=0, sticky="we", pady=(10, 0))
+        mbo.columnconfigure(1, weight=1)
+        mb = ttk.Frame(mbo, style="Panel.TFrame")
+        mb.grid(row=0, column=0, sticky="w")
+        mbr = ttk.Frame(mbo, style="Panel.TFrame")
+        mbr.grid(row=0, column=2, sticky="e")
+        self._flow_pairs = getattr(self, "_flow_pairs", [])
+        self._flow_pairs.append((mbo, mb, mbr))
         # izquierda: qué partidas · derecha: su sincronización
         self.btn_load = ui.Button(mb, text="Buscar partidas", command=self.load_matches)
         self.btn_load.pack(side="left")
@@ -410,11 +443,11 @@ class App(tk.Tk):
         self.btn_more.pack(side="left", padx=(6, 0))
         ui.Button(mb, text="Añadir por enlace…", style="Ghost.TButton",
                   command=self.add_link_dialog).pack(side="left", padx=(6, 0))
-        ui.Button(mb, text="Informes", style="Ghost.TButton", command=self.open_reports).pack(side="right")
-        ui.Button(mb, text="Quitar sincro", style="Ghost.TButton", command=self.clear_calib).pack(side="right")
-        ui.Button(mb, text="Revisar sincro", style="Ghost.TButton",
+        ui.Button(mbr, text="Informes", style="Ghost.TButton", command=self.open_reports).pack(side="right")
+        ui.Button(mbr, text="Quitar sincro", style="Ghost.TButton", command=self.clear_calib).pack(side="right")
+        ui.Button(mbr, text="Revisar sincro", style="Ghost.TButton",
                   command=self.review_sync).pack(side="right", padx=(6, 0))
-        ui.Button(mb, text="Sincronizar a mano…", command=self.calibrate).pack(side="right", padx=(6, 0))
+        ui.Button(mbr, text="Sincronizar a mano…", command=self.calibrate).pack(side="right", padx=(6, 0))
         ttk.Label(p3, text="Clic en una partida para elegirla (para sincronizar a mano) · clic en ☐ para "
                            "incluirla o no", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(6, 0))
 
@@ -543,12 +576,17 @@ class App(tk.Tk):
         # ---- pestaña Cortes
         ttk.Label(t_cut, text="Kills mínimas por ronda").grid(row=0, column=0, sticky="w")
         ttk.Spinbox(t_cut, from_=2, to=6, textvariable=self.v_min, width=4).grid(row=0, column=1, sticky="w", padx=6)
-        clf = ttk.Frame(t_cut, style="Panel.TFrame")
-        clf.grid(row=0, column=2, columnspan=3, sticky="w", padx=(14, 0))
+        clh = ttk.Frame(t_cut, style="Panel.TFrame")
+        clh.grid(row=0, column=2, columnspan=3, sticky="w", padx=(14, 0))
+        clf = ttk.Frame(clh, style="Panel.TFrame")
+        clf.pack(anchor="w")
+        clf_d = ttk.Frame(clh, style="Panel.TFrame")
+        clf_d.pack(anchor="w", pady=(6, 0))
         ui.Toggle(clf, text="y clutches ganados de 1 contra", variable=self.v_clutch).pack(side="left")
         ttk.Spinbox(clf, from_=1, to=5, textvariable=self.v_clutchn, width=3).pack(side="left", padx=4)
         ttk.Label(clf, text="o más").pack(side="left")
-        ui.Toggle(clf, text="y las kills con la flecha de choque de Sova", variable=self.v_darts).pack(side="left", padx=(14, 0))
+        ui.Toggle(clf_d, text="y las kills con la flecha de choque de Sova (aunque no sean 3K)",
+                  variable=self.v_darts).pack(side="left")
         ttk.Label(t_cut, text="Qué cortar").grid(row=1, column=0, sticky="w", pady=(8, 2))
         ttk.Radiobutton(t_cut, text="Solo las kills (de la primera a la última, con cortes entre ellas)",
                         value="kills", variable=self.v_mode).grid(row=1, column=1, columnspan=4, sticky="w", pady=(8, 2))
@@ -561,20 +599,22 @@ class App(tk.Tk):
         ttk.Label(kf2, text="Ajuste fino de todos los cortes (s)").pack(side="left")
         ttk.Spinbox(kf2, from_=-3.0, to=3.0, increment=0.1, textvariable=self.v_cutshift, width=6,
                     format="%.1f").pack(side="left", padx=4)
-        ttk.Label(kf2, text="− si la kill pasa antes de tiempo (sobra al final) · + si se corta",
+        ttk.Label(kf2, text="(− si sobra al final · + si se corta)",
                   style="Muted.TLabel").pack(side="left", padx=(2, 0))
         kf3 = ttk.Frame(kfc, style="Panel.TFrame")
         kf3.pack(anchor="w", pady=(4, 0))
-        ttk.Label(kf3, text="Flecha de choque de Sova (Q): empieza cuando la tiras (lo ve en el HUD); si no se ve,").pack(side="left")
+        ttk.Label(kf3, text="Flecha de Sova: desde que la tiras; si no se ve,").pack(side="left")
         ttk.Entry(kf3, textvariable=self.v_dartpre, width=4).pack(side="left", padx=4)
         ttk.Label(kf3, text="s antes", style="Muted.TLabel").pack(side="left", padx=(2, 0))
         ttk.Label(kf, text="Segundos antes de cada kill").pack(side="left")
         ttk.Entry(kf, textvariable=self.v_kpre, width=4).pack(side="left", padx=4)
         ttk.Label(kf, text="  y después").pack(side="left")
         ttk.Entry(kf, textvariable=self.v_kpost, width=4).pack(side="left", padx=4)
-        ttk.Label(kf, text="  · no cortar si entre kills hay menos de").pack(side="left")
-        ttk.Entry(kf, textvariable=self.v_kgap, width=4).pack(side="left", padx=4)
-        ttk.Label(kf, text="s").pack(side="left")
+        kf4 = ttk.Frame(kfc, style="Panel.TFrame")
+        kf4.pack(anchor="w", pady=(4, 0), after=kf)
+        ttk.Label(kf4, text="No cortar si entre kills hay menos de").pack(side="left")
+        ttk.Entry(kf4, textvariable=self.v_kgap, width=4).pack(side="left", padx=4)
+        ttk.Label(kf4, text="s").pack(side="left")
         ttk.Radiobutton(t_cut, text="La ronda completa", value="round", variable=self.v_mode).grid(
             row=3, column=1, columnspan=4, sticky="w", pady=(6, 2))
         rf = ttk.Frame(t_cut, style="Panel.TFrame")
@@ -713,8 +753,8 @@ class App(tk.Tk):
         p4.rowconfigure(1, weight=1)
         p4.columnconfigure(0, weight=1)
         cols = ("round", "from", "to", "dur")
-        self.tv_c = ttk.Treeview(p4, columns=cols, show="headings", selectmode="extended", height=12)
-        for c, t, w in zip(cols, ("Ronda", "Desde (VOD)", "Hasta", "Dur."), (220, 90, 80, 50)):
+        self.tv_c = ttk.Treeview(p4, columns=cols, show="headings", selectmode="extended", height=5)
+        for c, t, w in zip(cols, ("Ronda", "Desde (VOD)", "Hasta", "Dur."), (200, 84, 74, 46)):
             self.tv_c.heading(c, text=t)
             self.tv_c.column(c, width=w, anchor="w" if c == "round" else "center", stretch=c == "round")
         self.tv_c.grid(row=1, column=0, sticky="nsew")
@@ -723,28 +763,41 @@ class App(tk.Tk):
         self.tv_c.configure(yscrollcommand=sb2.set)
         self.tv_c.bind("<Double-1>", lambda e: self.preview())
         self.tv_c.tag_configure("alt", background=ROW_ALT)
-        cb = ttk.Frame(p4, style="Panel.TFrame")
-        cb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        cbo = ttk.Frame(p4, style="Panel.TFrame")
+        cbo.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        cbo.columnconfigure(1, weight=1)
+        cb = ttk.Frame(cbo, style="Panel.TFrame")
+        cb.grid(row=0, column=0, sticky="w")
+        cbr = ttk.Frame(cbo, style="Panel.TFrame")
+        cbr.grid(row=0, column=2, sticky="e")
+        self._flow_pairs = getattr(self, "_flow_pairs", [])
+        self._flow_pairs.append((cbo, cb, cbr))
         adj = ttk.Frame(p4, style="Panel.TFrame")
         adj.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Label(adj, text="Ajustar la ronda elegida:").pack(side="left", padx=(0, 8))
-        for txt, which, d in (("Empieza 2 s antes", "a", -2), ("Empieza 1 s después", "a", 1),
-                              ("Acaba 1 s antes", "b", -1), ("Acaba 2 s después", "b", 2)):
+        ttk.Label(adj, text="Ronda elegida:").pack(side="left", padx=(0, 8))
+        for txt, which, d in (("Inicio −2 s", "a", -2), ("Inicio +1 s", "a", 1),
+                              ("Final −1 s", "b", -1), ("Final +2 s", "b", 2)):
             ui.Button(adj, text=txt, compact=True,
                       command=lambda w=which, d=d: self.nudge_clip(w, d)).pack(side="left", padx=(0, 4))
         self._cut_line(p4).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ui.Button(cb, text="Calcular rondas", command=self.compute).pack(side="left")
         ui.Button(cb, text="Ver ronda", style="Ghost.TButton", command=self.preview).pack(side="left", padx=6)
         ui.Button(cb, text="Quitar", style="Ghost.TButton", command=self.remove_clips).pack(side="left")
-        self.btn_drive = ui.Button(cb, text="Subir a Drive…", style="Ghost.TButton", command=self.drive_upload_last)
+        self.btn_drive = ui.Button(cbr, text="Subir a Drive…", style="Ghost.TButton", command=self.drive_upload_last)
         self.btn_drive.pack(side="right")
-        self.btn_subs = ui.Button(cb, text="Corregir subtítulos…", style="Ghost.TButton",
+        self.btn_subs = ui.Button(cbr, text="Corregir subtítulos…", style="Ghost.TButton",
                                   command=self.fix_subtitles_later)
         self.btn_subs.pack(side="right", padx=6)
         p5 = self._panel(pvd, "Vista previa")
         p5.grid(row=0, column=1, sticky="nsew")
-        self.tab_prev = ttk.Frame(p5, style="Panel.TFrame")
+        p5.rowconfigure(1, weight=1)
+        p5.columnconfigure(0, weight=1)
+        # el hueco de la vista previa NO pide tamaño: el vídeo se ajusta a lo que haya (16:9) y los
+        # controles quedan siempre a la vista
+        self.tab_prev = ttk.Frame(p5, style="Panel.TFrame", width=320, height=240)
         self.tab_prev.grid(row=1, column=0, sticky="nsew")
+        self.tab_prev.pack_propagate(False)
+        self._pv = (pvd, p4, p5)
         self.player = player.Player(self.tab_prev, lambda: self.v_vod.get(), fit=True,
                                     on_expand=self.big_preview)
         self.player.pack(anchor="n")
@@ -826,7 +879,9 @@ class App(tk.Tk):
             self._slide_in(self._pages[key], 1 if order.index(key) > order.index(old) else -1)
         self._paint_steps()
         try:
-            self.body.cv.yview_moveto(0)
+            sa = getattr(self, "_set_scroll", None)
+            if sa is not None and key == "ajustes":
+                sa.cv.yview_moveto(0)
         except Exception:
             pass
 
@@ -915,7 +970,11 @@ class App(tk.Tk):
             self._set_pages[self._set_cur][0].grid_forget()
         pg, txt = self._set_pages[key]
         changed = self._set_cur != key
-        pg.grid(row=1, column=0, sticky="nsew")
+        pg.grid(row=0, column=0, sticky="nsew")
+        try:
+            self._set_scroll.cv.yview_moveto(0)
+        except Exception:
+            pass
         if changed and self._set_cur:
             self._slide_in(pg, 1, dist=30)
         self._set_title.configure(text=txt)
@@ -1149,13 +1208,69 @@ class App(tk.Tk):
             self.add_by_link()
 
     # ------------------------------------------------------------ ventana adaptable
+    def _on_root_cfg(self, e):
+        if e.widget is not self:
+            return
+        # al arrastrar llegan decenas de cambios por segundo: se recoloca cuando paras un momento
+        ui.later(self, "_relay_id", 120, self._relayout)
+        ui.later(self, "_geom_id", 1500, self._save_geom)
+
+    def _save_geom(self):
+        try:
+            z = self.state() == "zoomed"
+            self.cfg["win_zoomed"] = z
+            if not z and self.state() == "normal":
+                self.cfg["win_geom"] = self.geometry()
+            save_cfg(self.cfg)
+        except Exception:
+            pass
+
+    def _apply_compact(self, compact, narrow):
+        """Ventana pequeña: cabecera y pestañas más bajas para dejar sitio a lo importante."""
+        key = (compact, narrow)
+        if key == self._compact:
+            return
+        self._compact = key
+        try:
+            self._head.set_height(54 if compact else 80)
+        except Exception:
+            pass
+        for _k, f_, ic, tl, sl in self._steps:
+            for w_ in (ic, tl, sl):
+                w_.pack_configure(pady=4 if compact else 9)
+            tl.configure(font=ui.display(12 if compact else 13))
+            if narrow:
+                sl.pack_forget()
+            elif not sl.winfo_ismapped():
+                sl.pack(side="left", padx=(10, 0), pady=4 if compact else 9)
+        fa, la = self._tab_set
+        la.pack_configure(pady=4 if compact else 9)
+
     def _relayout(self):
+        try:
+            W, H = self.winfo_width(), self.winfo_height()
+            if W > 200 and H > 200:
+                self._apply_compact(H < 880, W < 1180)
+            for outer, left, right in getattr(self, "_flow_pairs", []):
+                ow = outer.winfo_width()
+                if ow < 50:
+                    continue
+                need = left.winfo_reqwidth() + right.winfo_reqwidth() + 24
+                if need > ow:
+                    right.grid_configure(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+                else:
+                    right.grid_configure(row=0, column=2, columnspan=1, sticky="e", pady=0)
+        except tk.TclError:
+            pass
+        self._relayout_old()
+
+    def _relayout_old(self):
         """Si la ventana es estrecha, las tarjetas van una debajo de otra en vez de recortarse."""
         L = getattr(self, "_lay", None)
         if not L:
             return      # (diseño por páginas: no hay tarjetas que recolocar)
         try:
-            w = self.body.cv.winfo_width()
+            w = self.body.winfo_width()
             if w < 100:
                 return
             mw = L["maxw"]
@@ -4278,6 +4393,7 @@ class App(tk.Tk):
         self.run_bg(lambda: fn(lambda p: cb(p, "Descargando actualización…")), done, "No se pudo actualizar")
 
     def on_close(self):
+        self._save_geom()
         self.persist()
         self.destroy()
 
@@ -4832,6 +4948,24 @@ def demo_screenshot(out_png):
         app.show_page("partidas")
         app.after(1500, lambda: grab(app, "8_ventana_pequena.png"))
     steps.append(small)
+
+    def tiny(k, name, settings=None, geom="960x640+0+0"):
+        def f():
+            app.geometry(geom)
+            if settings:
+                app.open_settings(settings)
+            else:
+                app.show_page(k)
+            app.after(1500, lambda: grab(app, name))
+        return f
+    for k, nm, s_, g_ in (("vod", "9a_min_vod.png", None, "960x640+0+0"),
+                          ("partidas", "9b_min_partidas.png", None, "960x640+0+0"),
+                          ("videos", "9c_min_videos.png", None, "960x640+0+0"),
+                          (None, "9d_min_auto.png", "auto", "960x640+0+0"),
+                          (None, "9e_min_cortes.png", "cortar", "960x640+0+0"),
+                          ("videos", "9f_med_videos.png", None, "1280x720+0+0"),
+                          ("partidas", "9g_med_partidas.png", None, "1280x720+0+0")):
+        steps.append(tiny(k, nm, s_, g_))
     steps.append(app.destroy)
 
     def run(i=0):
