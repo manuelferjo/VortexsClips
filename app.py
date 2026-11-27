@@ -3937,6 +3937,28 @@ class App(tk.Tk):
                                 kf_lines = lines_best
                                 # (el registro y las fotos, los de la primera pasada)
                                 kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop, log_path=kf_log)
+                        # cada corte, a sus kills de verdad: si la primera línea entra pegada al principio
+                        # o la última pegada al final, se abre un poco el corte para que se vean bien
+                        n_snap = killfeed.snap_cuts(clips, killfeed.LAST_STATS)
+                        if n_snap:
+                            sub(f"Ajustando {n_snap} corte(s) a cuando entran tus kills…")
+                            if words is not None:
+                                try:
+                                    miss = subtitles.missing_ranges(vod, clips)
+                                    if miss:
+                                        subtitles.transcribe_ranges(vod, miss, cb, stop)
+                                    w2 = subtitles.words_for_clips(vod, clips)
+                                    if w2 is not None:
+                                        words = self.prepare_words(w2)
+                                except Exception as e:
+                                    if "Cancelado" in str(e):
+                                        raise
+                            kf_lines = killfeed.prepare(vod, clips, cam, kdir, cb, stop, log_path=kf_log)
+                            try:
+                                with open(kf_log, "a", encoding="utf-8") as f_:
+                                    f_.write(f"\nCortes ajustados a cuando entran tus kills: {n_snap}\n")
+                            except OSError:
+                                pass
                     except Exception as e:
                         if "Cancelado" in str(e):
                             raise

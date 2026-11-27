@@ -657,6 +657,148 @@ def portraits() -> dict:
 
 _PCACHE: dict = {}
 
+# ---------------------------------------------------------------- icono del arma de la línea
+_WEAPONS = None
+_SLOTS = ("ability1", "ability2", "grenade", "ultimate")
+
+
+def weapons() -> dict:
+    """Iconos del killfeed (armas y habilidades), en el sentido del killfeed (apuntando a la víctima):
+    {clave: (nombre, alfa 0..1)}. Clave: el id del arma o «agente_ranura» (sova_ability1…)."""
+    global _WEAPONS
+    if _WEAPONS is not None:
+        return _WEAPONS
+    _WEAPONS = {}
+    try:
+        import json
+        from PIL import Image
+        try:
+            import ui as _ui
+            bd = os.path.join(_ui.res_dir(), "armas")
+        except Exception:
+            bd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "armas")
+        if not os.path.isdir(bd):
+            bd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "armas")
+        with open(os.path.join(bd, "nombres.json"), encoding="utf-8") as f:
+            names = json.load(f)
+        import numpy as np
+        for key, nm in names.items():
+            p = os.path.join(bd, key + ".png")
+            if not os.path.isfile(p):
+                continue
+            a = np.asarray(Image.open(p).convert("RGBA"))[..., 3]
+            ys, xs = np.where(a > 40)
+            if len(xs) == 0:
+                continue
+            a = a[ys.min():ys.max() + 1, xs.min():xs.max() + 1][:, ::-1]
+            _WEAPONS[key.lower()] = (nm, a.astype(np.float32) / 255.0)
+    except Exception:
+        _WEAPONS = {}
+    return _WEAPONS
+
+
+def weapon_key(m, k) -> str:
+    """Qué icono debería salir en la línea de esa kill."""
+    wid = (k.weapon_id or "").strip().lower()
+    wt = (k.weapon_type or "").lower()
+    if wid in _SLOTS or "ability" in wt:
+        if wid not in _SLOTS:
+            return ""
+        ags = getattr(m, "agents", None) or {}
+        ag = ags.get(k.killer) or (m.agent if k.killer == m.my_puuid else "")
+        return f"{_norm_agent(ag)}_{wid}" if ag else ""
+    return wid
+
+
+def weapon_name(key: str) -> str:
+    return (weapons().get((key or "").lower()) or (key, None))[0]
+
+
+def weapon_scores(img, box, keys=None) -> tuple:
+    """Parecido (-1..1) del icono blanco de la línea con cada arma -> ({clave: nota}, anchura vista)."""
+    import numpy as np
+    W = weapons()
+    if not W:
+        return {}, 0
+    y0, y1 = box[1], box[3]
+    lh = max(8, y1 - y0)
+    nm = _name_mask(img, y0, y1)
+    if not nm:
+        return {}, 0
+    x0 = nm[0]
+    from PIL import Image
+    xa, xb = max(0, int(x0 - 5 * lh)), int(x0 - 0.05 * lh)
+    if xb - xa < lh:
+        return {}, 0
+    reg = img[y0 + 1:y1 - 1, xa:xb].astype(np.float32)
+    g = reg.min(axis=2) / 255.0
+    msk = g > 0.72
+    cols = msk.any(axis=0)
+    if cols.sum() < 5:
+        return {}, 0
+    # el icono es el bloque blanco que acaba más a la derecha (el nombre del que mata va a su izquierda)
+    xe = int(np.where(cols)[0].max())
+    xs_, gap = xe, 0
+    while xs_ > 0:
+        if cols[xs_ - 1]:
+            gap = 0
+        else:
+            gap += 1
+            if gap > int(0.35 * lh):
+                break
+        xs_ -= 1
+    rows = np.where(msk[:, xs_:xe + 1].any(axis=1))[0]
+    if len(rows) == 0:
+        return {}, 0
+    ya, yb = int(rows.min()), int(rows.max()) + 1
+    h, wsub = yb - ya, xe + 1 - xs_
+    if h < 4:
+        return {}, 0
+    out = {}
+    for key, (_nm, t) in W.items():
+        if keys is not None and key not in keys:
+            continue
+        wt = max(4, int(round(t.shape[1] * h / t.shape[0])))
+        tt = np.asarray(Image.fromarray((t * 255).astype("uint8")).resize((wt, h), Image.BILINEAR)) \
+            .astype(np.float32) / 255.0
+        tb = tt - tt.mean()
+        nb = float((tb * tb).sum())
+        best = -1.0
+        for dx in range(-3, 4):
+            x_ = xe + 1 - wt + dx
+            if x_ < 0 or x_ + wt > g.shape[1]:
+                continue
+            p = g[ya:yb, x_:x_ + wt]
+            pa = p - p.mean()
+            best = max(best, float((pa * tb).sum() / np.sqrt(float((pa * pa).sum()) * nb + 1e-6)))
+        pen = min(wt, wsub) / max(wt, wsub)
+        out[key] = best * (0.6 + 0.4 * pen)
+    return out, wsub
+
+
+def weapon_check(img, box, key: str):
+    """'ok' si el icono de la línea es ese arma, 'otro' si es claramente otra, '?' si no se sabe.
+    -> (veredicto, nombre del arma que se ve si es otra)."""
+    key = (key or "").lower()
+    W = weapons()
+    if not key or key not in W or "_" in key:
+        return "?", ""          # (las habilidades no: su icono del killfeed no siempre es el de la API)
+    # candidatas: todas las armas y las habilidades de ese agente
+    ag = key.split("_")[0] if "_" in key else None
+    keys = [k_ for k_ in W if "_" not in k_ or (ag and k_.startswith(ag + "_"))]
+    if key not in keys:
+        keys.append(key)
+    try:
+        sc, _w = weapon_scores(img, box, keys)
+    except Exception:
+        return "?", ""
+    if not sc or key not in sc:
+        return "?", ""
+    best = max(sc, key=sc.get)
+    if best != key and sc[best] >= 0.62 and sc[best] - sc[key] >= 0.15:
+        return "otro", W[best][0]
+    return ("ok" if sc[key] >= 0.55 else "?"), ""
+
 
 def agent_scores(img, box, agents) -> dict:
     """Parecido (0..1) del retrato de la derecha de la línea `box` con cada uno de esos agentes."""
@@ -736,7 +878,7 @@ def _check_victims(found, src, seq, t0, cl, H, known, last_in, g, victim_of, ene
     import itertools
     if not found:
         return [], src
-    want = lambda tv: (victim_of.get((g, round(tv, 3))) or ("", ""))
+    want = lambda tv: (tuple(victim_of.get((g, round(tv, 3))) or ()) + ("", "", ""))[:3]
     # 1) reparto por retrato
     if len(found) > 1 and enemies:
         boxes = [f[1] for f in found]
@@ -747,11 +889,14 @@ def _check_victims(found, src, seq, t0, cl, H, known, last_in, g, victim_of, ene
                    key=lambda p: sum(S[i][p[i]] for i in range(len(boxes))))
         if list(best) != list(range(len(kills))):
             found = [(kills[best[i]], boxes[i], found[i][2]) for i in range(len(boxes))]
-    def problem(s_, b_, vic, ag):
+    def problem(s_, b_, vic, ag, wk=""):
         """Por qué no vale esa línea para esta kill (o None si vale)."""
         v, _w, other = victim_check(s_, b_, ag, enemies)
         if v == "otro":
             return f"el retrato es de {other}, no de {ag}"
+        wv, wother = weapon_check(s_, b_, wk)
+        if wv == "otro":
+            return f"el arma de la línea es {wother}, no {weapon_name(wk)}"
         for (ps, pb, pv) in placed:
             if pv and vic and pv == vic:        # el mismo enemigo otra vez (revivido): puede repetirse
                 continue
@@ -766,17 +911,21 @@ def _check_victims(found, src, seq, t0, cl, H, known, last_in, g, victim_of, ene
 
     out = []
     for (tv, tout), box, appear in found:
-        vic, ag = want(tv)
+        vic, ag, wk = want(tv)
         cur = (src, box, appear)
-        why = problem(src, box, vic, ag)
+        why = problem(src, box, vic, ag, wk)
         if not why and phoenix_far(ag, appear, tv):
             why = "es la de la copia de Phoenix (su ulti), no la kill"
         if why and len(cl) == 1:
             # se busca otra vez sin contar esa línea
             f2, s2 = locate(seq, t0, cl, H, list(known) + [(src, box[1], box[3])], SEQ_FPS, last_in)
-            if f2 and problem(s2, f2[0][1], vic, ag) is None and not phoenix_far(ag, f2[0][2], tv):
+            if f2 and problem(s2, f2[0][1], vic, ag, wk) is None and not phoenix_far(ag, f2[0][2], tv):
                 log.append(f"{core.fmt_ts(tv)}  la primera línea que salía no valía ({why}): se usa otra")
                 cur, why = (s2, f2[0][1], f2[0][2]), None
+        if why and why.startswith("el arma"):
+            # el arma sola no basta para quitar una línea (skins, iconos tapados...): se avisa y se deja
+            log.append(f"{core.fmt_ts(tv)}  ojo: {why} (no se encontró otra, se deja)")
+            why = None
         if why:
             log.append(f"{core.fmt_ts(tv)}  no se pone la línea: {why}")
             continue
@@ -801,6 +950,36 @@ def match_shifts(stats: dict | None) -> dict:
         if med > 0.25 and sum(1 for d in ds if d > 0.1) >= max(2, int(0.75 * len(ds))):
             out[mid] = round(med + 0.3, 2)
     return out
+
+
+def snap_cuts(clips: list, stats: dict | None, pre: float = 1.2, post: float = 1.8,
+              most: float = 3.0) -> int:
+    """Ajusta cada corte a sus kills de verdad: el instante en que entra cada línea tuya en el killfeed
+    (no la hora de Riot). Si la primera kill entra pegada al principio del corte, se empieza antes; si la
+    última entra pegada al final, se alarga para que se vea. Como mucho `most` segundos por lado y sin
+    pisar el trozo siguiente de la misma ronda. -> cuántos cortes cambiaron."""
+    ap = (stats or {}).get("appear") or {}
+    n = 0
+    by_g: dict = {}
+    for c in clips:
+        by_g.setdefault(c.group, []).append(c)
+    for g, cs in by_g.items():
+        ts = sorted(ap.get(g) or [])
+        if not ts:
+            continue
+        cs.sort(key=lambda c: c.vod_start)
+        for i, c in enumerate(cs):
+            mine = [t for t in ts if c.vod_start - most <= t <= c.vod_end + most]
+            if not mine:
+                continue
+            lo = cs[i - 1].vod_end if i > 0 else -1e9
+            hi = cs[i + 1].vod_start if i + 1 < len(cs) else 1e18
+            s2 = max(lo, c.vod_start - most, min(c.vod_start, mine[0] - pre))
+            e2 = min(hi, c.vod_end + most, max(c.vod_end, mine[-1] + post))
+            if s2 < c.vod_start - 0.05 or e2 > c.vod_end + 0.05:
+                c.vod_start, c.vod_end = max(0.0, s2), e2
+                n += 1
+    return n
 
 
 def badly_synced(stats: dict | None) -> list:
@@ -849,7 +1028,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             seen.add(key)
             by_group.setdefault(c.group, []).append((tv, t0 + (tv - c.vod_start)))
             ags = getattr(m, "agents", None) or {}
-            victim_of[(c.group, round(tv, 3))] = (k.victim, ags.get(k.victim, ""))
+            victim_of[(c.group, round(tv, 3))] = (k.victim, ags.get(k.victim, ""), weapon_key(m, k))
             enemy_agents[c.group] = [ags[p] for p in m.enemies if p in ags]
     # kills tuyas de esas rondas que no caen dentro de ningún corte (no pueden salir)
     fuera = []
@@ -896,6 +1075,27 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             return p
         except Exception:
             return None
+    cases = os.path.join(pics, "casos") if pics else None
+
+    def save_case(seq_, t0_, cl_, g_, known_):
+        """Cada línea que no sale se guarda como caso de prueba (los fotogramas del killfeed y lo que
+        decían los datos): tools/kf_casos.py los vuelve a pasar para que un fallo no se repita."""
+        if not cases:
+            return
+        try:
+            import json
+            import numpy as np
+            os.makedirs(cases, exist_ok=True)
+            name = f"{g_[0][:8]}_r{g_[1] + 1}_{int(cl_[0][0])}"
+            np.savez_compressed(os.path.join(cases, name + ".npz"), seq=np.stack(seq_))
+            info = {"t0": t0_, "H": H, "fps": SEQ_FPS, "group": list(g_), "cl": [list(x) for x in cl_],
+                    "victims": [list(victim_of.get((g_, round(tv_, 3))) or ("", "", "")) for tv_, _ in cl_],
+                    "enemies": enemy_agents.get(g_) or [], "known_n": len(known_)}
+            with open(os.path.join(cases, name + ".json"), "w", encoding="utf-8") as f:
+                json.dump(info, f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+    appears: dict = {}               # (partida, ronda) -> [segundo del VOD en que entra cada línea tuya]
     groups = list(by_group.items())
     for gi, (g, ks) in enumerate(groups):
         if should_stop and should_stop():
@@ -937,12 +1137,15 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             for tv_, _ in cl:
                 if round(tv_, 3) not in got and len(found) < len(cl):
                     missing.append((tv_, g[1] + 1, photo(seq, t0, tv_, g[1] + 1)))
+            if len(found) < len(cl):
+                save_case(seq, t0, cl, g, known_c)
             if not found:
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: NO se ve tu línea en el killfeed "
                            f"({len(cl)} kill(s))")
                 continue
             for (tv, tout), box, appear, src in found:
                 drift.setdefault(g[0], []).append(appear - tv)
+                appears.setdefault(g, []).append(appear)
                 placed_n[g] = placed_n.get(g, 0) + 1
                 known.append((src, box[1], box[3]))
                 placed.append((src, box, (victim_of.get((g, round(tv, 3))) or ("", ""))[0]))
@@ -969,7 +1172,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
     for g_, n_ in placed_n.items():
         per_match.setdefault(g_[0], [0, 0])[1] += n_
     LAST_STATS = {"total": total, "ok": len(out), "missing": missing, "pics": pics if missing else None,
-                  "drift": drift, "per_match": per_match}
+                  "drift": drift, "per_match": per_match, "appear": appears}
     for p in [os.path.join(folder, "registro_killfeed.txt")] + ([log_path] if log_path else []):
         try:
             with open(p, "w", encoding="utf-8") as f:
