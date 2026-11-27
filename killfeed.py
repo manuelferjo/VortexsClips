@@ -295,6 +295,26 @@ def _name_mask(img, y0, y1):
     return x0, mn > thr
 
 
+def _left_side(img, y0, y1, x0):
+    """Color de la línea justo a la izquierda de su nombre rojo: 'verde' (kill de tu equipo),
+    'rojo' (de un enemigo) o None si no se ve claro."""
+    lh = max(8, y1 - y0)
+    xa, xb = max(0, int(x0 - 2.2 * lh)), max(0, int(x0 - 0.15 * lh))
+    if xb - xa < 6:
+        return None
+    hb = y1 - y0
+    band = img[y0 + int(hb * 0.5):max(y0 + int(hb * 0.5) + 1, y1 - 3), xa:xb]
+    if band.size == 0:
+        return None
+    teal, red, _y = _masks(band)
+    t, r = float(teal.mean()), float(red.mean())
+    if t > 0.25 and t > 2 * r:
+        return "verde"
+    if r > 0.25 and r > 2 * t:
+        return "rojo"
+    return None
+
+
 def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
     """¿Es la misma línea del killfeed (aunque esté a otra altura)?
     Se compara sobre todo el NOMBRE (texto blanco de la parte roja): no depende del fondo, que se
@@ -308,6 +328,11 @@ def same_line(img_a, a0, a1, img_b, b0, b1, tol: float = 28.0) -> bool:
     if na and nb:
         # la misma línea tiene su parte roja empezando en el mismo sitio (solo se mueve en vertical)
         if abs(na[0] - nb[0]) > 10:
+            return False
+        # y lo que hay a la izquierda del nombre es del mismo color: tu kill (verde) no es la línea roja
+        # de un enemigo con el mismo nombre (p. ej. la Clove que se revive con su ulti: «X ♥ X»)
+        sa, sb = _left_side(img_a, a0, a1, na[0]), _left_side(img_b, b0, b1, nb[0])
+        if sa and sb and sa != sb:
             return False
         x0 = min(na[0], nb[0])
         # hasta el retrato (el retrato tiene brillos blancos que cambian con el fondo)
@@ -357,17 +382,38 @@ def _match_lines(before, after, src_h: int = 1080, known=(), own_only: bool = Tr
     # Clove que se revive) no se «explican» con una sola de antes
     # (y en orden: el killfeed no cambia el orden de las líneas, así que una de «después» que está debajo
     # de otra solo puede ser una de «antes» que también estaba debajo)
-    al = [(y0, y1, mx) for y0, y1, mx in lines(after, src_h) if mx is not None or not own_only]
-    used, was, last = set(), [], -1
+    # (se emparejan TODAS las líneas, también las de otros, para respetar el orden: una tuya que sale
+    # debajo de la línea roja de un enemigo no puede ser una tuya de antes que estaba encima de ella)
+    al_all = lines(after, src_h)
+    used, was_all, last = set(), [], -1
     nold = len(olds)
-    for y0, y1, mx in al:
+    lh_min = LINE_H_1080 * src_h / 1080.0 * 0.75
+    full = lambda a0, a1: a1 - a0 >= lh_min and a0 > 2
+    rank, r_ = [], -1                       # puesto de cada línea de «antes» contando solo las enteras
+    for b0, b1, _bmx in olds:
+        if full(b0, b1):
+            r_ += 1
+        rank.append(max(0, r_))
+    idx = -1
+    for y0, y1, mx in al_all:
+        # (solo cuentan líneas enteras: un trozo suelto arriba, de una que se va, no)
+        if full(y0, y1):
+            idx += 1
+        # las líneas solo se van por arriba y entran por abajo: la idx-ésima de «después» no puede ser
+        # una de «antes» que tenía menos de idx líneas encima
         hit = next((k for k, (pi, p0, p1) in enumerate(pool)
-                    if k not in used and (k >= nold or k > last) and same_line(pi, p0, p1, after, y0, y1)), None)
+                    if k not in used and (k >= nold or (k > last and rank[k] >= idx))
+                    and same_line(pi, p0, p1, after, y0, y1)), None)
         if hit is not None:
             used.add(hit)
             if hit < nold:
                 last = hit
-        was.append(hit is not None)
+        was_all.append(hit is not None)
+    al, was = [], []
+    for ln, w_ in zip(al_all, was_all):
+        if ln[2] is not None or not own_only:
+            al.append(ln)
+            was.append(w_)
     return al, was
 
 
