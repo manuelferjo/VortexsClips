@@ -14,5 +14,12 @@ for rid in ["Vortexs#vrtxs","Sovadin#linup"]:
         except Exception as e:
             print(rid,p,"ERR",e); break
         print(rid,p,len(ids), ids[0][1] if ids else None, ids[-1][1] if ids else None, sum(1 for _,w in ids if lo<=w<=hi))
+        for mid,w in ids:
+            if lo<=w<=hi:
+                print("MID",rid,mid,w)
+                try:
+                    raw=core.fetch_match(mid,key,"eu"); m=core.parse_match(raw,"Vortexs#vrtxs, Sovadin#linup"); print("  ok",m.map_name,m.started_at)
+                except Exception as e:
+                    print("  parse ERR",repr(e))
         if not ids or min(w for _,w in ids)<lo: break
 PY
