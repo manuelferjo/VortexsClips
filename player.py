@@ -69,14 +69,17 @@ class Player(ttk.Frame):
             self.seek(now + d)
         # dos bloques: atrás + reproducir | adelante + extras. Si no caben en una fila, el segundo baja
         bL = ttk.Frame(bar, style=style)
+        bP = ttk.Frame(bar, style=style)
         bR = ttk.Frame(bar, style=style)
-        bL.grid(row=0, column=0, sticky="w")
-        bR.grid(row=0, column=1, sticky="w")
-        self._bar_parts = (bL, bR)
+        self._bar_rows = [ttk.Frame(bar, style=style) for _ in range(3)]
+        for r_ in self._bar_rows:
+            r_.pack(anchor="w")
+        self._bar_parts = (bL, bP, bR)
+        self._bar_key = None
         for txt, d in (("−1 min", -60), ("−30 s", -30), ("−10 s", -10), ("−5 s", -5)):
             ui.Button(bL, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
-        self.btn_play = ui.Button(bL, text="▶  Reproducir", width=12, compact=True, style="Purple.TButton", command=self.toggle)
-        self.btn_play.pack(side="left", padx=4)
+        self.btn_play = ui.Button(bP, text="▶  Reproducir", width=12, compact=True, style="Purple.TButton", command=self.toggle)
+        self.btn_play.pack(side="left", padx=(1, 4))
         for txt, d in (("+5 s", 5), ("+10 s", 10), ("+30 s", 30), ("+1 min", 60)):
             ui.Button(bR, text=txt, width=5, compact=True, command=lambda d=d: jump(d)).pack(side="left", padx=(0, 3))
         if on_expand:
@@ -84,6 +87,7 @@ class Player(ttk.Frame):
         if on_pick:
             ui.Button(bR, text="✔ Usar este momento", style="Accent.TButton", compact=True,
                       command=lambda: on_pick(self.pos)).pack(side="left", padx=(6, 0))
+        self._flow_bar(10_000)
         # el rango va encima de la barra (en la barra no cabía con ventanas estrechas)
         self.lbl_range = ttk.Label(self, text="", style="Muted.TLabel")
         self.lbl_range.pack(before=bar, anchor="e", pady=(0, 2))
@@ -113,17 +117,33 @@ class Player(ttk.Frame):
         if last and abs(last[0] - aw) < 12 and abs(last[1] - ah) < 12:
             return                       # el propio vídeo ha movido el hueco unos píxeles: no reajustar
         self._fit_last = (aw, ah)
-        bL, bR = self._bar_parts
-        two = bL.winfo_reqwidth() + bR.winfo_reqwidth() + 8 > aw
-        if two:
-            bR.grid_configure(row=1, column=0, pady=(4, 0))
-        else:
-            bR.grid_configure(row=0, column=1, pady=0)
+        self._flow_bar(aw)
         self.update_idletasks()
         ctrl = self.scale.winfo_reqheight() + self._bar.winfo_reqheight() + self.lbl_range.winfo_reqheight() + 16
         w = min(aw - 4, (ah - ctrl) * 16 / 9)
         w = max(256, int(w) // 4 * 4)
         self.set_size(w, w * 9 // 16 // 2 * 2)
+
+    def _flow_bar(self, aw):
+        """Los botones de debajo del vídeo, en tantas filas como hagan falta para que no se corten."""
+        rows, cur, x = [], [], 0
+        for part in self._bar_parts:
+            w = part.winfo_reqwidth() + 4
+            if cur and x + w > aw:
+                rows.append(cur)
+                cur, x = [], 0
+            cur.append(part)
+            x += w
+        rows.append(cur)
+        key = tuple(tuple(id(p_) for p_ in r) for r in rows)
+        if key == self._bar_key:
+            return
+        self._bar_key = key
+        for part in self._bar_parts:
+            part.pack_forget()
+        for i, r in enumerate(rows[:3]):
+            for part in r:
+                part.pack(in_=self._bar_rows[i], side="left", pady=(0 if i == 0 else 4, 0))
 
     def set_size(self, w, h):
         w, h = int(w), int(h)
