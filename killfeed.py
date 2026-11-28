@@ -168,6 +168,17 @@ def lines(img, src_h: int = 1080):
         bar = bar[:, ~bg]
     cov = bar.mean(axis=1)
     on = cov >= 0.15
+    rb = red[:, int(w * 0.30):int(w * 0.98)].mean(axis=1)
+    tb = teal[:, int(w * 0.30):int(w * 0.98)].mean(axis=1)
+    quiet = rb < 0.01
+    if quiet.sum() > h * 0.3 and tb[quiet].mean() > 0.2:
+        # fondo del juego verde azulado como las líneas (por filas, no por columnas): solo sirve el
+        # rojo del nombre de la víctima para encontrar cada línea
+        cov = rb
+        on = cov >= 0.06
+        g_lo = 0.03
+    else:
+        g_lo = 0.08
     # dentro de una línea corta (nombre corto, icono de habilidad) algunas filas tienen poco color por
     # el texto blanco: un hueco corto con algo de color entre dos tramos de línea se rellena
     gmax = max(2, int(round(LINE_H_1080 * src_h / 1080.0 * 0.4)))
@@ -175,7 +186,7 @@ def lines(img, src_h: int = 1080):
     while y < h:
         if not on[y] and y > 0 and on[y - 1]:
             y1 = y
-            while y1 < h and not on[y1] and cov[y1] >= 0.08:
+            while y1 < h and not on[y1] and cov[y1] >= g_lo:
                 y1 += 1
             if y1 < h and on[y1] and y1 - y <= gmax:
                 # (solo si todo junto sigue midiendo como una línea: no se juntan dos líneas)
