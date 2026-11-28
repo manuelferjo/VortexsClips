@@ -508,7 +508,8 @@ class App(tk.Tk):
         self.cam = cfg.get("cam")
         self.v_channel = tk.StringVar(value=cfg.get("watch_channel", ""))
         self.v_watch = tk.BooleanVar(value=cfg.get("watch", False))
-        self.v_autodrive = tk.BooleanVar(value=cfg.get("auto_drive", False))
+        # (de serie, sí: también a quien ya lo tenía apagado de antes, una vez)
+        self.v_autodrive = tk.BooleanVar(value=cfg.get("auto_drive", True) if cfg.get("auto_drive2") else True)
         self.v_tg_token = tk.StringVar(value=cfg.get("tg_token", ""))
         self.v_tg_on = tk.BooleanVar(value=cfg.get("tg_on", False))
         self.v_startup = tk.BooleanVar(value=cfg.get("startup", False))
@@ -700,7 +701,7 @@ class App(tk.Tk):
         ui.Toggle(tw_, text="Top de la semana cada lunes (las 10 mejores jugadas, horizontal y vertical)",
                   variable=self.v_topweek).pack(side="left")
         ui.Button(tw_, text="Hacer el top ahora…", command=self.top_week_now).pack(side="left", padx=10)
-        ui.Toggle(t_auto, text="Al terminar un directo vigilado, subirlo a Google Drive solo (sin preguntar)",
+        ui.Toggle(t_auto, text="Al terminar los vídeos de un directo, subirlos a Google Drive solos (sin preguntar)",
                   variable=self.v_autodrive).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
         # --- avisos por Telegram
         ttk.Separator(t_auto).grid(row=8, column=0, columnspan=4, sticky="we", pady=8)
@@ -1575,7 +1576,7 @@ class App(tk.Tk):
                          "dart_pre": self.v_dartpre.get(),
                          "kill_gap": self.v_kgap.get(),
                          "watch_channel": self.v_channel.get(), "watch": self.v_watch.get(),
-                         "auto_drive": self.v_autodrive.get(), "tg_token": self.v_tg_token.get().strip(),
+                         "auto_drive": self.v_autodrive.get(), "auto_drive2": True, "tg_token": self.v_tg_token.get().strip(),
                          "tg_on": self.v_tg_on.get(),
                          "startup": self.v_startup.get(), "partial_download": self.v_partial.get(),
                          "auto_delete_vod": self.v_autodel.get(), "sub_offset": self.sub_offset(),
@@ -2082,7 +2083,7 @@ class App(tk.Tk):
             threading.Thread(target=lambda: self._tg_safe_send(text, video, caption), daemon=True).start()
 
     def after_generated(self, path, clips, ranking, kf_stats):
-        """Al terminar unos vídeos: aviso por Telegram y, si viene de la vigilancia, subida a Drive."""
+        """Al terminar unos vídeos: aviso por Telegram y (si está marcado) subida a Drive."""
         day = os.path.basename(os.path.dirname(path))
         lines = [f"🎬 Vídeos listos: {day}", f"{len({c.group for c in clips})} jugadas"]
         if kf_stats.get("total"):
@@ -2100,7 +2101,7 @@ class App(tk.Tk):
         if getattr(self, "sync_warning", ""):
             lines.append("")
             lines.append("⚠ " + self.sync_warning[:300])
-        auto_up = self.v_autodrive.get() and self.flow_source == "watch" and drive.is_connected()
+        auto_up = self.v_autodrive.get() and drive.is_connected()
         if auto_up:
             lines.append("")
             lines.append("Subiendo a Google Drive…")
