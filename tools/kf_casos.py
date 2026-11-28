@@ -25,13 +25,17 @@ def run(folder: str) -> tuple:
         if not os.path.isfile(npz):
             continue
         info = json.load(open(js, encoding="utf-8"))
-        seq = list(np.load(npz)["seq"])
+        z = np.load(npz)
+        seq = list(z["seq"])
+        known = [(z[f"known{j}"], y0, y1) for j, (y0, y1) in enumerate(info.get("known") or [])
+                 if f"known{j}" in z.files]
+        after = info.get("after")
         cl = [tuple(x) for x in info["cl"]]
         g = tuple(info["group"])
         victim_of = {(g, round(c[0], 3)): tuple(v) for c, v in zip(cl, info["victims"])}
         log = []
-        found, src = kf.locate(seq, info["t0"], cl, info["H"], [], info["fps"], None)
-        found, src = kf._check_victims(found, src, seq, info["t0"], cl, info["H"], [], None, g,
+        found, src = kf.locate(seq, info["t0"], cl, info["H"], known, info["fps"], after)
+        found, src = kf._check_victims(found, src, seq, info["t0"], cl, info["H"], known, after, g,
                                        victim_of, info.get("enemies") or [], [], log)
         tot += len(cl)
         ok += len(found)

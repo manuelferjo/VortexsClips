@@ -90,6 +90,18 @@ def own_marker(band, src_h: int = 1080):
             if len(rc) >= 0.4 * lh and len(tcc) >= 0.4 * lh and np.median(rc) < np.median(tcc):
                 continue
             return r
+    # línea tan larga (Operator con modificadores y nombre largo) que su marcador queda fuera del
+    # recorte por la izquierda: las tuyas llevan un marco amarillo arriba y abajo alrededor de tu retrato
+    if band.shape[0] > 10:
+        _t, _r, yb = _masks(band)
+        edge = int(1.2 * lh)
+        top = max(yb[i, :edge].mean() for i in range(0, 3))
+        bot = max(yb[-i, :edge].mean() for i in range(1, 4))
+        if top >= 0.8 and bot >= 0.8:
+            rc = np.flatnonzero(red.mean(axis=0) > 0.5)
+            tcc = np.flatnonzero(teal.mean(axis=0) > 0.5)
+            if len(rc) >= 0.4 * lh and len(tcc) >= 0.4 * lh and np.median(rc) > np.median(tcc):
+                return 0
     return None
 
 
@@ -1077,7 +1089,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             return None
     cases = os.path.join(pics, "casos") if pics else None
 
-    def save_case(seq_, t0_, cl_, g_, known_):
+    def save_case(seq_, t0_, cl_, g_, known_, after_=None):
         """Cada línea que no sale se guarda como caso de prueba (los fotogramas del killfeed y lo que
         decían los datos): tools/kf_casos.py los vuelve a pasar para que un fallo no se repita."""
         if not cases:
@@ -1087,10 +1099,12 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
             import numpy as np
             os.makedirs(cases, exist_ok=True)
             name = f"{g_[0][:8]}_r{g_[1] + 1}_{int(cl_[0][0])}"
-            np.savez_compressed(os.path.join(cases, name + ".npz"), seq=np.stack(seq_))
+            extra = {f"known{j}": kn[0] for j, kn in enumerate(known_)}
+            np.savez_compressed(os.path.join(cases, name + ".npz"), seq=np.stack(seq_), **extra)
             info = {"t0": t0_, "H": H, "fps": SEQ_FPS, "group": list(g_), "cl": [list(x) for x in cl_],
                     "victims": [list(victim_of.get((g_, round(tv_, 3))) or ("", "", "")) for tv_, _ in cl_],
-                    "enemies": enemy_agents.get(g_) or [], "known_n": len(known_)}
+                    "enemies": enemy_agents.get(g_) or [], "known_n": len(known_),
+                    "known": [[int(kn[1]), int(kn[2])] for kn in known_], "after": after_}
             with open(os.path.join(cases, name + ".json"), "w", encoding="utf-8") as f:
                 json.dump(info, f, ensure_ascii=False, indent=1)
         except Exception:
@@ -1138,7 +1152,7 @@ def prepare(vod: str, clips, cam, folder: str, progress=None, should_stop=None,
                 if round(tv_, 3) not in got and len(found) < len(cl):
                     missing.append((tv_, g[1] + 1, photo(seq, t0, tv_, g[1] + 1)))
             if len(found) < len(cl):
-                save_case(seq, t0, cl, g, known_c)
+                save_case(seq, t0, cl, g, known_c, last_in)
             if not found:
                 log.append(f"{core.fmt_ts(cl[0][0])}  ronda {g[1] + 1}: NO se ve tu línea en el killfeed "
                            f"({len(cl)} kill(s))")
