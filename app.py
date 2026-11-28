@@ -2393,7 +2393,39 @@ class App(tk.Tk):
                 b = off + length + (5 if known else 9) * 60
                 if b > 0 and a < dur:
                     secs.append((a, b))
-        return twitch.merge_sections(secs, dur)
+        secs = twitch.merge_sections(secs, dur)
+        # la última partida del directo tarda un rato en salir en la API de Riot: si el directo acabó
+        # poco después del último tramo, se baja hasta el final por si hubo otra partida (27/11)
+        if secs and dur and dur - secs[-1][1] < 50 * 60:
+            secs[-1] = (secs[-1][0], dur)
+        return secs
+
+    @staticmethod
+    def _missing_sections(man, secs):
+        """Lo que falta por bajar de esos tramos (restando lo que ya está en el manifiesto)."""
+        if not man or not os.path.isfile(man):
+            return list(secs)
+        try:
+            have = [(p["start"], p["start"] + p["dur"]) for p in core.load_parts(man)["parts"]
+                    if os.path.isfile(p["file"])]
+        except Exception:
+            return list(secs)
+        out = []
+        for a, b in secs:
+            cur = [(a, b)]
+            for s, e in have:
+                nxt = []
+                for x, y in cur:
+                    if e <= x or s >= y:
+                        nxt.append((x, y))
+                        continue
+                    if x < s:
+                        nxt.append((x, s))
+                    if e < y:
+                        nxt.append((e, y))
+                cur = nxt
+            out += [(x, y) for x, y in cur if y - x > 20]
+        return out
 
     def _download_matches_only(self, url, out_dir, info, prog):
         """Baja solo las partidas. Si algo falla, devuelve None y se baja el VOD entero."""
@@ -2408,6 +2440,10 @@ class App(tk.Tk):
         if have:
             prog(1, "Las partidas ya estaban descargadas")
             return have
+        # si ya hay tramos bajados de este VOD, solo se baja lo que falta (se añade al mismo manifiesto)
+        old_man = os.path.join(out_dir, twitch.base_name(info) + core.PARTS_SUFFIX)
+        if os.path.isfile(old_man):
+            secs = self._missing_sections(old_man, secs) or secs
         tot = sum(b - a for a, b in secs)
         self.after(0, lambda: self.lbl_step.configure(
             text=f"Descargando solo las partidas: {core.fmt_ts(tot).split('.')[0]} de "
@@ -2711,16 +2747,70 @@ class App(tk.Tk):
                                                   "competitivo jugadas durante ese directo.")
                 self.flow_done("Sin partidas de competitivo en este VOD.")
                 return
-            if self.v_autosync.get():
-                self.run_sync(sorted(self.checked), then=self._finish_auto)
-            else:
-                self._finish_auto()
+            self._ensure_downloaded(ms, self._after_matches)
 
         self.run_bg(work, done, "No se pudieron cargar las partidas")
+
+    def _after_matches(self):
+        if self.v_autosync.get():
+            self.run_sync(sorted(self.checked), then=self._finish_auto)
+        else:
+            self._finish_auto()
+
+    def _ensure_downloaded(self, ms, then):
+        """Si el VOD se bajó por tramos y alguna partida (p. ej. la última, que la API de Riot aún no
+        tenía al descargar) cae fuera, se baja lo que falta antes de seguir."""
+        vod = self.v_vod.get()
+        info = self.vod_info or {}
+        if not core.is_parts(vod) or not info.get("start"):
+            then()
+            return
+        prog = self.progress_cb()
+
+        def work():
+            vs, dur = info["start"], float(info.get("duration") or 0)
+            st = self.settings()
+            secs = []
+            for m in ms:
+                if m.match_id not in self.checked:
+                    continue
+                off = (m.started_at - vs).total_seconds() + core.delay_offset(m, st, self.delay_fn_for_vod())
+                secs.append((off - 6 * 60, off + (m.length_ms or 3000 * 1000) / 1000 + 9 * 60))
+            secs = twitch.merge_sections(secs, dur)
+            miss = self._missing_sections(vod, secs)
+            if not miss:
+                return None
+            url = core.load_parts(vod).get("url") or info.get("url")
+            if not url:
+                return None
+            prog(None, f"Faltan {len(miss)} trozo(s) con partidas: descargándolos…")
+            return twitch.download_sections(url, os.path.dirname(os.path.abspath(vod)), miss, prog,
+                                            lambda: self.stop_flag, None)
+
+        def done(man):
+            if man:
+                core._PARTS_CACHE.pop(man, None)
+            then()
+
+        def safe():
+            try:
+                return work()
+            except Exception as e:
+                if "cancelad" in str(e).lower():
+                    raise
+                return None                  # sin esos trozos: esas rondas se quedan fuera (ver _finish_auto)
+        self.run_bg(safe, done, "No se pudieron bajar las partidas que faltaban")
 
     def _finish_auto(self):
         self.set_step(3)
         self.compute()
+        vod = self.v_vod.get()
+        if self.clips and core.is_parts(vod):
+            fuera = [c for c in self.clips if not core.vod_covers(vod, c.vod_start, c.vod_end)]
+            if fuera:
+                self.clips = [c for c in self.clips if c not in fuera]
+                self.auto_warn = (f"{len(fuera)} ronda(s) no estaban descargadas y se quedaron fuera "
+                                  f"(p. ej. {fuera[0].label}).")
         if not self.clips:
             self.set_step(None, "Sin rondas de 3K o más")
             if not self.unattended():
@@ -3864,7 +3954,7 @@ class App(tk.Tk):
         kfeed = self.v_kfeed.get()
         # con CapCut los subtítulos se editan allí: no se pegan en el vídeo ni se abre el editor
         sub_edit = subs and self.v_subedit.get() and not self.unattended() and not capcut
-        warnings = []
+        warnings = [w_ for w_ in [self.__dict__.pop("auto_warn", None)] if w_]
         ranking = []
 
         def sub(title):
